@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>STcli Turn Lifecycle</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:  #f5f5f5;
+      --color-ink:    #2d3142;
+      --color-muted:  #4f5d75;
+      --color-accent: #eb6c36;
+      --font-sans:  'Geist', system-ui, sans-serif;
+      --font-serif: 'Instrument Serif', serif;
+      --font-mono:  'Geist Mono', ui-monospace, monospace;
+    }
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+    .frame { max-width: 720px; width: 100%; }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+    svg { width: 100%; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Data Flow · Turn Lifecycle</p>
+    <h1>Turn Lifecycle</h1>
+
+    <svg viewBox="0 0 680 960" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="turn-title turn-desc">
+      <title id="turn-title">Turn Lifecycle</title>
+      <desc id="turn-desc">A send flows top to bottom through thirteen steps. The dry-run-safe phase loads configuration, initializes overlays, runs the lore engine, assembles and prunes the prompt, and builds the canonical provider request. The commit-and-generate phase opens a transaction, streams the provider response, then commits attempt completion and state in a second transaction and returns the completed turn. Dry run stops after building the request.</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- ============ ZONES ============ -->
+      <rect x="56" y="140" width="568" height="464" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <rect x="72" y="144" width="248" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="80" y="153" fill="rgba(45,49,66,0.45)" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.14em">DRY-RUN SAFE · NO I/O · NO WRITES</text>
+
+      <rect x="56" y="616" width="568" height="272" rx="8" fill="rgba(235,108,54,0.04)" stroke="rgba(235,108,54,0.20)" stroke-width="0.8"/>
+      <rect x="72" y="620" width="184" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="80" y="629" fill="rgba(176,86,42,0.75)" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.14em">COMMIT &amp; GENERATE</text>
+
+      <!-- ============ ARROWS (vertical spine) ============ -->
+      <line x1="340" y1="204" x2="340" y2="216" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="340" y1="260" x2="340" y2="272" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="340" y1="316" x2="340" y2="328" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="340" y1="372" x2="340" y2="384" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="340" y1="428" x2="340" y2="440" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="340" y1="484" x2="340" y2="496" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="340" y1="540" x2="340" y2="552" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- H -> I : dry-run boundary crossing (writes begin) -->
+      <line x1="340" y1="596" x2="340" y2="640" stroke="#eb6c36" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+      <rect x="352" y="606" width="98" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="356" y="615" fill="#b0562a" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">WRITES BEGIN</text>
+      <line x1="340" y1="684" x2="340" y2="696" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="340" y1="740" x2="340" y2="752" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="340" y1="796" x2="340" y2="808" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="340" y1="852" x2="340" y2="864" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- ============ NODES ============ -->
+      <!-- A -->
+      <rect x="140" y="160" width="400" height="44" rx="6" fill="#f5f5f5"/>
+      <rect x="140" y="160" width="400" height="44" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="148" y="168" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.45)" stroke-width="0.8"/>
+      <text x="162" y="177" fill="#2d3142" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CLI</text>
+      <text x="196" y="180" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif">send_message()</text>
+      <text x="196" y="194" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace">session · branch · text</text>
+
+      <!-- B -->
+      <rect x="140" y="216" width="400" height="44" rx="6" fill="#f5f5f5"/>
+      <rect x="140" y="216" width="400" height="44" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="160" y="236" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Load configuration</text>
+      <text x="160" y="250" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace">pinned SessionConfiguration + branch history</text>
+
+      <!-- C -->
+      <rect x="140" y="272" width="400" height="44" rx="6" fill="#f5f5f5"/>
+      <rect x="140" y="272" width="400" height="44" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="160" y="292" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Initialize overlays</text>
+      <text x="160" y="306" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace">MacroContext + StateTransaction</text>
+
+      <!-- D -->
+      <rect x="140" y="328" width="400" height="44" rx="6" fill="#f5f5f5"/>
+      <rect x="140" y="328" width="400" height="44" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="160" y="348" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Run Lore Engine</text>
+      <text x="160" y="362" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace">keyword / regex match · recursion · budgets</text>
+
+      <!-- E -->
+      <rect x="140" y="384" width="400" height="44" rx="6" fill="#f5f5f5"/>
+      <rect x="140" y="384" width="400" height="44" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="160" y="404" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Assemble prompt segments</text>
+      <text x="160" y="418" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace">via Prompt Manager</text>
+
+      <!-- F -->
+      <rect x="140" y="440" width="400" height="44" rx="6" fill="#f5f5f5"/>
+      <rect x="140" y="440" width="400" height="44" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="160" y="460" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Render macros in segments</text>
+      <text x="160" y="474" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace">64+ SillyTavern macros</text>
+
+      <!-- G -->
+      <rect x="140" y="496" width="400" height="44" rx="6" fill="#f5f5f5"/>
+      <rect x="140" y="496" width="400" height="44" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="160" y="516" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Prune to token budget</text>
+      <text x="160" y="530" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace">in-chat depth · pruning</text>
+
+      <!-- H (dry-run boundary step) -->
+      <rect x="140" y="552" width="400" height="44" rx="6" fill="#f5f5f5"/>
+      <rect x="140" y="552" width="400" height="44" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.35)" stroke-width="1.2" stroke-dasharray="5,4"/>
+      <text x="160" y="572" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Build canonical provider request</text>
+      <text x="160" y="586" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace">last dry-run-safe step</text>
+
+      <!-- I (TXN, accent) -->
+      <rect x="140" y="640" width="400" height="44" rx="6" fill="#f5f5f5"/>
+      <rect x="140" y="640" width="400" height="44" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.4"/>
+      <rect x="148" y="648" width="28" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.60)" stroke-width="0.8"/>
+      <text x="162" y="657" fill="#eb6c36" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">TXN</text>
+      <text x="196" y="660" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Open attempt</text>
+      <text x="196" y="674" fill="#b0562a" font-size="9" font-family="'Geist Mono', monospace">trace turn.created + attempt.started · COMMIT</text>
+
+      <!-- J (HTTP, link) -->
+      <rect x="140" y="696" width="400" height="44" rx="6" fill="#f5f5f5"/>
+      <rect x="140" y="696" width="400" height="44" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="148" y="704" width="34" height="12" rx="2" fill="transparent" stroke="rgba(46,90,168,0.55)" stroke-width="0.8"/>
+      <text x="165" y="713" fill="#2e5aa8" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">HTTP</text>
+      <text x="200" y="716" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif">POST /v1/chat/completions</text>
+      <text x="200" y="730" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace">HTTPS SSE stream</text>
+
+      <!-- K -->
+      <rect x="140" y="752" width="400" height="44" rx="6" fill="#f5f5f5"/>
+      <rect x="140" y="752" width="400" height="44" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="160" y="772" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Stream events to CLI</text>
+      <text x="160" y="786" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace">TextDelta / ReasoningDelta / Usage</text>
+
+      <!-- L (TXN, accent) -->
+      <rect x="140" y="808" width="400" height="44" rx="6" fill="#f5f5f5"/>
+      <rect x="140" y="808" width="400" height="44" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.4"/>
+      <rect x="148" y="816" width="28" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.60)" stroke-width="0.8"/>
+      <text x="162" y="825" fill="#eb6c36" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">TXN</text>
+      <text x="196" y="828" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Commit attempt</text>
+      <text x="196" y="842" fill="#b0562a" font-size="9" font-family="'Geist Mono', monospace">trace attempt.completed + state.committed · COMMIT</text>
+
+      <!-- M -->
+      <rect x="140" y="864" width="400" height="44" rx="6" fill="#f5f5f5"/>
+      <rect x="140" y="864" width="400" height="44" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <text x="160" y="884" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Return CompletedTurn</text>
+      <text x="160" y="898" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace">result to caller</text>
+
+      <!-- ============ LEGEND ============ -->
+      <line x1="56" y1="928" x2="624" y2="928" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <rect x="56" y="940" width="14" height="14" rx="3" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="78" y="951" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">STEP</text>
+      <rect x="152" y="940" width="14" height="14" rx="3" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.35)" stroke-width="1" stroke-dasharray="5,4"/>
+      <text x="174" y="951" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">DRY-RUN BOUNDARY</text>
+      <rect x="352" y="940" width="14" height="14" rx="3" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <text x="374" y="951" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">SQLITE TRANSACTION</text>
+      <rect x="536" y="940" width="14" height="14" rx="2" fill="transparent" stroke="rgba(46,90,168,0.55)" stroke-width="0.8"/>
+      <text x="558" y="951" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">HTTPS CALL</text>
+    </svg>
+  </div>
+</body>
+</html>

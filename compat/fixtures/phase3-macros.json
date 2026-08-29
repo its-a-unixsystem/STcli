@@ -1,0 +1,765 @@
+{
+  "schema": "stcli.fixture-suite/v2",
+  "profile": "sillytavern-1.18-core",
+  "cases": [
+    {
+      "kind": "macro-render",
+      "id": "macro.unknown.preserve-literal",
+      "name": "unknown macro is preserved",
+      "input": "before {{platformMacro::x}} after",
+      "context": {},
+      "initial_local": {},
+      "initial_global": {},
+      "expected_text": "before {{platformMacro::x}} after",
+      "expected_local": {},
+      "expected_global": {},
+      "expected_warnings": 1
+    }
+  ],
+  "macro_groups": [
+    {
+      "defaults": {
+        "context": {
+          "char": "Alice"
+        },
+        "initial_local": {
+          "Alice_mood": "happy"
+        },
+        "initial_global": {},
+        "expected_warnings": 0
+      },
+      "cases": [
+        {
+          "id": "macro.char.plain",
+          "input": "{{char}}",
+          "expected_text": "Alice",
+          "expected_local": {
+            "Alice_mood": "happy"
+          }
+        },
+        {
+          "id": "macro.char.nested-lookup",
+          "input": "{{getvar::{{char}}_mood}}",
+          "expected_text": "happy",
+          "expected_local": {
+            "Alice_mood": "happy"
+          }
+        },
+        {
+          "id": "macro.getvar.nested-brace",
+          "input": "{{getvar::{{char}}_mood}}",
+          "expected_text": "happy",
+          "expected_local": {
+            "Alice_mood": "happy"
+          }
+        }
+      ]
+    },
+    {
+      "defaults": {
+        "context": {},
+        "initial_local": {},
+        "initial_global": {},
+        "expected_warnings": 0
+      },
+      "cases": [
+        {
+          "id": "macro.if.discard-no-side-effects",
+          "input": "{{if::false}}{{setvar::bad::1}}{{else}}{{setvar::good::2}}ok{{/if}}",
+          "expected_text": "ok",
+          "expected_local": {
+            "good": "2"
+          }
+        },
+        {
+          "id": "macro.setvar.shorthand-add",
+          "input": "{{.score = 1}}{{.score += 2}}{{.score}}",
+          "expected_text": "3",
+          "expected_local": {
+            "score": "3"
+          }
+        },
+        {
+          "id": "macro.setglobalvar.global-scope",
+          "input": "{{setglobalvar::weather::rain}}{{getglobalvar::weather}}",
+          "expected_text": "rain",
+          "expected_global": {
+            "weather": "rain"
+          }
+        },
+        {
+          "id": "macro.setvar.utf8-args",
+          "input": "{{setvar::greeting::\u65e5\u672c\ud83d\ude42}}{{getvar::greeting}}",
+          "expected_text": "\u65e5\u672c\ud83d\ude42",
+          "expected_local": {
+            "greeting": "\u65e5\u672c\ud83d\ude42"
+          }
+        },
+        {
+          "id": "macro.newline.plain",
+          "input": "a{{newline}}b",
+          "expected_text": "a\nb"
+        },
+        {
+          "id": "macro.space.plain",
+          "input": "a{{space}}b",
+          "expected_text": "a b"
+        },
+        {
+          "id": "macro.noop.plain",
+          "input": "a{{noop}}b",
+          "expected_text": "ab"
+        },
+        {
+          "id": "macro.//.plain",
+          "input": "a{{// hidden}}b",
+          "expected_text": "ab"
+        },
+        {
+          "id": "macro.trim.plain",
+          "input": "{{trim::  hello  }}",
+          "expected_text": "hello"
+        },
+        {
+          "id": "macro.reverse.plain",
+          "input": "{{reverse::abc}}",
+          "expected_text": "cba"
+        }
+      ]
+    },
+    {
+      "defaults": {
+        "context": {},
+        "initial_local": {},
+        "initial_global": {},
+        "expected_warnings": 0
+      },
+      "cases": [
+        {
+          "id": "macro.addvar.positive",
+          "input": "{{setvar::score::10}}{{addvar::score::5}}{{getvar::score}}",
+          "expected_text": "15",
+          "expected_local": {
+            "score": "15"
+          }
+        },
+        {
+          "id": "macro.addvar.boundary-nonnumeric",
+          "input": "{{setvar::name::Alice}}{{addvar::name::5}}{{getvar::name}}",
+          "expected_text": "Alice5",
+          "expected_local": {
+            "name": "Alice5"
+          }
+        },
+        {
+          "id": "macro.addvar.boundary-missing",
+          "input": "{{addvar::missing::5}}",
+          "expected_text": "{{addvar::missing::5}}",
+          "expected_local": {},
+          "expected_warnings": 1
+        },
+        {
+          "id": "macro.addglobalvar.positive",
+          "input": "{{setglobalvar::gp::10}}{{addglobalvar::gp::5}}{{getglobalvar::gp}}",
+          "expected_text": "15",
+          "expected_global": {
+            "gp": "15"
+          }
+        },
+        {
+          "id": "macro.addglobalvar.boundary-missing",
+          "input": "{{addglobalvar::fresh::7}}{{getglobalvar::fresh}}",
+          "expected_text": "7",
+          "expected_global": {
+            "fresh": "7"
+          }
+        },
+        {
+          "id": "macro.incvar.positive",
+          "input": "{{setvar::counter::5}}{{incvar::counter}}",
+          "expected_text": "6",
+          "expected_local": {
+            "counter": "6"
+          }
+        },
+        {
+          "id": "macro.incvar.boundary-missing",
+          "input": "{{incvar::fresh}}",
+          "expected_text": "1",
+          "expected_local": {
+            "fresh": "1"
+          }
+        },
+        {
+          "id": "macro.decvar.positive",
+          "input": "{{setvar::counter::5}}{{decvar::counter}}",
+          "expected_text": "4",
+          "expected_local": {
+            "counter": "4"
+          }
+        },
+        {
+          "id": "macro.decvar.boundary-zero",
+          "input": "{{setvar::counter::0}}{{decvar::counter}}",
+          "expected_text": "-1",
+          "expected_local": {
+            "counter": "-1"
+          }
+        },
+        {
+          "id": "macro.incglobalvar.positive",
+          "input": "{{setglobalvar::gc::5}}{{incglobalvar::gc}}",
+          "expected_text": "6",
+          "expected_global": {
+            "gc": "6"
+          }
+        },
+        {
+          "id": "macro.decglobalvar.positive",
+          "input": "{{setglobalvar::gc::5}}{{decglobalvar::gc}}",
+          "expected_text": "4",
+          "expected_global": {
+            "gc": "4"
+          }
+        },
+        {
+          "id": "macro.incglobalvar.boundary-missing",
+          "input": "{{incglobalvar::fresh}}",
+          "expected_text": "1",
+          "expected_global": {
+            "fresh": "1"
+          }
+        },
+        {
+          "id": "macro.decglobalvar.boundary-missing",
+          "input": "{{decglobalvar::fresh}}",
+          "expected_text": "-1",
+          "expected_global": {
+            "fresh": "-1"
+          }
+        },
+        {
+          "id": "macro.deletevar.boundary-missing",
+          "input": "{{deletevar::nonexistent}}",
+          "expected_text": ""
+        },
+        {
+          "id": "macro.deleteglobalvar.boundary-missing",
+          "input": "{{deleteglobalvar::nonexistent}}",
+          "expected_text": ""
+        },
+        {
+          "id": "macro.getvar.boundary-missing",
+          "input": "{{getvar::nonexistent}}",
+          "expected_text": ""
+        },
+        {
+          "id": "macro.deletevar.positive",
+          "input": "{{setvar::trash::x}}{{deletevar::trash}}{{hasvar::trash}}",
+          "expected_text": "false",
+          "expected_local": {}
+        },
+        {
+          "id": "macro.deleteglobalvar.positive",
+          "input": "{{setglobalvar::gtrash::x}}{{deleteglobalvar::gtrash}}{{hasglobalvar::gtrash}}",
+          "expected_text": "false",
+          "expected_global": {}
+        },
+        {
+          "id": "macro.hasvar.positive",
+          "input": "{{setvar::seen::1}}{{hasvar::seen}}",
+          "expected_text": "true",
+          "expected_local": {
+            "seen": "1"
+          }
+        },
+        {
+          "id": "macro.hasvar.boundary-missing",
+          "input": "{{hasvar::unseen}}",
+          "expected_text": "false",
+          "expected_local": {}
+        },
+        {
+          "id": "macro.hasglobalvar.positive",
+          "input": "{{setglobalvar::g::1}}{{hasglobalvar::g}}",
+          "expected_text": "true",
+          "expected_global": {
+            "g": "1"
+          }
+        },
+        {
+          "id": "macro.hasglobalvar.boundary-missing",
+          "input": "{{hasglobalvar::g}}",
+          "expected_text": "false",
+          "expected_global": {}
+        },
+        {
+          "id": "macro.getglobalvar.positive",
+          "input": "{{setglobalvar::city::Tokyo}}{{getglobalvar::city}}",
+          "expected_text": "Tokyo",
+          "expected_global": {
+            "city": "Tokyo"
+          }
+        },
+        {
+          "id": "macro.getglobalvar.boundary-missing",
+          "input": "{{getglobalvar::missing}}",
+          "expected_text": "{{getglobalvar::missing}}",
+          "expected_global": {},
+          "expected_warnings": 1
+        },
+        {
+          "id": "macro.else.fallback-when-false",
+          "input": "{{if::false}}yes{{else}}no{{/if}}",
+          "expected_text": "no",
+          "expected_local": {}
+        },
+        {
+          "id": "macro.if.nested-ordering",
+          "input": "{{if::true}}outer{{if::false}}inner{{else}}alt{{/if}}{{/if}}",
+          "expected_text": "outeralt",
+          "expected_local": {}
+        }
+      ]
+    },
+    {
+      "defaults": {
+        "context": {
+          "char": "Alice",
+          "user": "Bob",
+          "description": "A brave knight",
+          "personality": "bold",
+          "scenario": "the tavern",
+          "persona": "Wanderer",
+          "group": "Party",
+          "groupnotmuted": "true",
+          "summary": "They met at the tavern.",
+          "short_term_memory": "recent events",
+          "long_term_memory": "past events",
+          "mesexamplesraw": "Example raw",
+          "mesexamples": "Example",
+          "chardepthprompt": "depth prompt",
+          "charcreatornotes": "creator notes",
+          "charfirstmessage": "Hello there!",
+          "charversion": "1.0",
+          "model": "gpt-test",
+          "original": "{{user}}",
+          "lastmessage": "hi",
+          "lastchatmessage": "hi",
+          "lastmessageid": "42",
+          "lastusermessage": "hello",
+          "lastcharmessage": "greetings",
+          "firstincludedmessageid": "10",
+          "firstdisplayedmessageid": "5",
+          "lastswipeid": "2",
+          "currentswipeid": "1",
+          "allchatrange": "0-42",
+          "lastgenerationtype": "normal",
+          "maxprompt": "8000",
+          "maxcontext": "8192",
+          "maxresponse": "192",
+          "charprompt": "Alice",
+          "charinstruction": "Alice",
+          "chardescription": "Alice",
+          "charpersonality": "Alice",
+          "charscenario": "Alice"
+        },
+        "initial_local": {},
+        "initial_global": {},
+        "expected_warnings": 0
+      },
+      "cases": [
+        {
+          "id": "macro.user.plain",
+          "input": "{{user}}",
+          "expected_text": "Bob"
+        },
+        {
+          "id": "macro.description.plain",
+          "input": "{{description}}",
+          "expected_text": "A brave knight"
+        },
+        {
+          "id": "macro.personality.plain",
+          "input": "{{personality}}",
+          "expected_text": "bold"
+        },
+        {
+          "id": "macro.scenario.plain",
+          "input": "{{scenario}}",
+          "expected_text": "the tavern"
+        },
+        {
+          "id": "macro.persona.plain",
+          "input": "{{persona}}",
+          "expected_text": "Wanderer"
+        },
+        {
+          "id": "macro.group.plain",
+          "input": "{{group}}",
+          "expected_text": "Party"
+        },
+        {
+          "id": "macro.groupNotMuted.plain",
+          "input": "{{groupNotMuted}}",
+          "expected_text": "true"
+        },
+        {
+          "id": "macro.summary.plain",
+          "input": "{{summary}}",
+          "expected_text": "They met at the tavern."
+        },
+        {
+          "id": "macro.short_term_memory.plain",
+          "input": "{{short_term_memory}}",
+          "expected_text": "recent events"
+        },
+        {
+          "id": "macro.long_term_memory.plain",
+          "input": "{{long_term_memory}}",
+          "expected_text": "past events"
+        },
+        {
+          "id": "macro.mesExamplesRaw.plain",
+          "input": "{{mesExamplesRaw}}",
+          "expected_text": "Example raw"
+        },
+        {
+          "id": "macro.mesExamples.plain",
+          "input": "{{mesExamples}}",
+          "expected_text": "Example"
+        },
+        {
+          "id": "macro.charDepthPrompt.plain",
+          "input": "{{charDepthPrompt}}",
+          "expected_text": "depth prompt"
+        },
+        {
+          "id": "macro.charCreatorNotes.plain",
+          "input": "{{charCreatorNotes}}",
+          "expected_text": "creator notes"
+        },
+        {
+          "id": "macro.charFirstMessage.plain",
+          "input": "{{charFirstMessage}}",
+          "expected_text": "Hello there!"
+        },
+        {
+          "id": "macro.charVersion.plain",
+          "input": "{{charVersion}}",
+          "expected_text": "1.0"
+        },
+        {
+          "id": "macro.model.plain",
+          "input": "{{model}}",
+          "expected_text": "gpt-test"
+        },
+        {
+          "id": "macro.original.plain",
+          "input": "{{original}}",
+          "expected_text": "{{user}}"
+        },
+        {
+          "id": "macro.lastMessage.plain",
+          "input": "{{lastMessage}}",
+          "expected_text": "hi"
+        },
+        {
+          "id": "macro.lastChatMessage.plain",
+          "input": "{{lastChatMessage}}",
+          "expected_text": "hi"
+        },
+        {
+          "id": "macro.lastMessageId.plain",
+          "input": "{{lastMessageId}}",
+          "expected_text": "42"
+        },
+        {
+          "id": "macro.lastUserMessage.plain",
+          "input": "{{lastUserMessage}}",
+          "expected_text": "hello"
+        },
+        {
+          "id": "macro.lastCharMessage.plain",
+          "input": "{{lastCharMessage}}",
+          "expected_text": "greetings"
+        },
+        {
+          "id": "macro.firstIncludedMessageId.plain",
+          "input": "{{firstIncludedMessageId}}",
+          "expected_text": "10"
+        },
+        {
+          "id": "macro.firstDisplayedMessageId.plain",
+          "input": "{{firstDisplayedMessageId}}",
+          "expected_text": "5"
+        },
+        {
+          "id": "macro.lastSwipeId.plain",
+          "input": "{{lastSwipeId}}",
+          "expected_text": "2"
+        },
+        {
+          "id": "macro.currentSwipeId.plain",
+          "input": "{{currentSwipeId}}",
+          "expected_text": "1"
+        },
+        {
+          "id": "macro.allChatRange.plain",
+          "input": "{{allChatRange}}",
+          "expected_text": "0-42"
+        },
+        {
+          "id": "macro.lastGenerationType.plain",
+          "input": "{{lastGenerationType}}",
+          "expected_text": "normal"
+        },
+        {
+          "id": "macro.maxPrompt.plain",
+          "input": "{{maxPrompt}}",
+          "expected_text": "8000"
+        },
+        {
+          "id": "macro.maxContext.plain",
+          "input": "{{maxContext}}",
+          "expected_text": "8192"
+        },
+        {
+          "id": "macro.maxResponse.plain",
+          "input": "{{maxResponse}}",
+          "expected_text": "192"
+        },
+        {
+          "id": "macro.charPrompt.plain",
+          "input": "{{charPrompt}}",
+          "expected_text": "Alice"
+        },
+        {
+          "id": "macro.charInstruction.plain",
+          "input": "{{charInstruction}}",
+          "expected_text": "Alice"
+        },
+        {
+          "id": "macro.charDescription.plain",
+          "input": "{{charDescription}}",
+          "expected_text": "Alice"
+        },
+        {
+          "id": "macro.charPersonality.plain",
+          "input": "{{charPersonality}}",
+          "expected_text": "Alice"
+        },
+        {
+          "id": "macro.charScenario.plain",
+          "input": "{{charScenario}}",
+          "expected_text": "Alice"
+        }
+      ]
+    },
+    {
+      "defaults": {
+        "context": {},
+        "initial_local": {},
+        "initial_global": {},
+        "expected_warnings": 0
+      },
+      "cases": [
+        {
+          "id": "macro.char.boundary-empty-context",
+          "input": "before {{char}} after",
+          "expected_text": "before  after"
+        }
+      ]
+    },
+    {
+      "defaults": {
+        "context": {},
+        "initial_local": {},
+        "initial_global": {},
+        "plugins": [
+          "my-extension"
+        ],
+        "outlets": {
+          "greeting": "Hello!"
+        },
+        "expected_warnings": 0
+      },
+      "cases": [
+        {
+          "id": "macro.hasExtension.positive",
+          "input": "{{hasExtension::my-extension}}",
+          "expected_text": "true"
+        },
+        {
+          "id": "macro.hasExtension.boundary-missing",
+          "input": "{{hasExtension::nope}}",
+          "expected_text": "false"
+        },
+        {
+          "id": "macro.outlet.plain",
+          "input": "{{outlet::greeting}}",
+          "expected_text": "Hello!"
+        },
+        {
+          "id": "macro.outlet.boundary-missing",
+          "input": "{{outlet::nope}}",
+          "expected_text": ""
+        }
+      ]
+    },
+    {
+      "defaults": {
+        "context": {
+          "date": "2026-08-28",
+          "time": "14:30:00",
+          "isotime": "14:30:00",
+          "isodate": "2026-08-28",
+          "weekday": "Thursday",
+          "datetimeformat": "2026-08-28 14:30:00",
+          "idleduration": "5m",
+          "timediff": "2h"
+        },
+        "initial_local": {},
+        "initial_global": {},
+        "expected_warnings": 0
+      },
+      "cases": [
+        {
+          "id": "macro.date.plain",
+          "input": "{{date}}",
+          "expected_text": "2026-08-28"
+        },
+        {
+          "id": "macro.time.plain",
+          "input": "{{time}}",
+          "expected_text": "14:30:00"
+        },
+        {
+          "id": "macro.isotime.plain",
+          "input": "{{isotime}}",
+          "expected_text": "14:30:00"
+        },
+        {
+          "id": "macro.isodate.plain",
+          "input": "{{isodate}}",
+          "expected_text": "2026-08-28"
+        },
+        {
+          "id": "macro.weekday.plain",
+          "input": "{{weekday}}",
+          "expected_text": "Thursday"
+        },
+        {
+          "id": "macro.datetimeformat.plain",
+          "input": "{{datetimeformat}}",
+          "expected_text": "2026-08-28 14:30:00"
+        },
+        {
+          "id": "macro.idleDuration.plain",
+          "input": "{{idleDuration}}",
+          "expected_text": "5m"
+        },
+        {
+          "id": "macro.timeDiff.plain",
+          "input": "{{timeDiff}}",
+          "expected_text": "2h"
+        }
+      ]
+    },
+    {
+      "defaults": {
+        "context": {},
+        "initial_local": {},
+        "initial_global": {},
+        "expected_warnings": 0
+      },
+      "cases": [
+        {
+          "id": "macro.random.deterministic",
+          "input": "{{random::a::b::c}}",
+          "expected_text": "a"
+        },
+        {
+          "id": "macro.random.comma-list",
+          "input": "{{random::red, green, blue}}",
+          "expected_text": "red"
+        },
+        {
+          "id": "macro.pick.deterministic",
+          "input": "{{pick::alpha::beta::gamma}}",
+          "expected_text": "gamma"
+        },
+        {
+          "id": "macro.pick.four-choices",
+          "input": "{{pick::red::green::blue::yellow}}",
+          "expected_text": "yellow"
+        },
+        {
+          "id": "macro.roll.d6plus3",
+          "input": "{{roll::2d6+3}}",
+          "expected_text": "13"
+        },
+        {
+          "id": "macro.roll.d20",
+          "input": "{{roll::1d20}}",
+          "expected_text": "2"
+        },
+        {
+          "id": "macro.roll.boundary-single",
+          "input": "{{roll::1d1}}",
+          "expected_text": "1"
+        }
+      ]
+    },
+    {
+      "defaults": {
+        "context": {
+          "char": "Alice",
+          "user": "Bob",
+          "lastmessage": "",
+          "lastchatmessage": "",
+          "lastmessageid": "0",
+          "lastusermessage": "",
+          "lastcharmessage": "",
+          "firstincludedmessageid": "0",
+          "firstdisplayedmessageid": "0",
+          "lastswipeid": "0",
+          "currentswipeid": "0",
+          "allchatrange": "0-0",
+          "lastgenerationtype": "",
+          "maxprompt": "8000"
+        },
+        "initial_local": {},
+        "initial_global": {},
+        "expected_warnings": 0
+      },
+      "cases": [
+        {
+          "id": "macro.lastMessage.boundary-empty",
+          "input": "{{lastMessage}}",
+          "expected_text": ""
+        },
+        {
+          "id": "macro.lastMessageId.boundary-zero",
+          "input": "{{lastMessageId}}",
+          "expected_text": "0"
+        },
+        {
+          "id": "macro.lastSwipeId.boundary-zero",
+          "input": "{{lastSwipeId}}",
+          "expected_text": "0"
+        },
+        {
+          "id": "macro.currentSwipeId.boundary-zero",
+          "input": "{{currentSwipeId}}",
+          "expected_text": "0"
+        },
+        {
+          "id": "macro.lastGenerationType.boundary-empty",
+          "input": "{{lastGenerationType}}",
+          "expected_text": ""
+        }
+      ]
+    }
+  ]
+}

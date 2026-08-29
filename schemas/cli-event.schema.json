@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stcli.invalid/schemas/cli-event.schema.json",
+  "title": "STcli CLI Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "event_id", "event_type", "data"],
+  "properties": {
+    "schema": { "const": "stcli.cli-event/v1" },
+    "event_id": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+    "event_type": { "type": "string", "minLength": 1 },
+    "data": true
+  }
+}

@@ -1,0 +1,131 @@
+# STcli Roleplaying
+
+> The canonical terminology dictionary. Part of the [STcli documentation](docs/README.md). For system design, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+STcli runs local, branchable roleplay sessions from versioned content while preserving and explaining SillyTavern-compatible behavior.
+
+## Language
+
+**Artifact**:
+Imported roleplay content, such as a character card, lorebook, or prompt preset.
+_Avoid_: Asset, document, file
+
+**Artifact Revision**:
+An immutable snapshot identified by its artifact kind, source format, and exact imported bytes. Re-importing changed or reformatted content creates a new revision.
+_Avoid_: Live file, current file, semantic version
+
+**Session**:
+The durable container for one roleplay, including all of its branches.
+_Avoid_: Chat, conversation
+
+**Session Configuration Revision**:
+An immutable set of behavior-affecting selections used by future turns in a session. Every generation attempt pins one revision.
+_Avoid_: Global settings, current configuration
+
+**Effective Generation Settings**:
+The immutable generation settings used by a Generation Attempt, resolved from explicit Session configuration over the selected prompt preset over Compatibility Profile defaults.
+_Avoid_: Preset settings, provider defaults, current settings
+
+**Imported Session**:
+An isolated session created by replaying a portable capsule.
+_Avoid_: Merged session, restored original session
+
+**Branch**:
+One linear message history within a session.
+_Avoid_: Child session, alternate session
+
+**Greeting**:
+A card-authored assistant message that opens a branch before its first turn.
+_Avoid_: First turn, generated candidate
+
+**Greeting Selection**:
+The greeting currently active on a branch.
+_Avoid_: Greeting candidate, opening turn
+
+**Turn**:
+A recorded user action with zero or one selected candidate. Failed, cancelled, or incomplete turns may have no selection.
+_Avoid_: Message, generation
+
+**Generation Attempt**:
+One execution of prompt construction, plugin behavior, and provider generation for a turn.
+_Avoid_: Turn, request
+
+**Dry Run**:
+A pure preview of turn preparation that builds compatibility decisions and a provider request without creating a generation attempt, calling the provider, or committing state.
+_Avoid_: Failed attempt, replay, test turn
+
+**Candidate**:
+An assistant response variant for a turn whose content preserves the accepted raw text before presentation-only transformations. Its origin is generated, continued, manual, or explicitly accepted from partial output.
+_Avoid_: Swipe, rendered response, attempt, greeting
+
+**Candidate Rendering**:
+A rebuildable presentation of a Candidate produced by pinned transformation rules without changing the Candidate content.
+_Avoid_: Candidate, provider response, rewritten candidate
+
+**Selection**:
+The candidate currently active for a turn on a branch.
+_Avoid_: Latest response, current swipe
+
+**Turn Trace**:
+The authoritative history of commands and recorded outcomes that occurred during a session.
+_Avoid_: Log, session state
+
+**Session Projection**:
+A rebuildable view of a session derived from its turn trace.
+_Avoid_: Source of truth, mutable session state
+
+**Turn Capsule**:
+An immutable export derived from a turn-trace slice and the content required to explain or replay it.
+_Avoid_: Session save, live trace
+
+**Portable Capsule**:
+A self-contained turn capsule that embeds all non-redacted content required for replay.
+_Avoid_: Session archive, thin capsule
+
+**Thin Capsule**:
+A turn capsule that references content already present in the local store.
+_Avoid_: Portable capsule
+
+**Replay**:
+Reconstruction from recorded outcomes without calling providers, plugins, clocks, or other live effects.
+_Avoid_: Retry, rerun, regenerate
+
+**Rerun**:
+A new generation attempt that submits a previously recorded provider request again.
+_Avoid_: Replay, retry
+
+**Compatibility Profile**:
+A named, versioned set of observable behavior that STcli reproduces for an external system, initially `sillytavern-1.18-core`.
+_Avoid_: Compatibility mode, latest behavior, unqualified SillyTavern compatibility
+
+**Parity**:
+Agreement with the observable behavior required by a compatibility profile. Serialization details without semantic effect are excluded.
+_Avoid_: Byte identity, approximate compatibility
+
+**Compatibility Warning**:
+A non-blocking diagnostic for behavior that the selected Compatibility Profile permits but that is contradictory, risky, or likely accidental. It remains visible to CLI and future UI consumers without changing the behavior.
+_Avoid_: Validation error, automatic repair, blocked configuration
+
+**Preset Script Grant**:
+Explicit authorization for the exact digest of transformation scripts embedded in a prompt preset. Importing or selecting the preset does not grant execution.
+_Avoid_: Plugin grant, trusted preset, implicit authorization
+
+**Plugin**:
+A capability-limited, sandboxed Wasm module that contributes declarative behavior to the engine without directly mutating engine state. Sessions pin exact component digests.
+_Avoid_: Extension, add-on, native extension
+
+**Extension**:
+A SillyTavern JavaScript UI extension or server plugin. Extensions are out of scope for the MVP; the v1.0 compatibility bridge targets a sandboxed subset of documented SillyTavern extension APIs.
+_Avoid_: Plugin, add-on, Runtime Extension
+
+**Logical Deletion**:
+A tombstone event appended to the Turn Trace that hides a Turn, Candidate, or Branch from the Session Projection without physically removing it from the database.
+_Avoid_: Archive, physical deletion
+
+**Compaction**:
+A physical, session-wide garbage collection that permanently removes logically deleted entities from the database, provided they have no active descendants.
+_Avoid_: Purge, partial deletion
+
+**Hidden State**:
+A flag on an active Turn or Candidate indicating it should be skipped by the Prompt Builder during generation, while remaining visible in the Session Projection (and UI). Hidden entities survive compaction.
+_Avoid_: Deleted turn, tombstoned turn

@@ -1,0 +1,659 @@
+{
+  "schema": "stcli.fixture-suite/v2",
+  "profile": "sillytavern-1.18-core",
+  "external_sources": [
+    {
+      "name": "Nanobear v2.1 Chat Completion preset",
+      "provenance": "https://github.com/cavecomputing/nanobear/blob/a3aa566983e96f1f0f29718622390fca4baa1bd6/st/nanobear-v2.1-chat.json (CC BY 4.0)",
+      "revision": "a3aa566983e96f1f0f29718622390fca4baa1bd6",
+      "sha256": "d7a7dfcbc8349d6813171b1a1edbab40cc229e37550be90426ddd7cbfdd78c7f",
+      "path_environment": "STCLI_NANOBEAR_PRESET",
+      "repository_path": "compat/external/nanobear-v2.1-chat.json"
+    },
+    {
+      "name": "Nanobear v2.1 provider-request oracle",
+      "provenance": "Recorded provider requests for Nanobear v2.1 against the pinned SillyTavern 1.18 compatibility reference; provenance embedded in transcript",
+      "revision": "a3aa566983e96f1f0f29718622390fca4baa1bd6",
+      "sha256": "c71002ece73343ce2d4be1ad52a4ae5e4b255325822abafd4777b65d3829a863",
+      "path_environment": "STCLI_NANOBEAR_ORACLE",
+      "repository_path": "compat/external/nanobear-v2.1-oracle.json"
+    }
+  ],
+  "cases": [
+    {
+      "kind": "compatibility-outcome",
+      "name": "temperature maps to provider behavior",
+      "subject_kind": "preset-field",
+      "subject": "temperature",
+      "expected_outcome": "provider-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "system squashing maps to assembly behavior",
+      "subject_kind": "preset-field",
+      "subject": "squash_system_messages",
+      "expected_outcome": "assembly-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "extension data remains preserved metadata",
+      "subject_kind": "preset-field",
+      "subject": "extensions",
+      "expected_outcome": "preserved-metadata"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "function calling is hard unsupported",
+      "subject_kind": "preset-field",
+      "subject": "function_calling",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "assistant impersonation maps to hard unsupported",
+      "subject_kind": "preset-field",
+      "subject": "assistant_impersonation",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "assistant prefill maps to assembly behavior",
+      "subject_kind": "preset-field",
+      "subject": "assistant_prefill",
+      "expected_outcome": "assembly-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "bias preset selected maps to preserved metadata",
+      "subject_kind": "preset-field",
+      "subject": "bias_preset_selected",
+      "expected_outcome": "preserved-metadata"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "bypass status check maps to preserved metadata",
+      "subject_kind": "preset-field",
+      "subject": "bypass_status_check",
+      "expected_outcome": "preserved-metadata"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "chat completion source maps to preserved metadata",
+      "subject_kind": "preset-field",
+      "subject": "chat_completion_source",
+      "expected_outcome": "preserved-metadata"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "continue nudge prompt maps to assembly behavior",
+      "subject_kind": "preset-field",
+      "subject": "continue_nudge_prompt",
+      "expected_outcome": "assembly-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "continue postfix maps to documented fallback",
+      "subject_kind": "preset-field",
+      "subject": "continue_postfix",
+      "expected_outcome": "documented-fallback"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "continue prefill maps to assembly behavior",
+      "subject_kind": "preset-field",
+      "subject": "continue_prefill",
+      "expected_outcome": "assembly-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "custom prompt post processing maps to documented fallback",
+      "subject_kind": "preset-field",
+      "subject": "custom_prompt_post_processing",
+      "expected_outcome": "documented-fallback"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "enable web search maps to hard unsupported",
+      "subject_kind": "preset-field",
+      "subject": "enable_web_search",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "frequency penalty maps to provider behavior",
+      "subject_kind": "preset-field",
+      "subject": "frequency_penalty",
+      "expected_outcome": "provider-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "group nudge prompt maps to hard unsupported",
+      "subject_kind": "preset-field",
+      "subject": "group_nudge_prompt",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "image inlining maps to hard unsupported",
+      "subject_kind": "preset-field",
+      "subject": "image_inlining",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "impersonation prompt maps to hard unsupported",
+      "subject_kind": "preset-field",
+      "subject": "impersonation_prompt",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "inline image quality maps to preserved metadata",
+      "subject_kind": "preset-field",
+      "subject": "inline_image_quality",
+      "expected_outcome": "preserved-metadata"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "max context unlocked maps to assembly behavior",
+      "subject_kind": "preset-field",
+      "subject": "max_context_unlocked",
+      "expected_outcome": "assembly-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "media inlining maps to hard unsupported",
+      "subject_kind": "preset-field",
+      "subject": "media_inlining",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "min p maps to provider behavior",
+      "subject_kind": "preset-field",
+      "subject": "min_p",
+      "expected_outcome": "provider-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "n maps to provider behavior",
+      "subject_kind": "preset-field",
+      "subject": "n",
+      "expected_outcome": "provider-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "names behavior maps to assembly behavior",
+      "subject_kind": "preset-field",
+      "subject": "names_behavior",
+      "expected_outcome": "assembly-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "nemo merge note maps to preserved metadata",
+      "subject_kind": "preset-field",
+      "subject": "nemo_merge_note",
+      "expected_outcome": "preserved-metadata"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "new chat prompt maps to documented fallback",
+      "subject_kind": "preset-field",
+      "subject": "new_chat_prompt",
+      "expected_outcome": "documented-fallback"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "new example chat prompt maps to documented fallback",
+      "subject_kind": "preset-field",
+      "subject": "new_example_chat_prompt",
+      "expected_outcome": "documented-fallback"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "new group chat prompt maps to hard unsupported",
+      "subject_kind": "preset-field",
+      "subject": "new_group_chat_prompt",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "openai max context maps to assembly behavior",
+      "subject_kind": "preset-field",
+      "subject": "openai_max_context",
+      "expected_outcome": "assembly-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "openai max tokens maps to provider behavior",
+      "subject_kind": "preset-field",
+      "subject": "openai_max_tokens",
+      "expected_outcome": "provider-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "personality format maps to documented fallback",
+      "subject_kind": "preset-field",
+      "subject": "personality_format",
+      "expected_outcome": "documented-fallback"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "presence penalty maps to provider behavior",
+      "subject_kind": "preset-field",
+      "subject": "presence_penalty",
+      "expected_outcome": "provider-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "preset name maps to preserved metadata",
+      "subject_kind": "preset-field",
+      "subject": "preset_name",
+      "expected_outcome": "preserved-metadata"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "prompt order maps to assembly behavior",
+      "subject_kind": "preset-field",
+      "subject": "prompt_order",
+      "expected_outcome": "assembly-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "prompts maps to assembly behavior",
+      "subject_kind": "preset-field",
+      "subject": "prompts",
+      "expected_outcome": "assembly-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "reasoning effort maps to provider behavior",
+      "subject_kind": "preset-field",
+      "subject": "reasoning_effort",
+      "expected_outcome": "provider-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "repetition penalty maps to provider behavior",
+      "subject_kind": "preset-field",
+      "subject": "repetition_penalty",
+      "expected_outcome": "provider-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "request image aspect ratio maps to hard unsupported",
+      "subject_kind": "preset-field",
+      "subject": "request_image_aspect_ratio",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "request image resolution maps to hard unsupported",
+      "subject_kind": "preset-field",
+      "subject": "request_image_resolution",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "request images maps to hard unsupported",
+      "subject_kind": "preset-field",
+      "subject": "request_images",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "scenario format maps to documented fallback",
+      "subject_kind": "preset-field",
+      "subject": "scenario_format",
+      "expected_outcome": "documented-fallback"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "seed maps to provider behavior",
+      "subject_kind": "preset-field",
+      "subject": "seed",
+      "expected_outcome": "provider-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "send if empty maps to documented fallback",
+      "subject_kind": "preset-field",
+      "subject": "send_if_empty",
+      "expected_outcome": "documented-fallback"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "show thoughts maps to preserved metadata",
+      "subject_kind": "preset-field",
+      "subject": "show_thoughts",
+      "expected_outcome": "preserved-metadata"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "stream openai maps to preserved metadata",
+      "subject_kind": "preset-field",
+      "subject": "stream_openai",
+      "expected_outcome": "preserved-metadata"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "tool call recurse limit maps to hard unsupported",
+      "subject_kind": "preset-field",
+      "subject": "tool_call_recurse_limit",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "tool reasoning mode maps to hard unsupported",
+      "subject_kind": "preset-field",
+      "subject": "tool_reasoning_mode",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "top a maps to preserved metadata",
+      "subject_kind": "preset-field",
+      "subject": "top_a",
+      "expected_outcome": "preserved-metadata"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "top k maps to provider behavior",
+      "subject_kind": "preset-field",
+      "subject": "top_k",
+      "expected_outcome": "provider-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "top p maps to provider behavior",
+      "subject_kind": "preset-field",
+      "subject": "top_p",
+      "expected_outcome": "provider-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "use sysprompt maps to assembly behavior",
+      "subject_kind": "preset-field",
+      "subject": "use_sysprompt",
+      "expected_outcome": "assembly-behavior"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "verbosity maps to preserved metadata",
+      "subject_kind": "preset-field",
+      "subject": "verbosity",
+      "expected_outcome": "preserved-metadata"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "wi format maps to documented fallback",
+      "subject_kind": "preset-field",
+      "subject": "wi_format",
+      "expected_outcome": "documented-fallback"
+    },
+    {
+      "kind": "provider-request-parity",
+      "name": "normal provider request matches oracle",
+      "preset_source": "Nanobear v2.1 Chat Completion preset",
+      "oracle_source": "Nanobear v2.1 provider-request oracle",
+      "oracle_key": "normal",
+      "generation_type": "normal",
+      "character": "{\"spec\":\"chara_card_v2\",\"spec_version\":\"2.0\",\"data\":{\"name\":\"Aria\",\"description\":\"A cheerful tavern keeper with bright eyes and a warm smile. She runs the Dragon's Rest, a cozy establishment known for its hearty meals and lively atmosphere.\",\"personality\":\"Warm, witty, curious, protective of her regulars\",\"scenario\":\"A quiet evening at the Dragon's Rest tavern. Rain patters against the windows.\",\"first_mes\":\"*Aria looks up from polishing a glass as the door creaks open, her eyes brightening.* Welcome to the Dragon's Rest! Come in, come in \u2014 you look like you could use something warm.\",\"mes_example\":\"\",\"alternate_greetings\":[],\"extensions\":{}}}",
+      "persona_name": "Thomas",
+      "history": [
+        {
+          "user": "Hello there!",
+          "assistant": "*She sets down the glass with a gentle clink.* Well, hello there! Haven't seen your face before. New in town, or just passing through?"
+        },
+        {
+          "user": "What's on the menu tonight?",
+          "assistant": "*She leans forward with a conspiratorial grin.* Tonight's special is dragon stew \u2014 don't worry, no actual dragons were harmed. It's got a bit of a kick to it though. Interested?"
+        }
+      ],
+      "user_content": "I'd love to try the dragon stew!",
+      "tokenizer": "tiktoken:o200k_base",
+      "provider_model": "fixture-model",
+      "provider_stream": true,
+      "expected_message_count": 8,
+      "expected_settings": {
+        "frequency_penalty": 0,
+        "max_tokens": 2048,
+        "min_p": 0.05,
+        "presence_penalty": 0,
+        "reasoning_effort": "auto",
+        "repetition_penalty": 1.05,
+        "temperature": 0.8,
+        "top_k": 0,
+        "top_p": 0.95
+      },
+      "expected_warning_codes": [
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-documented-fallback",
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-documented-fallback",
+        "preset-field-documented-fallback"
+      ],
+      "expected_setvar_evaluations": 0,
+      "expected_state_mutations": 0,
+      "expected_effective_settings_hash": "sha256:daf1573153a9cfec43f5672f4f4d754a9935d33cbef2b28d7239cbaa5eb0536a",
+      "expected_warnings_hash": "sha256:17c2015a388f988a8adde8967d6a6e83c26c56db197056797edf457bf5be4888",
+      "expected_pruning": {
+        "context_limit": 32768,
+        "kept_tokens": 437,
+        "prompt_limit": 30720,
+        "pruned_tokens": 0,
+        "response_reserve": 2048
+      }
+    },
+    {
+      "kind": "provider-request-parity",
+      "name": "continue provider request matches oracle",
+      "preset_source": "Nanobear v2.1 Chat Completion preset",
+      "oracle_source": "Nanobear v2.1 provider-request oracle",
+      "oracle_key": "continue",
+      "generation_type": "continue",
+      "character": "{\"spec\":\"chara_card_v2\",\"spec_version\":\"2.0\",\"data\":{\"name\":\"Aria\",\"description\":\"A cheerful tavern keeper with bright eyes and a warm smile. She runs the Dragon's Rest, a cozy establishment known for its hearty meals and lively atmosphere.\",\"personality\":\"Warm, witty, curious, protective of her regulars\",\"scenario\":\"A quiet evening at the Dragon's Rest tavern. Rain patters against the windows.\",\"first_mes\":\"*Aria looks up from polishing a glass as the door creaks open, her eyes brightening.* Welcome to the Dragon's Rest! Come in, come in \u2014 you look like you could use something warm.\",\"mes_example\":\"\",\"alternate_greetings\":[],\"extensions\":{}}}",
+      "persona_name": "Thomas",
+      "history": [
+        {
+          "user": "Hello there!",
+          "assistant": "*She sets down the glass with a gentle clink.* Well, hello there! Haven't seen your face before. New in town, or just passing through?"
+        },
+        {
+          "user": "What's on the menu tonight?",
+          "assistant": "*She leans forward with a conspiratorial grin.* Tonight's special is dragon stew \u2014 don't worry, no actual dragons were harmed. It's got a bit of a kick to it though. Interested?"
+        }
+      ],
+      "user_content": "",
+      "tokenizer": "tiktoken:o200k_base",
+      "provider_model": "fixture-model",
+      "provider_stream": true,
+      "expected_message_count": 7,
+      "expected_settings": {
+        "frequency_penalty": 0,
+        "max_tokens": 2048,
+        "min_p": 0.05,
+        "presence_penalty": 0,
+        "reasoning_effort": "auto",
+        "repetition_penalty": 1.05,
+        "temperature": 0.8,
+        "top_k": 0,
+        "top_p": 0.95
+      },
+      "expected_warning_codes": [
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-documented-fallback",
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-documented-fallback",
+        "preset-field-documented-fallback"
+      ],
+      "expected_setvar_evaluations": 0,
+      "expected_state_mutations": 0,
+      "expected_effective_settings_hash": "sha256:daf1573153a9cfec43f5672f4f4d754a9935d33cbef2b28d7239cbaa5eb0536a",
+      "expected_warnings_hash": "sha256:17c2015a388f988a8adde8967d6a6e83c26c56db197056797edf457bf5be4888",
+      "expected_pruning": {
+        "context_limit": 32768,
+        "kept_tokens": 440,
+        "prompt_limit": 30720,
+        "pruned_tokens": 0,
+        "response_reserve": 2048
+      }
+    },
+    {
+      "kind": "provider-request-parity",
+      "name": "regenerate provider request matches oracle",
+      "preset_source": "Nanobear v2.1 Chat Completion preset",
+      "oracle_source": "Nanobear v2.1 provider-request oracle",
+      "oracle_key": "regenerate",
+      "generation_type": "regenerate",
+      "character": "{\"spec\":\"chara_card_v2\",\"spec_version\":\"2.0\",\"data\":{\"name\":\"Aria\",\"description\":\"A cheerful tavern keeper with bright eyes and a warm smile. She runs the Dragon's Rest, a cozy establishment known for its hearty meals and lively atmosphere.\",\"personality\":\"Warm, witty, curious, protective of her regulars\",\"scenario\":\"A quiet evening at the Dragon's Rest tavern. Rain patters against the windows.\",\"first_mes\":\"*Aria looks up from polishing a glass as the door creaks open, her eyes brightening.* Welcome to the Dragon's Rest! Come in, come in \u2014 you look like you could use something warm.\",\"mes_example\":\"\",\"alternate_greetings\":[],\"extensions\":{}}}",
+      "persona_name": "Thomas",
+      "history": [
+        {
+          "user": "Hello there!",
+          "assistant": "*She sets down the glass with a gentle clink.* Well, hello there! Haven't seen your face before. New in town, or just passing through?"
+        },
+        {
+          "user": "What's on the menu tonight?",
+          "assistant": "*She leans forward with a conspiratorial grin.* Tonight's special is dragon stew \u2014 don't worry, no actual dragons were harmed. It's got a bit of a kick to it though. Interested?"
+        }
+      ],
+      "user_content": "What's on the menu tonight?",
+      "tokenizer": "tiktoken:o200k_base",
+      "provider_model": "fixture-model",
+      "provider_stream": true,
+      "expected_message_count": 6,
+      "expected_settings": {
+        "frequency_penalty": 0,
+        "max_tokens": 2048,
+        "min_p": 0.05,
+        "presence_penalty": 0,
+        "reasoning_effort": "auto",
+        "repetition_penalty": 1.05,
+        "temperature": 0.8,
+        "top_k": 0,
+        "top_p": 0.95
+      },
+      "expected_warning_codes": [
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-documented-fallback",
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-documented-fallback",
+        "preset-field-documented-fallback"
+      ],
+      "expected_setvar_evaluations": 0,
+      "expected_state_mutations": 0,
+      "expected_effective_settings_hash": "sha256:daf1573153a9cfec43f5672f4f4d754a9935d33cbef2b28d7239cbaa5eb0536a",
+      "expected_warnings_hash": "sha256:17c2015a388f988a8adde8967d6a6e83c26c56db197056797edf457bf5be4888",
+      "expected_pruning": {
+        "context_limit": 32768,
+        "kept_tokens": 389,
+        "prompt_limit": 30720,
+        "pruned_tokens": 0,
+        "response_reserve": 2048
+      }
+    },
+    {
+      "kind": "provider-request-parity",
+      "name": "swipe provider request matches oracle",
+      "preset_source": "Nanobear v2.1 Chat Completion preset",
+      "oracle_source": "Nanobear v2.1 provider-request oracle",
+      "oracle_key": "swipe",
+      "generation_type": "swipe",
+      "character": "{\"spec\":\"chara_card_v2\",\"spec_version\":\"2.0\",\"data\":{\"name\":\"Aria\",\"description\":\"A cheerful tavern keeper with bright eyes and a warm smile. She runs the Dragon's Rest, a cozy establishment known for its hearty meals and lively atmosphere.\",\"personality\":\"Warm, witty, curious, protective of her regulars\",\"scenario\":\"A quiet evening at the Dragon's Rest tavern. Rain patters against the windows.\",\"first_mes\":\"*Aria looks up from polishing a glass as the door creaks open, her eyes brightening.* Welcome to the Dragon's Rest! Come in, come in \u2014 you look like you could use something warm.\",\"mes_example\":\"\",\"alternate_greetings\":[],\"extensions\":{}}}",
+      "persona_name": "Thomas",
+      "history": [
+        {
+          "user": "Hello there!",
+          "assistant": "*She sets down the glass with a gentle clink.* Well, hello there! Haven't seen your face before. New in town, or just passing through?"
+        },
+        {
+          "user": "What's on the menu tonight?",
+          "assistant": "*She leans forward with a conspiratorial grin.* Tonight's special is dragon stew \u2014 don't worry, no actual dragons were harmed. It's got a bit of a kick to it though. Interested?"
+        }
+      ],
+      "user_content": "What's on the menu tonight?",
+      "tokenizer": "tiktoken:o200k_base",
+      "provider_model": "fixture-model",
+      "provider_stream": true,
+      "expected_message_count": 6,
+      "expected_settings": {
+        "frequency_penalty": 0,
+        "max_tokens": 2048,
+        "min_p": 0.05,
+        "presence_penalty": 0,
+        "reasoning_effort": "auto",
+        "repetition_penalty": 1.05,
+        "temperature": 0.8,
+        "top_k": 0,
+        "top_p": 0.95
+      },
+      "expected_warning_codes": [
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-documented-fallback",
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-hard-unsupported",
+        "preset-field-documented-fallback",
+        "preset-field-documented-fallback",
+        "preset-field-documented-fallback"
+      ],
+      "expected_setvar_evaluations": 0,
+      "expected_state_mutations": 0,
+      "expected_effective_settings_hash": "sha256:daf1573153a9cfec43f5672f4f4d754a9935d33cbef2b28d7239cbaa5eb0536a",
+      "expected_warnings_hash": "sha256:17c2015a388f988a8adde8967d6a6e83c26c56db197056797edf457bf5be4888",
+      "expected_pruning": {
+        "context_limit": 32768,
+        "kept_tokens": 389,
+        "prompt_limit": 30720,
+        "pruned_tokens": 0,
+        "response_reserve": 2048
+      }
+    }
+  ]
+}

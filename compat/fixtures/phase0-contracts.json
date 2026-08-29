@@ -1,0 +1,82 @@
+{
+  "schema": "stcli.fixture-suite/v2",
+  "profile": "sillytavern-1.18-core",
+  "cases": [
+    {
+      "kind": "canonical-json",
+      "name": "RFC 8785 orders object members",
+      "domain": "stcli:test-json:v1",
+      "input": {
+        "z": 1,
+        "a": 2
+      },
+      "expected_canonical": "{\"a\":2,\"z\":1}",
+      "expected_hash": "sha256:3bd9f80ce185be39f29920cdb421d590c2cbcb316e417e3594beee9c4fc256af"
+    },
+    {
+      "kind": "canonical-json",
+      "name": "provider request hash is stable",
+      "domain": "stcli:provider-request:v1",
+      "input": {
+        "model": "fixture-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hello"
+          }
+        ],
+        "stream": false
+      },
+      "expected_canonical": "{\"messages\":[{\"content\":\"hello\",\"role\":\"user\"}],\"model\":\"fixture-model\",\"stream\":false}",
+      "expected_hash": "sha256:4f0af39530ee7b5895df003d49a19320cdb03656a208261f835f607fc9d3ab3d"
+    },
+    {
+      "kind": "artifact-revision",
+      "name": "artifact revision includes exact source bytes",
+      "artifact_kind": "character-card",
+      "source_format": "json",
+      "source": "{\"spec\":\"chara_card_v2\",\"spec_version\":\"2.0\",\"data\":{\"name\":\"Alice\",\"extensions\":{\"example\":{\"flag\":true}}}}",
+      "expected_hash": "sha256:7a210d7ae530543a3b8273411b16a41307c489bed71d3880433356b9887b3acd"
+    },
+    {
+      "kind": "canonical-json",
+      "name": "session projection hash is stable",
+      "domain": "stcli:session-projection:v1",
+      "input": {
+        "session": "01H00000000000000000000000",
+        "selected_candidate": null,
+        "turns": []
+      },
+      "expected_canonical": "{\"selected_candidate\":null,\"session\":\"01H00000000000000000000000\",\"turns\":[]}",
+      "expected_hash": "sha256:dfa991b65e371aa7f6aad444eef74204c689b92cb0f6ad549094285a1be07bc5"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "listed core macro is exact",
+      "subject_kind": "macro",
+      "subject": "char",
+      "expected_outcome": "exact"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "unknown JSON member is preserved metadata",
+      "subject_kind": "metadata",
+      "subject": "unknown-json-member",
+      "expected_outcome": "preserved-metadata"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "unknown macro uses preserve-literal fallback",
+      "subject_kind": "macro",
+      "subject": "platformSpecificMacro",
+      "expected_outcome": "documented-fallback"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "name": "group chat is hard unsupported",
+      "subject_kind": "feature",
+      "subject": "group-chat",
+      "expected_outcome": "hard-unsupported"
+    }
+  ]
+}

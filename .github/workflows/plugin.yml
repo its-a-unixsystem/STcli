@@ -1,0 +1,85 @@
+name: Plugin verification
+
+on:
+  push:
+    paths:
+      - "plugins/**"
+      - "wit/**"
+      - ".github/workflows/plugin.yml"
+  pull_request:
+    paths:
+      - "plugins/**"
+      - "wit/**"
+      - ".github/workflows/plugin.yml"
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  proof-component:
+    name: Rebuild and verify proof Plugin
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.89.0 --profile minimal
+          rustup target add --toolchain 1.89.0 wasm32-unknown-unknown
+
+      - name: Install pinned wasm-tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-tools@1.236.1
+
+      - name: Restore Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            plugins/proof/target
+          key: cargo-plugin-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('plugins/proof/Cargo.lock') }}
+          restore-keys: |
+            cargo-plugin-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}-
+
+      - name: Rebuild the proof component from source
+        working-directory: plugins/proof
+        run: |
+          cargo build --release --target wasm32-unknown-unknown --locked
+          wasm-tools component new \
+            target/wasm32-unknown-unknown/release/stcli_proof_plugin.wasm \
+            -o rebuilt-component.wasm
+
+      - name: Compare the rebuilt digest against the checked-in component
+        working-directory: plugins/proof
+        run: |
+          expected="$(sha256sum component.wasm | cut -d ' ' -f 1)"
+          actual="$(sha256sum rebuilt-component.wasm | cut -d ' ' -f 1)"
+          manifest="$(python3 -c "import json,sys; print(json.load(open('manifest.json'))['component_sha256'].removeprefix('sha256:'))")"
+          echo "checked-in component.wasm: $expected"
+          echo "rebuilt component:         $actual"
+          echo "manifest component_sha256: $manifest"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Rebuilt proof component does not match the checked-in component.wasm digest." >&2
+            exit 1
+          fi
+          if [ "$manifest" != "$expected" ]; then
+            echo "::error::manifest.json component_sha256 does not match component.wasm." >&2
+            exit 1
+          fi

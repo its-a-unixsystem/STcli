@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>STcli domain model · nested containment</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;
+      --color-ink:     #2d3142;
+      --color-muted:   #4f5d75;
+      --color-accent:  #eb6c36;
+      --font-sans:     'Geist', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+    .frame { max-width: 1000px; width: 100%; }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+    svg { width: 100%; min-width: 900px; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Nested containment · Domain Model</p>
+    <h1>STcli session containment</h1>
+
+    <svg viewBox="0 0 900 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="nested-dm-title nested-dm-desc">
+      <title id="nested-dm-title">STcli session containment</title>
+      <desc id="nested-dm-desc">Nested diagram showing Session containing Branches containing Turns, with each Turn owning Generation Attempts and Candidates.</desc>
+      <defs>
+        <pattern id="dots-nested" width="22" height="22" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="0.9" fill="rgba(45,49,66,0.10)"/>
+        </pattern>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+      <rect width="100%" height="100%" fill="url(#dots-nested)" opacity="0.55"/>
+
+      <!-- Level 1: Session (outermost) -->
+      <rect x="40" y="60" width="820" height="440" rx="8" fill="rgba(45,49,66,0.015)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <!-- Level 2: Branch -->
+      <rect x="80" y="120" width="740" height="340" rx="8" fill="rgba(45,49,66,0.025)" stroke="rgba(45,49,66,0.45)" stroke-width="1"/>
+      <!-- Level 3: Turn (innermost, focal) -->
+      <rect x="120" y="200" width="660" height="220" rx="8" fill="rgba(235,108,54,0.06)" stroke="#eb6c36" stroke-width="1"/>
+
+      <!-- Level labels on paper-colored masks -->
+      <rect x="56" y="52" width="300" height="16" fill="#f5f5f5"/>
+      <text x="64" y="64" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">SESSION · contains a tree of Branches</text>
+
+      <rect x="96" y="112" width="300" height="16" fill="#f5f5f5"/>
+      <text x="104" y="124" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">BRANCH · opens with one Greeting Selection</text>
+
+      <rect x="136" y="192" width="280" height="16" fill="#f5f5f5"/>
+      <text x="144" y="204" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em" font-weight="600">TURN · owns Attempts and Candidates</text>
+
+      <!-- Content inside Turn ring -->
+      <!-- Generation Attempt -->
+      <text x="180" y="248" fill="#2d3142" font-size="13" font-weight="600" font-family="'Geist', sans-serif">Generation Attempt</text>
+      <text x="320" y="248" fill="#4f5d75" font-size="10" font-family="'Geist Mono', monospace">[0..*]</text>
+
+      <!-- Candidate -->
+      <text x="180" y="284" fill="#2d3142" font-size="13" font-weight="600" font-family="'Geist', sans-serif">Candidate</text>
+      <text x="260" y="284" fill="#4f5d75" font-size="10" font-family="'Geist Mono', monospace">[0..*]</text>
+      <text x="180" y="304" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace">origin: generated | continued | manual | partial</text>
+
+      <!-- Selection -->
+      <text x="180" y="340" fill="#2d3142" font-size="13" font-weight="600" font-family="'Geist', sans-serif">Selection</text>
+      <text x="248" y="340" fill="#4f5d75" font-size="10" font-family="'Geist Mono', monospace">[0..1] → Candidate</text>
+
+      <!-- Hairline separator inside Turn -->
+      <line x1="180" y1="262" x2="720" y2="262" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <line x1="180" y1="318" x2="720" y2="318" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+
+      <!-- Annotation 1: pinning relationship -->
+      <text x="844" y="180" fill="#2d3142" font-size="14" font-style="italic" font-family="'Instrument Serif', serif" text-anchor="end">each Attempt pins one</text>
+      <text x="844" y="196" fill="#2d3142" font-size="14" font-style="italic" font-family="'Instrument Serif', serif" text-anchor="end">Session Configuration Revision</text>
+      <path d="M 700,188 Q 500,220 360,248" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="1" stroke-dasharray="4,3"/>
+      <circle cx="360" cy="248" r="2" fill="#2d3142"/>
+
+      <!-- Annotation 2: derivation -->
+      <text x="40" y="540" fill="#4f5d75" font-size="14" font-style="italic" font-family="'Instrument Serif', serif">Turn Trace is authoritative · Projection and Capsule are derived from it</text>
+    </svg>
+  </div>
+</body>
+</html>

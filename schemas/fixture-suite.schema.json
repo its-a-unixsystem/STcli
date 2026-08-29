@@ -1,0 +1,322 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stcli.invalid/schemas/fixture-suite.schema.json",
+  "title": "STcli Fixture Suite",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "profile", "cases"],
+  "properties": {
+    "schema": {
+      "enum": ["stcli.fixture-suite/v1", "stcli.fixture-suite/v2"]
+    },
+    "profile": { "type": "string", "minLength": 1 },
+    "external_sources": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/externalSource" }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "name", "domain", "input", "expected_canonical", "expected_hash"],
+            "properties": {
+              "kind": { "const": "canonical-json" },
+              "name": { "type": "string", "minLength": 1 },
+              "id": { "$ref": "#/$defs/caseId" },
+              "domain": { "type": "string", "minLength": 1 },
+              "input": true,
+              "expected_canonical": { "type": "string" },
+              "expected_hash": { "$ref": "#/$defs/contentHash" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "name", "artifact_kind", "source_format", "source", "expected_hash"],
+            "properties": {
+              "kind": { "const": "artifact-revision" },
+              "name": { "type": "string", "minLength": 1 },
+              "id": { "$ref": "#/$defs/caseId" },
+              "artifact_kind": { "type": "string", "minLength": 1 },
+              "source_format": { "type": "string", "minLength": 1 },
+              "source": { "type": "string" },
+              "expected_hash": { "$ref": "#/$defs/contentHash" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "name", "subject_kind", "subject", "expected_outcome"],
+            "properties": {
+              "kind": { "const": "compatibility-outcome" },
+              "name": { "type": "string", "minLength": 1 },
+              "id": { "$ref": "#/$defs/caseId" },
+              "subject_kind": {
+                "enum": ["format", "generation", "prompt-path", "macro", "metadata", "preset-field", "feature"]
+              },
+              "subject": { "type": "string", "minLength": 1 },
+              "expected_outcome": {
+                "enum": ["provider-behavior", "assembly-behavior", "exact", "preserved-metadata", "documented-fallback", "hard-unsupported"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind", "name", "input", "context", "initial_local", "initial_global",
+              "expected_text", "expected_local", "expected_global", "expected_warnings"
+            ],
+            "properties": {
+              "kind": { "const": "macro-render" },
+              "name": { "type": "string", "minLength": 1 },
+              "id": { "$ref": "#/$defs/caseId" },
+              "input": { "type": "string" },
+              "context": { "$ref": "#/$defs/stringMap" },
+              "initial_local": { "$ref": "#/$defs/stringMap" },
+              "initial_global": { "$ref": "#/$defs/stringMap" },
+              "plugins": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "outlets": { "$ref": "#/$defs/stringMap" },
+              "expected_text": { "type": "string" },
+              "expected_local": { "$ref": "#/$defs/stringMap" },
+              "expected_global": { "$ref": "#/$defs/stringMap" },
+              "expected_warnings": { "type": "integer", "minimum": 0 },
+              "expected_error": { "type": "string", "minLength": 1 }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind", "name", "source_revision", "entries", "messages", "tokenizer",
+              "settings", "expected_activated", "expected_outcomes"
+            ],
+            "properties": {
+              "kind": { "const": "lore-evaluate" },
+              "name": { "type": "string", "minLength": 1 },
+              "id": { "$ref": "#/$defs/caseId" },
+              "source_revision": { "$ref": "#/$defs/contentHash" },
+              "entries": { "type": "object" },
+              "messages": { "type": "array", "items": { "type": "string" } },
+              "tokenizer": {
+                "enum": ["tiktoken:cl100k_base", "tiktoken:o200k_base"]
+              },
+              "settings": { "$ref": "#/$defs/loreSettings" },
+              "expected_activated": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "expected_outcomes": {
+                "type": "object",
+                "additionalProperties": { "$ref": "#/$defs/loreOutcome" }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "name", "scripts", "placement", "depth", "input", "expected_text"],
+            "properties": {
+              "kind": { "const": "regex-script-apply" },
+              "name": { "type": "string", "minLength": 1 },
+              "id": { "$ref": "#/$defs/caseId" },
+              "scripts": {
+                "type": "array",
+                "items": { "type": "object" }
+              },
+              "placement": { "type": "integer", "minimum": 0 },
+              "depth": { "type": "integer" },
+              "input": { "type": "string" },
+              "expected_text": { "type": "string" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind", "name", "preset_source", "oracle_source", "oracle_key",
+              "generation_type", "character", "persona_name", "history", "user_content",
+              "tokenizer", "provider_model", "provider_stream", "expected_message_count",
+              "expected_settings", "expected_warning_codes",
+              "expected_effective_settings_hash", "expected_warnings_hash", "expected_pruning",
+              "expected_setvar_evaluations", "expected_state_mutations"
+            ],
+            "properties": {
+              "kind": { "const": "provider-request-parity" },
+              "name": { "type": "string", "minLength": 1 },
+              "id": { "$ref": "#/$defs/caseId" },
+              "preset_source": { "type": "string", "minLength": 1 },
+              "oracle_source": { "type": "string", "minLength": 1 },
+              "oracle_key": { "type": "string", "minLength": 1 },
+              "generation_type": { "enum": ["normal", "continue", "regenerate", "swipe"] },
+              "character": { "type": "string", "minLength": 1 },
+              "persona_name": { "type": "string", "minLength": 1 },
+              "history": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["user", "assistant"],
+                  "properties": {
+                    "user": { "type": "string" },
+                    "assistant": { "type": "string" }
+                  }
+                }
+              },
+              "user_content": { "type": "string" },
+              "tokenizer": { "enum": ["tiktoken:cl100k_base", "tiktoken:o200k_base"] },
+              "provider_model": { "type": "string", "minLength": 1 },
+              "provider_stream": { "type": "boolean" },
+              "expected_message_count": { "type": "integer", "minimum": 0 },
+              "expected_settings": { "type": "object" },
+              "expected_warning_codes": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "expected_effective_settings_hash": { "$ref": "#/$defs/contentHash" },
+              "expected_warnings_hash": { "$ref": "#/$defs/contentHash" },
+              "expected_pruning": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["context_limit", "response_reserve", "prompt_limit", "kept_tokens", "pruned_tokens"],
+                "properties": {
+                  "context_limit": { "type": "integer", "minimum": 0 },
+                  "response_reserve": { "type": "integer", "minimum": 0 },
+                  "prompt_limit": { "type": "integer", "minimum": 0 },
+                  "kept_tokens": { "type": "integer", "minimum": 0 },
+                  "pruned_tokens": { "type": "integer", "minimum": 0 }
+                }
+              },
+              "expected_setvar_evaluations": { "type": "integer", "minimum": 0 },
+              "expected_state_mutations": { "type": "integer", "minimum": 0 }
+            }
+          }
+        ]
+      }
+    },
+    "macro_groups": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/macroGroup" }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schema": { "const": "stcli.fixture-suite/v1" } },
+        "required": ["schema"]
+      },
+      "then": {
+        "not": { "required": ["macro_groups"] }
+      }
+    }
+  ],
+  "$defs": {
+    "externalSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "provenance", "sha256", "path_environment"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "provenance": { "type": "string", "minLength": 1 },
+        "revision": { "type": ["string", "null"], "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "path_environment": { "type": "string", "minLength": 1 },
+        "repository_path": { "type": "string", "minLength": 1 }
+      }
+    },
+    "contentHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "caseId": {
+      "type": "string",
+      "pattern": "^[a-z]+\\..+\\.[^.]+$",
+      "minLength": 1
+    },
+    "macroGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["defaults", "cases"],
+      "properties": {
+        "defaults": { "$ref": "#/$defs/macroGroupDefaults" },
+        "cases": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/macroGroupCase" }
+        }
+      }
+    },
+    "macroGroupDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "context": { "$ref": "#/$defs/stringMap" },
+        "initial_local": { "$ref": "#/$defs/stringMap" },
+        "initial_global": { "$ref": "#/$defs/stringMap" },
+        "plugins": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "outlets": { "$ref": "#/$defs/stringMap" },
+        "expected_warnings": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "macroGroupCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "input", "expected_text"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^macro\\..+\\.[^.]+$",
+          "minLength": 1
+        },
+        "input": { "type": "string" },
+        "expected_text": { "type": "string" },
+        "expected_local": { "$ref": "#/$defs/stringMap" },
+        "expected_global": { "$ref": "#/$defs/stringMap" },
+        "expected_warnings": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "loreOutcome": {
+      "enum": [
+        "disabled", "trigger-filtered", "delay-suppressed", "cooldown-suppressed",
+        "recursion-suppressed", "no-primary-match", "secondary-rejected",
+        "group-rejected", "probability-rejected", "budget-rejected", "activated"
+      ]
+    },
+    "loreSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scan_depth", "recursive", "max_recursion_steps", "budget_tokens",
+        "case_sensitive", "match_whole_words", "use_group_scoring",
+        "generation_type", "rng_seed", "message_count", "prior_activations"
+      ],
+      "properties": {
+        "scan_depth": { "type": "integer", "minimum": 0 },
+        "recursive": { "type": "boolean" },
+        "max_recursion_steps": { "type": "integer", "minimum": 0 },
+        "budget_tokens": { "type": "integer", "minimum": 0 },
+        "case_sensitive": { "type": "boolean" },
+        "match_whole_words": { "type": "boolean" },
+        "use_group_scoring": { "type": "boolean" },
+        "generation_type": { "type": "string" },
+        "rng_seed": { "type": "integer", "minimum": 0 },
+        "message_count": { "type": "integer", "minimum": 0 },
+        "prior_activations": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stcli.invalid/schemas/plugin-manifest.schema.json",
+  "title": "STcli Plugin Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "version",
+    "engine",
+    "component",
+    "component_sha256",
+    "dependencies",
+    "license",
+    "subscriptions",
+    "prompt_slots",
+    "commands",
+    "macros",
+    "settings_schema",
+    "requested_capabilities",
+    "before",
+    "after"
+  ],
+  "properties": {
+    "schema": { "const": "stcli.plugin-manifest/v1" },
+    "id": { "type": "string", "pattern": "^[a-z0-9-]+(?:\\.[a-z0-9-]+)*$" },
+    "version": { "type": "string", "minLength": 1 },
+    "engine": { "type": "string", "minLength": 1 },
+    "component": { "type": "string", "minLength": 1 },
+    "component_sha256": { "$ref": "#/$defs/hash" },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "version"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "version": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "license": { "type": "string", "minLength": 1 },
+    "subscriptions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["pre-lore", "pre-prompt", "pre-request", "post-commit"] }
+    },
+    "prompt_slots": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "before-character-definitions",
+          "after-character-definitions",
+          "before-example-messages",
+          "after-example-messages",
+          "named-lore-outlet",
+          "in-chat",
+          "before-history",
+          "after-history",
+          "post-history-instructions"
+        ]
+      }
+    },
+    "commands": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+    "macros": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+    "settings_schema": { "type": ["string", "null"] },
+    "requested_capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "observe-lifecycle",
+          "register-macro",
+          "register-command",
+          "contribute-prompt",
+          "read-session",
+          "write-own-state",
+          "abort-pre-request"
+        ]
+      }
+    },
+    "before": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+    "after": { "type": "array", "uniqueItems": true, "items": { "type": "string" } }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

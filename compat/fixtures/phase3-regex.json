@@ -1,0 +1,420 @@
+{
+  "schema": "stcli.fixture-suite/v2",
+  "profile": "sillytavern-1.18-core",
+  "cases": [
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.placement.user-input",
+      "name": "user input placement applies",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "strip-brackets",
+          "findRegex": "/\\[([^\\]]+)\\]/g",
+          "replaceString": "$1",
+          "placement": [1]
+        }
+      ],
+      "placement": 1,
+      "depth": 0,
+      "input": "hello [world] test",
+      "expected_text": "hello world test"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.placement.ai-output",
+      "name": "ai output placement applies",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "bold-to-plain",
+          "findRegex": "/\\*\\*([^*]+)\\*\\*/g",
+          "replaceString": "$1",
+          "placement": [2]
+        }
+      ],
+      "placement": 2,
+      "depth": 0,
+      "input": "**bold** text",
+      "expected_text": "bold text"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.placement.slash-command",
+      "name": "slash command placement applies",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "trim-slash",
+          "findRegex": "/^\\//",
+          "replaceString": "",
+          "placement": [3]
+        }
+      ],
+      "placement": 3,
+      "depth": 0,
+      "input": "/command args",
+      "expected_text": "command args"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.placement.world-info",
+      "name": "world info placement applies",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "strip-tags",
+          "findRegex": "/<[^>]+>/g",
+          "replaceString": "",
+          "placement": [5]
+        }
+      ],
+      "placement": 5,
+      "depth": 0,
+      "input": "<tag>content</tag>",
+      "expected_text": "content"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.placement.reasoning",
+      "name": "reasoning placement applies",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "strip-think",
+          "findRegex": "/<think>([\\s\\S]*?)<\\/think>/g",
+          "replaceString": "",
+          "placement": [6]
+        }
+      ],
+      "placement": 6,
+      "depth": 0,
+      "input": "<think>internal</think>answer",
+      "expected_text": "answer"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.placement.filtering",
+      "name": "script only applies at its declared placement",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "user-only",
+          "findRegex": "/foo/g",
+          "replaceString": "bar",
+          "placement": [1]
+        }
+      ],
+      "placement": 2,
+      "depth": 0,
+      "input": "foo baz",
+      "expected_text": "foo baz"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.placement.multi",
+      "name": "script with multiple placements applies at each",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "multi-placement",
+          "findRegex": "/foo/g",
+          "replaceString": "bar",
+          "placement": [1, 2]
+        }
+      ],
+      "placement": 2,
+      "depth": 0,
+      "input": "foo baz",
+      "expected_text": "bar baz"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.depth.min-depth",
+      "name": "min depth filter skips shallow messages",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "deep-only",
+          "findRegex": "/foo/g",
+          "replaceString": "bar",
+          "placement": [2],
+          "minDepth": 2
+        }
+      ],
+      "placement": 2,
+      "depth": 0,
+      "input": "foo baz",
+      "expected_text": "foo baz"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.depth.max-depth",
+      "name": "max depth filter skips deep messages",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "shallow-only",
+          "findRegex": "/foo/g",
+          "replaceString": "bar",
+          "placement": [2],
+          "maxDepth": 1
+        }
+      ],
+      "placement": 2,
+      "depth": 5,
+      "input": "foo baz",
+      "expected_text": "foo baz"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.depth.in-range",
+      "name": "depth within min and max applies",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "in-range",
+          "findRegex": "/foo/g",
+          "replaceString": "bar",
+          "placement": [2],
+          "minDepth": 1,
+          "maxDepth": 3
+        }
+      ],
+      "placement": 2,
+      "depth": 2,
+      "input": "foo baz",
+      "expected_text": "bar baz"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.flags.case-insensitive",
+      "name": "case insensitive flag matches",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "ci-replace",
+          "findRegex": "/hello/gi",
+          "replaceString": "hi",
+          "placement": [1]
+        }
+      ],
+      "placement": 1,
+      "depth": 0,
+      "input": "Hello HELLO hello",
+      "expected_text": "hi hi hi"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.replacement.match-macro",
+      "name": "double-brace match resolves to whole match",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "wrap",
+          "findRegex": "/\\w+/g",
+          "replaceString": "[{{match}}]",
+          "placement": [1]
+        }
+      ],
+      "placement": 1,
+      "depth": 0,
+      "input": "hello world",
+      "expected_text": "[hello] [world]"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.replacement.capture-groups",
+      "name": "dollar-zero through dollar-n resolve to capture groups",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "reorder",
+          "findRegex": "/(\\w+) (\\w+)/g",
+          "replaceString": "$2 $1",
+          "placement": [1]
+        }
+      ],
+      "placement": 1,
+      "depth": 0,
+      "input": "hello world",
+      "expected_text": "world hello"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.replacement.trim-strings",
+      "name": "trim strings strip captured groups",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "trim-capture",
+          "findRegex": "/(\\[.+?\\])/g",
+          "replaceString": "$1",
+          "trimStrings": ["[", "]"],
+          "placement": [1]
+        }
+      ],
+      "placement": 1,
+      "depth": 0,
+      "input": "[hello] [world]",
+      "expected_text": "hello world"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.chaining.multiple-scripts",
+      "name": "scripts chain output to input",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "first",
+          "findRegex": "/foo/g",
+          "replaceString": "bar",
+          "placement": [1]
+        },
+        {
+          "id": "s2",
+          "scriptName": "second",
+          "findRegex": "/bar/g",
+          "replaceString": "baz",
+          "placement": [1]
+        }
+      ],
+      "placement": 1,
+      "depth": 0,
+      "input": "foo foo",
+      "expected_text": "baz baz"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.disabled.skipped",
+      "name": "disabled scripts are skipped",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "disabled",
+          "findRegex": "/foo/g",
+          "replaceString": "bar",
+          "placement": [1],
+          "disabled": true
+        }
+      ],
+      "placement": 1,
+      "depth": 0,
+      "input": "foo baz",
+      "expected_text": "foo baz"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.markdown-only.skipped",
+      "name": "markdown only scripts are skipped in prompt path",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "md-only",
+          "findRegex": "/foo/g",
+          "replaceString": "bar",
+          "placement": [1],
+          "markdownOnly": true
+        }
+      ],
+      "placement": 1,
+      "depth": 0,
+      "input": "foo baz",
+      "expected_text": "foo baz"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.substitute-mode.none",
+      "name": "substitute mode none treats pattern as literal regex",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "no-substitute",
+          "findRegex": "/\\d+/g",
+          "replaceString": "NUM",
+          "placement": [1],
+          "substituteRegex": 0
+        }
+      ],
+      "placement": 1,
+      "depth": 0,
+      "input": "abc 123 def",
+      "expected_text": "abc NUM def"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.no-match.unchanged",
+      "name": "no match leaves text unchanged",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "no-match",
+          "findRegex": "/xyz/g",
+          "replaceString": "found",
+          "placement": [1]
+        }
+      ],
+      "placement": 1,
+      "depth": 0,
+      "input": "hello world",
+      "expected_text": "hello world"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.substitute-mode.raw",
+      "name": "substitute mode raw parses and applies without macro expansion",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "raw-mode",
+          "findRegex": "/\\d+/g",
+          "replaceString": "NUM",
+          "placement": [1],
+          "substituteRegex": 1
+        }
+      ],
+      "placement": 1,
+      "depth": 0,
+      "input": "abc 123 def",
+      "expected_text": "abc NUM def"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.substitute-mode.escaped",
+      "name": "substitute mode escaped parses and applies without macro expansion",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "escaped-mode",
+          "findRegex": "/\\d+/g",
+          "replaceString": "NUM",
+          "placement": [1],
+          "substituteRegex": 2
+        }
+      ],
+      "placement": 1,
+      "depth": 0,
+      "input": "abc 123 def",
+      "expected_text": "abc NUM def"
+    },
+    {
+      "kind": "regex-script-apply",
+      "id": "regex.substitute-mode.raw-macro-literal",
+      "name": "substitute mode raw treats macro braces in pattern as literal regex",
+      "scripts": [
+        {
+          "id": "s1",
+          "scriptName": "raw-macro-literal",
+          "findRegex": "/\\{\\{char\\}\\}/g",
+          "replaceString": "replaced",
+          "placement": [1],
+          "substituteRegex": 1
+        }
+      ],
+      "placement": 1,
+      "depth": 0,
+      "input": "hello {{char}} world",
+      "expected_text": "hello replaced world"
+    }
+  ]
+}

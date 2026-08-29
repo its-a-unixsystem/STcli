@@ -1,0 +1,14 @@
+{
+  "schema": "stcli.coverage-allowlist/v1",
+  "profile": "sillytavern-1.18-core",
+  "description": "Known-missing coverage entries. The ratchet fails if any entry here is actually covered (stale allowlist) or if any uncovered entry is missing from this list (new gap). This list may only shrink.",
+  "macros": {
+    "exact": [],
+    "hard_unsupported": []
+  },
+  "preset_fields": [],
+  "scope": {
+    "hard_unsupported": []
+  },
+  "lore": []
+}

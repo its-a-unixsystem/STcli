@@ -1,0 +1,36 @@
+{
+  "fixtures": {
+    "5": {
+      "ancestry": [],
+      "projection_hash": "sha256:d7ac57d906f6a72293ec49fe3fe0ea6b99ae3918eab50bef32f84237e0694c72"
+    },
+    "6": {
+      "ancestry": [
+        [
+          "01M16MXST2JQ5D45TBKYN6N2BM",
+          "01M16MXST0V81FV2T13A8DT72Y"
+        ]
+      ],
+      "projection_hash": "sha256:d7ac57d906f6a72293ec49fe3fe0ea6b99ae3918eab50bef32f84237e0694c72"
+    },
+    "7": {
+      "ancestry": [
+        [
+          "01M16MXST2JQ5D45TBKYN6N2BM",
+          "01M16MXST0V81FV2T13A8DT72Y"
+        ]
+      ],
+      "projection_hash": "sha256:d7ac57d906f6a72293ec49fe3fe0ea6b99ae3918eab50bef32f84237e0694c72"
+    },
+    "8": {
+      "ancestry": [
+        [
+          "01M16MXST2JQ5D45TBKYN6N2BM",
+          "01M16MXST0V81FV2T13A8DT72Y"
+        ]
+      ],
+      "projection_hash": "sha256:d7ac57d906f6a72293ec49fe3fe0ea6b99ae3918eab50bef32f84237e0694c72"
+    }
+  },
+  "schema_version": 9
+}

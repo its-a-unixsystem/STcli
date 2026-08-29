@@ -1,0 +1,7 @@
+package stcli:plugin@1.0.0;
+
+world plugin {
+  /// Executes one pure lifecycle event. Both values are canonical JSON.
+  /// The host validates every returned declarative effect before applying it.
+  export run: func(input: string) -> result<string, string>;
+}

@@ -1,0 +1,23 @@
+{
+  "schema": "stcli.plugin-manifest/v1",
+  "id": "org.stcli.proof",
+  "version": "1.0.0",
+  "engine": ">=0.1.0, <0.2.0",
+  "component": "component.wasm",
+  "component_sha256": "sha256:28ca1919837bedfb4ef0a49bc8a35225fd0e10a12e3a69df91a9239b56aa48f6",
+  "dependencies": [],
+  "license": "MIT",
+  "subscriptions": ["pre-prompt"],
+  "prompt_slots": ["after-character-definitions"],
+  "commands": ["proof-set"],
+  "macros": ["proof-greeting"],
+  "settings_schema": null,
+  "requested_capabilities": [
+    "register-macro",
+    "register-command",
+    "contribute-prompt",
+    "write-own-state"
+  ],
+  "before": [],
+  "after": []
+}

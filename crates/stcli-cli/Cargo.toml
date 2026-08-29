@@ -1,0 +1,29 @@
+[package]
+name = "stcli-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "stcli"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-stream.workspace = true
+axum.workspace = true
+axum-server.workspace = true
+clap.workspace = true
+futures.workspace = true
+rcgen.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+stcli-core.workspace = true
+stcli-tui = { version = "0.1.0", path = "../stcli-tui" }
+tokio.workspace = true
+
+[dev-dependencies]
+jsonschema.workspace = true
+tempfile.workspace = true
+stcli-testkit.workspace = true

@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>STcli System Context</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:  #f5f5f5;
+      --color-ink:    #2d3142;
+      --color-muted:  #4f5d75;
+      --color-accent: #eb6c36;
+      --font-sans:  'Geist', system-ui, sans-serif;
+      --font-serif: 'Instrument Serif', serif;
+      --font-mono:  'Geist Mono', ui-monospace, monospace;
+    }
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+    .frame { max-width: 1000px; width: 100%; }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+    svg { width: 100%; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Architecture · System Context</p>
+    <h1>System Context — STcli</h1>
+
+    <svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="ctx-title ctx-desc">
+      <title id="ctx-title">System Context — STcli</title>
+      <desc id="ctx-desc">A Roleplayer and a Plugin Author drive STcli through its CLI. STcli imports SillyTavern content that the user exported as artifact revisions, and sends generation requests to an external OpenAI-compatible provider over HTTPS.</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- ============ ARROWS ============ -->
+      <!-- Roleplayer -> STcli -->
+      <path d="M200,172 H272 Q280,172 280,180 V296 Q280,304 288,304 H376" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="200" y="152" width="80" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="240" y="161" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">RUN · INSPECT</text>
+
+      <!-- Plugin Author -> STcli -->
+      <path d="M200,420 H292 Q300,420 300,412 V344 Q300,336 308,336 H376" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#arrow)"/>
+      <rect x="212" y="400" width="52" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="238" y="409" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">INSTALL</text>
+
+      <!-- Roleplayer -> SillyTavern Content (exports) -->
+      <path d="M120,136 V84 Q120,76 128,76 H380" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+      <rect x="212" y="56" width="56" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="240" y="65" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">EXPORTS</text>
+
+      <!-- SillyTavern Content -> STcli (import) -->
+      <line x1="480" y1="112" x2="480" y2="272" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="488" y="186" width="60" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="492" y="195" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">IMPORT</text>
+
+      <!-- STcli -> Provider (generation) -->
+      <line x1="584" y1="320" x2="712" y2="320" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+      <rect x="616" y="300" width="64" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="648" y="309" fill="#2e5aa8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">GENERATE</text>
+
+      <!-- ============ NODES ============ -->
+      <!-- Roleplayer (person) -->
+      <rect x="40" y="136" width="160" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="40" y="136" width="160" height="72" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="48" y="144" width="46" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.55)" stroke-width="0.8"/>
+      <text x="71" y="153" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PERSON</text>
+      <text x="120" y="180" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Roleplayer</text>
+      <text x="120" y="196" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">runs sessions</text>
+
+      <!-- Plugin Author (person) -->
+      <rect x="40" y="384" width="160" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="40" y="384" width="160" height="72" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="48" y="392" width="46" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.55)" stroke-width="0.8"/>
+      <text x="71" y="401" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PERSON</text>
+      <text x="120" y="428" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Plugin Author</text>
+      <text x="120" y="444" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">builds Wasm plugins</text>
+
+      <!-- SillyTavern Content (external) -->
+      <rect x="380" y="40" width="200" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="380" y="40" width="200" height="72" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <rect x="388" y="48" width="60" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/>
+      <text x="418" y="57" fill="#4f5d75" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">EXTERNAL</text>
+      <text x="480" y="84" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">SillyTavern Content</text>
+      <text x="480" y="100" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">cards · lorebooks · presets</text>
+
+      <!-- STcli (FOCAL) -->
+      <rect x="376" y="272" width="208" height="96" rx="6" fill="#f5f5f5"/>
+      <rect x="376" y="272" width="208" height="96" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.4"/>
+      <rect x="384" y="280" width="40" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.60)" stroke-width="0.8"/>
+      <text x="404" y="289" fill="#eb6c36" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SYSTEM</text>
+      <text x="480" y="316" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">STcli</text>
+      <text x="480" y="336" fill="#b0562a" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">local Rust engine</text>
+      <text x="480" y="352" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">local-first · no telemetry</text>
+
+      <!-- Provider (external) -->
+      <rect x="720" y="284" width="200" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="720" y="284" width="200" height="72" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <rect x="728" y="292" width="34" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.35)" stroke-width="0.8"/>
+      <text x="745" y="301" fill="#4f5d75" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">HTTP</text>
+      <text x="820" y="328" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Completions Provider</text>
+      <text x="820" y="344" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">openai-compatible</text>
+
+      <!-- ============ LEGEND ============ -->
+      <line x1="40" y1="512" x2="920" y2="512" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <rect x="40" y="524" width="14" height="14" rx="3" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <text x="62" y="535" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">STCLI (FOCAL)</text>
+      <rect x="220" y="524" width="14" height="14" rx="3" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <text x="242" y="535" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">PERSON</text>
+      <rect x="360" y="524" width="14" height="14" rx="3" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <text x="382" y="535" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">EXTERNAL SYSTEM</text>
+      <line x1="580" y1="531" x2="608" y2="531" stroke="#2e5aa8" stroke-width="1.4" marker-end="url(#arrow-link)"/>
+      <text x="616" y="535" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">HTTPS SSE CALL</text>
+      <line x1="760" y1="531" x2="788" y2="531" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="796" y="535" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">EXPORT (OFFLINE)</text>
+    </svg>
+  </div>
+</body>
+</html>

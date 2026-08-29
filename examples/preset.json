@@ -1,0 +1,95 @@
+{
+  "name": "Default Roleplay",
+  "description": "Standard Chat Completion prompt preset for immersive, narrative roleplay sessions.",
+  "prompts": [
+    {
+      "identifier": "main",
+      "name": "Main Prompt",
+      "role": "system",
+      "content": "Write {{char}}'s next reply in a rich, immersive roleplay between {{char}} and {{user}}.\n- Maintain an engaging narrative prose style in third-person perspective.\n- Drive the plot forward through action, dialogue, sensory details, and character reactions.\n- Stay true to {{char}}'s defined personality, knowledge, and speech patterns.\n- Format spoken dialogue inside quotation marks and character actions/thoughts in descriptive prose.\n- Never speak, act, or make decisions on behalf of {{user}}."
+    },
+    {
+      "identifier": "worldInfoBefore",
+      "name": "World Info (Before)",
+      "role": "system",
+      "content": ""
+    },
+    {
+      "identifier": "charDescription",
+      "name": "Character Description",
+      "role": "system",
+      "content": ""
+    },
+    {
+      "identifier": "worldInfoAfter",
+      "name": "World Info (After)",
+      "role": "system",
+      "content": ""
+    },
+    {
+      "identifier": "dialogueExamples",
+      "name": "Dialogue Examples",
+      "role": "system",
+      "content": ""
+    },
+    {
+      "identifier": "chatHistory",
+      "name": "Chat History",
+      "role": "user",
+      "content": ""
+    },
+    {
+      "identifier": "narrativeStyle",
+      "name": "Narrative Style & Prose Guidance",
+      "role": "system",
+      "content": "[Roleplay Directives: Prioritize scene continuity, atmospheric sensory details, and authentic conversational cadence. Keep pacing grounded and allow events to unfold organically.]",
+      "injection_position": 1,
+      "injection_depth": 4,
+      "injection_order": 100
+    },
+    {
+      "identifier": "userInput",
+      "name": "User Input",
+      "role": "user",
+      "content": ""
+    }
+  ],
+  "prompt_order": [
+    {
+      "order": [
+        {
+          "identifier": "main",
+          "enabled": true
+        },
+        {
+          "identifier": "worldInfoBefore",
+          "enabled": true
+        },
+        {
+          "identifier": "charDescription",
+          "enabled": true
+        },
+        {
+          "identifier": "worldInfoAfter",
+          "enabled": true
+        },
+        {
+          "identifier": "dialogueExamples",
+          "enabled": true
+        },
+        {
+          "identifier": "chatHistory",
+          "enabled": true
+        },
+        {
+          "identifier": "narrativeStyle",
+          "enabled": true
+        },
+        {
+          "identifier": "userInput",
+          "enabled": true
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,844 @@
+{
+  "schema": "stcli.fixture-suite/v2",
+  "profile": "sillytavern-1.18-core",
+  "cases": [
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.recursion-basic.basic",
+      "name": "recursive keyword activation",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "archive": {
+            "key": [
+              "library"
+            ],
+            "content": "A sealed archive",
+            "constant": false,
+            "order": 100
+          },
+          "archivist": {
+            "key": [
+              "archive"
+            ],
+            "content": "The archivist is Mira",
+            "constant": false,
+            "order": 90
+          }
+        }
+      },
+      "messages": [
+        "Open the library"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 2,
+        "recursive": true,
+        "max_recursion_steps": 8,
+        "budget_tokens": 100,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 7,
+        "message_count": 1,
+        "prior_activations": {}
+      },
+      "expected_activated": [
+        "archive",
+        "archivist"
+      ],
+      "expected_outcomes": {
+        "archive": "activated",
+        "archivist": "activated"
+      }
+    },
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.groups-probability-budget.basic",
+      "name": "groups probability timed effects and budget decisions",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "winner": {
+            "key": [],
+            "content": "winner",
+            "constant": true,
+            "order": 100,
+            "group": "place",
+            "groupOverride": true
+          },
+          "loser": {
+            "key": [],
+            "content": "loser",
+            "constant": true,
+            "order": 90,
+            "group": "place"
+          },
+          "probability": {
+            "key": [],
+            "content": "never",
+            "constant": true,
+            "order": 80,
+            "probability": 0,
+            "useProbability": true
+          },
+          "delayed": {
+            "key": [],
+            "content": "later",
+            "constant": true,
+            "order": 70,
+            "delay": 4
+          },
+          "cooldown": {
+            "key": [],
+            "content": "cool",
+            "constant": true,
+            "order": 60,
+            "cooldown": 5
+          },
+          "oversized": {
+            "key": [],
+            "content": "This lore entry is far too large for the configured tiny token budget.",
+            "constant": true,
+            "order": 50
+          }
+        }
+      },
+      "messages": [
+        "anything"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 2,
+        "recursive": false,
+        "max_recursion_steps": 1,
+        "budget_tokens": 5,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 9,
+        "message_count": 3,
+        "prior_activations": {
+          "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.cooldown": 1
+        }
+      },
+      "expected_activated": [
+        "winner"
+      ],
+      "expected_outcomes": {
+        "winner": "activated",
+        "loser": "group-rejected",
+        "probability": "probability-rejected",
+        "delayed": "delay-suppressed",
+        "cooldown": "cooldown-suppressed",
+        "oversized": "budget-rejected"
+      }
+    },
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.recursion-at-limit.boundary",
+      "name": "recursion activates exactly at the step limit",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "seed": {
+            "key": [
+              "start"
+            ],
+            "content": "seed",
+            "constant": false,
+            "order": 100
+          },
+          "chain1": {
+            "key": [
+              "seed"
+            ],
+            "content": "chain1",
+            "constant": false,
+            "order": 90
+          },
+          "chain2": {
+            "key": [
+              "chain1"
+            ],
+            "content": "chain2",
+            "constant": false,
+            "order": 80
+          }
+        }
+      },
+      "messages": [
+        "start"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 2,
+        "recursive": true,
+        "max_recursion_steps": 3,
+        "budget_tokens": 100,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 1,
+        "message_count": 1,
+        "prior_activations": {}
+      },
+      "expected_activated": [
+        "seed",
+        "chain1",
+        "chain2"
+      ],
+      "expected_outcomes": {
+        "seed": "activated",
+        "chain1": "activated",
+        "chain2": "activated"
+      }
+    },
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.recursion-over-limit.boundary",
+      "name": "recursion stops one step over the limit",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "seed": {
+            "key": [
+              "start"
+            ],
+            "content": "seed",
+            "constant": false,
+            "order": 100
+          },
+          "chain1": {
+            "key": [
+              "seed"
+            ],
+            "content": "chain1",
+            "constant": false,
+            "order": 90
+          },
+          "chain2": {
+            "key": [
+              "chain1"
+            ],
+            "content": "chain2",
+            "constant": false,
+            "order": 80
+          },
+          "chain3": {
+            "key": [
+              "chain2"
+            ],
+            "content": "chain3",
+            "constant": false,
+            "order": 70
+          }
+        }
+      },
+      "messages": [
+        "start"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 2,
+        "recursive": true,
+        "max_recursion_steps": 3,
+        "budget_tokens": 100,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 1,
+        "message_count": 1,
+        "prior_activations": {}
+      },
+      "expected_activated": [
+        "seed",
+        "chain1",
+        "chain2"
+      ],
+      "expected_outcomes": {
+        "seed": "activated",
+        "chain1": "activated",
+        "chain2": "activated",
+        "chain3": "no-primary-match"
+      }
+    },
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.budget-exact-fit.boundary",
+      "name": "entry whose tokens exactly equal the budget is rejected",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "fit": {
+            "key": [
+              "go"
+            ],
+            "content": "hello world",
+            "constant": false,
+            "order": 100
+          }
+        }
+      },
+      "messages": [
+        "go"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 2,
+        "recursive": false,
+        "max_recursion_steps": 1,
+        "budget_tokens": 2,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 1,
+        "message_count": 1,
+        "prior_activations": {}
+      },
+      "expected_activated": [],
+      "expected_outcomes": {
+        "fit": "budget-rejected"
+      }
+    },
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.budget-one-over.boundary",
+      "name": "entry one token over budget is rejected",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "over": {
+            "key": [
+              "go"
+            ],
+            "content": "hello world foo",
+            "constant": false,
+            "order": 100
+          }
+        }
+      },
+      "messages": [
+        "go"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 2,
+        "recursive": false,
+        "max_recursion_steps": 1,
+        "budget_tokens": 2,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 1,
+        "message_count": 1,
+        "prior_activations": {}
+      },
+      "expected_activated": [],
+      "expected_outcomes": {
+        "over": "budget-rejected"
+      }
+    },
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.key-case-sensitivity.boundary",
+      "name": "case sensitive key does not match different case",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "sensitive": {
+            "key": [
+              "Library"
+            ],
+            "content": "matched",
+            "constant": false,
+            "order": 100,
+            "caseSensitive": true
+          },
+          "insensitive": {
+            "key": [
+              "Library"
+            ],
+            "content": "matched",
+            "constant": false,
+            "order": 90
+          }
+        }
+      },
+      "messages": [
+        "open the library"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 2,
+        "recursive": false,
+        "max_recursion_steps": 1,
+        "budget_tokens": 100,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 1,
+        "message_count": 1,
+        "prior_activations": {}
+      },
+      "expected_activated": [
+        "insensitive"
+      ],
+      "expected_outcomes": {
+        "sensitive": "no-primary-match",
+        "insensitive": "activated"
+      }
+    },
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.key-whole-word.boundary",
+      "name": "whole word matching rejects substring matches",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "whole": {
+            "key": [
+              "cat"
+            ],
+            "content": "matched",
+            "constant": false,
+            "order": 100,
+            "matchWholeWords": true
+          }
+        }
+      },
+      "messages": [
+        "the category is wrong"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 2,
+        "recursive": false,
+        "max_recursion_steps": 1,
+        "budget_tokens": 100,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 1,
+        "message_count": 1,
+        "prior_activations": {}
+      },
+      "expected_activated": [],
+      "expected_outcomes": {
+        "whole": "no-primary-match"
+      }
+    },
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.key-regex.boundary",
+      "name": "regex key matches via slash-delimited pattern",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "regex": {
+            "key": [
+              "/^hello .+$/"
+            ],
+            "content": "matched",
+            "constant": false,
+            "order": 100
+          }
+        }
+      },
+      "messages": [
+        "hello world"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 2,
+        "recursive": false,
+        "max_recursion_steps": 1,
+        "budget_tokens": 100,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 1,
+        "message_count": 1,
+        "prior_activations": {}
+      },
+      "expected_activated": [
+        "regex"
+      ],
+      "expected_outcomes": {
+        "regex": "activated"
+      }
+    },
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.selective-secondary-key.boundary",
+      "name": "selective AND-ALL requires all secondary keys to match",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "allmatch": {
+            "key": [
+              "primary"
+            ],
+            "keysecondary": [
+              "alpha",
+              "beta"
+            ],
+            "content": "matched",
+            "constant": false,
+            "order": 100,
+            "selective": true,
+            "selectiveLogic": 3
+          },
+          "partial": {
+            "key": [
+              "primary"
+            ],
+            "keysecondary": [
+              "alpha",
+              "gamma"
+            ],
+            "content": "matched",
+            "constant": false,
+            "order": 90,
+            "selective": true,
+            "selectiveLogic": 3
+          }
+        }
+      },
+      "messages": [
+        "primary alpha beta"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 2,
+        "recursive": false,
+        "max_recursion_steps": 1,
+        "budget_tokens": 100,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 1,
+        "message_count": 1,
+        "prior_activations": {}
+      },
+      "expected_activated": [
+        "allmatch"
+      ],
+      "expected_outcomes": {
+        "allmatch": "activated",
+        "partial": "secondary-rejected"
+      }
+    },
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.ordering-ties.boundary",
+      "name": "insertion order ties break by source index",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "first": {
+            "key": [
+              "match"
+            ],
+            "content": "first",
+            "constant": false,
+            "order": 100
+          },
+          "second": {
+            "key": [
+              "match"
+            ],
+            "content": "second",
+            "constant": false,
+            "order": 100
+          }
+        }
+      },
+      "messages": [
+        "match"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 2,
+        "recursive": false,
+        "max_recursion_steps": 1,
+        "budget_tokens": 100,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 1,
+        "message_count": 1,
+        "prior_activations": {}
+      },
+      "expected_activated": [
+        "first",
+        "second"
+      ],
+      "expected_outcomes": {
+        "first": "activated",
+        "second": "activated"
+      }
+    },
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.position-classes.boundary",
+      "name": "entries with different positions all activate",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "before": {
+            "key": [
+              "go"
+            ],
+            "content": "before",
+            "constant": false,
+            "order": 100,
+            "position": 0
+          },
+          "atdepth": {
+            "key": [
+              "go"
+            ],
+            "content": "atdepth",
+            "constant": false,
+            "order": 90,
+            "position": 4
+          },
+          "outlet": {
+            "key": [
+              "go"
+            ],
+            "content": "outlet",
+            "constant": false,
+            "order": 80,
+            "position": 7
+          }
+        }
+      },
+      "messages": [
+        "go"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 2,
+        "recursive": false,
+        "max_recursion_steps": 1,
+        "budget_tokens": 100,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 1,
+        "message_count": 1,
+        "prior_activations": {}
+      },
+      "expected_activated": [
+        "before",
+        "atdepth",
+        "outlet"
+      ],
+      "expected_outcomes": {
+        "before": "activated",
+        "atdepth": "activated",
+        "outlet": "activated"
+      }
+    },
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.scan-depth-edges.boundary",
+      "name": "scan depth zero sees no messages so keyword misses",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "near": {
+            "key": [
+              "target"
+            ],
+            "content": "near",
+            "constant": false,
+            "order": 100
+          },
+          "far": {
+            "key": [
+              "target"
+            ],
+            "content": "far",
+            "constant": false,
+            "order": 90,
+            "scanDepth": 1
+          }
+        }
+      },
+      "messages": [
+        "target"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 0,
+        "recursive": false,
+        "max_recursion_steps": 1,
+        "budget_tokens": 100,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 1,
+        "message_count": 1,
+        "prior_activations": {}
+      },
+      "expected_activated": [
+        "far"
+      ],
+      "expected_outcomes": {
+        "near": "no-primary-match",
+        "far": "activated"
+      }
+    },
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.disabled-entries.boundary",
+      "name": "disabled entries produce the disabled outcome",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "off": {
+            "key": [
+              "go"
+            ],
+            "content": "off",
+            "constant": false,
+            "order": 100,
+            "disable": true
+          },
+          "on": {
+            "key": [
+              "go"
+            ],
+            "content": "on",
+            "constant": false,
+            "order": 90
+          }
+        }
+      },
+      "messages": [
+        "go"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 2,
+        "recursive": false,
+        "max_recursion_steps": 1,
+        "budget_tokens": 100,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 1,
+        "message_count": 1,
+        "prior_activations": {}
+      },
+      "expected_activated": [
+        "on"
+      ],
+      "expected_outcomes": {
+        "off": "disabled",
+        "on": "activated"
+      }
+    },
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.probability-zero.boundary",
+      "name": "probability zero always rejects under the pinned PRNG",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "never": {
+            "key": [
+              "go"
+            ],
+            "content": "never",
+            "constant": false,
+            "order": 100,
+            "probability": 0,
+            "useProbability": true
+          }
+        }
+      },
+      "messages": [
+        "go"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 2,
+        "recursive": false,
+        "max_recursion_steps": 1,
+        "budget_tokens": 100,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 42,
+        "message_count": 1,
+        "prior_activations": {}
+      },
+      "expected_activated": [],
+      "expected_outcomes": {
+        "never": "probability-rejected"
+      }
+    },
+    {
+      "kind": "lore-evaluate",
+      "id": "lore.probability-hundred.boundary",
+      "name": "probability hundred always activates under the pinned PRNG",
+      "source_revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entries": {
+        "entries": {
+          "always": {
+            "key": [
+              "go"
+            ],
+            "content": "always",
+            "constant": false,
+            "order": 100,
+            "probability": 100,
+            "useProbability": true
+          }
+        }
+      },
+      "messages": [
+        "go"
+      ],
+      "tokenizer": "tiktoken:cl100k_base",
+      "settings": {
+        "scan_depth": 2,
+        "recursive": false,
+        "max_recursion_steps": 1,
+        "budget_tokens": 100,
+        "case_sensitive": false,
+        "match_whole_words": false,
+        "use_group_scoring": false,
+        "generation_type": "normal",
+        "rng_seed": 42,
+        "message_count": 1,
+        "prior_activations": {}
+      },
+      "expected_activated": [
+        "always"
+      ],
+      "expected_outcomes": {
+        "always": "activated"
+      }
+    }
+  ]
+}

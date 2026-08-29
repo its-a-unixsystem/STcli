@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stcli.invalid/schemas/compat-profile.schema.json",
+  "title": "STcli Compatibility Profile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "upstream", "scope", "macros"],
+  "properties": {
+    "schema": { "const": "stcli.compat-profile/v1" },
+    "id": { "type": "string", "minLength": 1 },
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "commit", "version"],
+      "properties": {
+        "repository": { "type": "string", "format": "uri" },
+        "tag": { "type": "string", "minLength": 1 },
+        "commit": { "type": "string", "pattern": "^[0-9a-fA-F]{40}$" },
+        "version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["formats", "prompt_path", "generation_types", "documented_fallback", "hard_unsupported", "preserved_metadata"],
+      "properties": {
+        "formats": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "prompt_path": { "type": "string", "minLength": 1 },
+        "generation_types": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "documented_fallback": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "hard_unsupported": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "preserved_metadata": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "macros": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exact", "documented_fallback", "hard_unsupported", "source_files"],
+      "properties": {
+        "exact": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "documented_fallback": { "type": "object", "additionalProperties": { "type": "string" } },
+        "hard_unsupported": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "source_files": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "preset_fields": {
+      "type": "object",
+      "additionalProperties": {
+        "enum": [
+          "provider-behavior",
+          "assembly-behavior",
+          "preserved-metadata",
+          "documented-fallback",
+          "hard-unsupported"
+        ]
+      }
+    }
+  }
+}

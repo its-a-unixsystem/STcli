@@ -1,0 +1,48 @@
+name: Live provider smoke
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-smoke:
+    name: Live provider smoke (informational)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      STCLI_LIVE_BASE_URL: ${{ secrets.STCLI_LIVE_BASE_URL }}
+      STCLI_LIVE_API_KEY: ${{ secrets.STCLI_LIVE_API_KEY }}
+      STCLI_LIVE_MODEL: ${{ secrets.STCLI_LIVE_MODEL }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.89.0 --profile minimal
+
+      - name: Restore Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-live-smoke-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-live-smoke-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}-
+
+      - name: Run live provider smoke
+        run: cargo test --locked -p stcli-cli --test live_smoke

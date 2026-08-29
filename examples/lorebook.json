@@ -1,0 +1,138 @@
+{
+  "name": "Grand Archive of Oakhaven",
+  "description": "Lorebook containing world information, key locations, mechanisms, and rules for the Grand Archive of Oakhaven.",
+  "scan_depth": 2,
+  "token_budget": 512,
+  "recursive_scanning": true,
+  "extensions": {},
+  "entries": [
+    {
+      "id": 0,
+      "keys": [
+        "archive",
+        "grand archive",
+        "oakhaven archive",
+        "library",
+        "stacks"
+      ],
+      "secondary_keys": [],
+      "comment": "The Grand Archive of Oakhaven - Main Setting",
+      "content": "The Grand Archive of Oakhaven is a vast subterranean and cliffside library established centuries ago. Built into obsidian stone and reinforced with brass architecture, it houses millions of historical tomes, astrological charts, and ancient spell matrices. The air smells of parchment, beeswax, and clockwork machine oil. Preservation fields throughout the facility prevent mold, rot, and paper degradation.",
+      "constant": false,
+      "selective": false,
+      "order": 100,
+      "position": 1,
+      "disable": false,
+      "extensions": {
+        "position": 1,
+        "depth": 4,
+        "exclude_recursion": false,
+        "prevent_recursion": false,
+        "delay_until_recursion": 0,
+        "probability": 100,
+        "use_probability": true,
+        "selective_logic": 0,
+        "group": "",
+        "group_override": false,
+        "group_weight": 100
+      }
+    },
+    {
+      "id": 1,
+      "keys": [
+        "aether engine",
+        "computation engine",
+        "arcane core",
+        "clockwork engine"
+      ],
+      "secondary_keys": [],
+      "comment": "The Central Aether Engine",
+      "content": "The Central Aether Engine is a massive multi-story calculation and indexing apparatus constructed from polished brass, interlocking gears, and illuminated aether canisters. It automatically routes book-retrieval pneumatic tubes across the Archive and manages the complex temperature and humidity wards across all sub-levels.",
+      "constant": false,
+      "selective": false,
+      "order": 90,
+      "position": 1,
+      "disable": false,
+      "extensions": {
+        "position": 1,
+        "depth": 4,
+        "exclude_recursion": false,
+        "prevent_recursion": false,
+        "delay_until_recursion": 0,
+        "probability": 100,
+        "use_probability": true,
+        "selective_logic": 0,
+        "group": "",
+        "group_override": false,
+        "group_weight": 100
+      }
+    },
+    {
+      "id": 2,
+      "keys": [
+        "restricted section",
+        "restricted stacks",
+        "vault of whispers",
+        "sub-level 7"
+      ],
+      "secondary_keys": [
+        "key",
+        "permit",
+        "clearance",
+        "tome",
+        "forbidden",
+        "grimoire"
+      ],
+      "comment": "Restricted Stacks / Vault of Whispers (Selective activation)",
+      "content": "The Restricted Stacks, designated Sub-level 7 or the Vault of Whispers, are sealed behind three-inch reinforced lead and runic iron doors. Entry requires an Archivist's Sigil or authorization signed by the High Artificer. Inside rest hazardous, semi-sentient texts and volatile relics bound in heavy silver chains.",
+      "constant": false,
+      "selective": true,
+      "order": 80,
+      "position": 1,
+      "disable": false,
+      "extensions": {
+        "position": 1,
+        "depth": 4,
+        "exclude_recursion": false,
+        "prevent_recursion": false,
+        "delay_until_recursion": 0,
+        "probability": 100,
+        "use_probability": true,
+        "selective_logic": 0,
+        "group": "",
+        "group_override": false,
+        "group_weight": 100
+      }
+    },
+    {
+      "id": 3,
+      "keys": [
+        "automaton",
+        "automata",
+        "scrivener",
+        "clockwork construct"
+      ],
+      "secondary_keys": [],
+      "comment": "Scrivener Automata",
+      "content": "Scrivener Automata are nimble, four-armed clockwork constructs designed to maintain the Archive. Powered by miniaturized spring drives and attuned crystals, they glide along overhead brass guide rails to retrieve folios and dust fragile book spines.",
+      "constant": false,
+      "selective": false,
+      "order": 70,
+      "position": 1,
+      "disable": false,
+      "extensions": {
+        "position": 1,
+        "depth": 4,
+        "exclude_recursion": false,
+        "prevent_recursion": false,
+        "delay_until_recursion": 0,
+        "probability": 100,
+        "use_probability": true,
+        "selective_logic": 0,
+        "group": "",
+        "group_override": false,
+        "group_weight": 100
+      }
+    }
+  ]
+}

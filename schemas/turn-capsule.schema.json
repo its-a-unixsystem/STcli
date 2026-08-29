@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stcli.invalid/schemas/turn-capsule.schema.json",
+  "title": "STcli Turn Capsule v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "version",
+    "kind",
+    "engine",
+    "compatibility",
+    "identity",
+    "artifacts",
+    "configuration",
+    "baseline",
+    "effects",
+    "prompt",
+    "provider",
+    "result",
+    "references",
+    "redactions",
+    "capabilities"
+  ],
+  "properties": {
+    "format": { "const": "stcli_turn_capsule" },
+    "version": { "const": "1.0" },
+    "kind": { "enum": ["portable", "thin"] },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version"],
+      "properties": { "version": { "type": "string", "minLength": 1 } }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "feature_manifest_digest"],
+      "properties": {
+        "profile": { "type": "string", "minLength": 1 },
+        "feature_manifest_digest": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "branch_id", "turn_id", "attempt_id"],
+      "properties": {
+        "session_id": { "$ref": "#/$defs/ulid" },
+        "branch_id": { "$ref": "#/$defs/ulid" },
+        "turn_id": { "$ref": "#/$defs/ulid" },
+        "attempt_id": { "$ref": "#/$defs/ulid" }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["record", "source"],
+        "properties": {
+          "record": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "revision_hash",
+              "kind",
+              "source_format",
+              "semantic_hash",
+              "source_blob_hash",
+              "imported_event_id"
+            ],
+            "properties": {
+              "revision_hash": { "$ref": "#/$defs/hash" },
+              "kind": {
+                "enum": [
+                  "character-card-v1",
+                  "character-card-v2",
+                  "lorebook",
+                  "chat-completion-preset"
+                ]
+              },
+              "source_format": { "const": "json" },
+              "semantic_hash": { "$ref": "#/$defs/hash" },
+              "source_blob_hash": { "$ref": "#/$defs/hash" },
+              "imported_event_id": { "$ref": "#/$defs/ulid" }
+            }
+          },
+          "source": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "configuration": { "type": ["object", "null"] },
+    "baseline": { "type": ["object", "null"] },
+    "effects": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "rng_seed",
+            "clock_outcomes",
+            "lore",
+            "macro_evaluations",
+            "macro_warnings",
+            "state_mutations",
+            "plugins",
+            "effective_generation_settings",
+            "compatibility_warnings",
+            "preset_transformations",
+            "provider_request",
+            "provider_request_hash"
+          ],
+          "properties": {
+            "rng_seed": { "type": "integer", "minimum": 0 },
+            "clock_outcomes": { "type": "array" },
+            "lore": { "type": "object" },
+            "macro_evaluations": { "type": "array" },
+            "macro_warnings": { "type": "array" },
+            "state_mutations": { "type": "array" },
+            "plugins": { "type": "array" },
+            "effective_generation_settings": { "type": "object" },
+            "compatibility_warnings": { "type": "array" },
+            "preset_transformations": { "type": "array" },
+            "provider_request": { "type": "object" },
+            "provider_request_hash": { "$ref": "#/$defs/hash" }
+          }
+        }
+      ]
+    },
+    "prompt": { "type": ["object", "null"] },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_hash", "receipt"],
+      "properties": {
+        "request_hash": {
+          "oneOf": [{ "$ref": "#/$defs/hash" }, { "type": "null" }]
+        },
+        "receipt": {}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projection", "projection_hash"],
+      "properties": {
+        "projection": { "type": ["object", "null"] },
+        "projection_hash": {
+          "oneOf": [{ "$ref": "#/$defs/hash" }, { "type": "null" }]
+        }
+      }
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["owner_kind", "owner_id", "blob_hash", "embedded"],
+        "properties": {
+          "owner_kind": { "type": "string", "minLength": 1 },
+          "owner_id": { "type": "string", "minLength": 1 },
+          "blob_hash": { "$ref": "#/$defs/hash" },
+          "embedded": { "type": "boolean" }
+        }
+      }
+    },
+    "redactions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "reason"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inspect", "replay", "rerun"],
+      "properties": {
+        "inspect": { "type": "boolean" },
+        "replay": { "type": "boolean" },
+        "rerun": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "ulid": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+    }
+  }
+}

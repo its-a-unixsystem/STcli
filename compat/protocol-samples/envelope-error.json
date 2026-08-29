@@ -1,0 +1,1 @@
+{"command":"session.show","data":null,"error":{"code":"command_failed","message":"session 00000000000000000000000000 was not found"},"ok":false,"schema":"stcli.cli/v1","warnings":[]}

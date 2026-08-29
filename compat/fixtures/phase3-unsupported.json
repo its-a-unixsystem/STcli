@@ -1,0 +1,140 @@
+{
+  "schema": "stcli.fixture-suite/v2",
+  "profile": "sillytavern-1.18-core",
+  "cases": [
+    {
+      "kind": "macro-render",
+      "id": "macro.input.rejected",
+      "name": "input macro is hard-unsupported",
+      "input": "{{input}}",
+      "context": {},
+      "initial_local": {},
+      "initial_global": {},
+      "expected_text": "",
+      "expected_local": {},
+      "expected_global": {},
+      "expected_warnings": 0,
+      "expected_error": "hard unsupported"
+    },
+    {
+      "kind": "macro-render",
+      "id": "macro.banned.rejected",
+      "name": "banned macro is hard-unsupported",
+      "input": "{{banned}}",
+      "context": {},
+      "initial_local": {},
+      "initial_global": {},
+      "expected_text": "",
+      "expected_local": {},
+      "expected_global": {},
+      "expected_warnings": 0,
+      "expected_error": "hard unsupported"
+    },
+    {
+      "kind": "macro-render",
+      "id": "macro.notChar.rejected",
+      "name": "notChar macro is hard-unsupported",
+      "input": "{{notChar}}",
+      "context": {},
+      "initial_local": {},
+      "initial_global": {},
+      "expected_text": "",
+      "expected_local": {},
+      "expected_global": {},
+      "expected_warnings": 0,
+      "expected_error": "hard unsupported"
+    },
+    {
+      "kind": "macro-render",
+      "id": "macro.isMobile.rejected",
+      "name": "isMobile macro is hard-unsupported",
+      "input": "{{isMobile}}",
+      "context": {},
+      "initial_local": {},
+      "initial_global": {},
+      "expected_text": "",
+      "expected_local": {},
+      "expected_global": {},
+      "expected_warnings": 0,
+      "expected_error": "hard unsupported"
+    },
+    {
+      "kind": "macro-render",
+      "id": "macro.systemPrompt.rejected",
+      "name": "systemPrompt macro is hard-unsupported",
+      "input": "{{systemPrompt}}",
+      "context": {},
+      "initial_local": {},
+      "initial_global": {},
+      "expected_text": "",
+      "expected_local": {},
+      "expected_global": {},
+      "expected_warnings": 0,
+      "expected_error": "hard unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "id": "scope.duplicate-json-keys.negative",
+      "name": "duplicate JSON keys are hard-unsupported",
+      "subject_kind": "feature",
+      "subject": "duplicate-json-keys",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "id": "scope.group-chat.negative",
+      "name": "group chat is hard-unsupported",
+      "subject_kind": "feature",
+      "subject": "group-chat",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "id": "scope.quiet-generation.negative",
+      "name": "quiet generation is hard-unsupported",
+      "subject_kind": "feature",
+      "subject": "quiet-generation",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "id": "scope.text-completion.negative",
+      "name": "text completion is hard-unsupported",
+      "subject_kind": "feature",
+      "subject": "text-completion",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "id": "scope.stscript.negative",
+      "name": "stscript is hard-unsupported",
+      "subject_kind": "feature",
+      "subject": "stscript",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "id": "scope.ui-extension.negative",
+      "name": "ui extension is hard-unsupported",
+      "subject_kind": "feature",
+      "subject": "ui-extension",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "id": "scope.server-plugin.negative",
+      "name": "server plugin is hard-unsupported",
+      "subject_kind": "feature",
+      "subject": "server-plugin",
+      "expected_outcome": "hard-unsupported"
+    },
+    {
+      "kind": "compatibility-outcome",
+      "id": "scope.vector-lore.negative",
+      "name": "vector lore is hard-unsupported",
+      "subject_kind": "feature",
+      "subject": "vector-lore",
+      "expected_outcome": "hard-unsupported"
+    }
+  ]
+}
