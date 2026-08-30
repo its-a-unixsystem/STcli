@@ -39,11 +39,20 @@ This is a single-context repository: read root `CONTEXT.md` and relevant ADRs un
 
 ### creation
 
-Whenever a new task or bug or feature is being created it *MUST* contain acceptance criterias. Write them like this:
+Whenever a new task or bug or feature is being created it *MUST* contain those sections:
+
+#### acceptance criterias
+
+Write them like this:
 
 ```
 ## acceptance criteria:
 ```
+
+#### documentation update
+
+Was a new user facing behavior introduced or an existing changed? 
+You must add which documentation is affected and requires update in the acceptance criterias!
 
 ### finishing
 
