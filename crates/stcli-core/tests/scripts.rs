@@ -190,6 +190,96 @@ function prePrompt() {
 }
 
 #[test]
+fn documented_turn_counter_plugin_executes_as_written() {
+    let plugin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/turn-counter");
+    let directory = tempdir().unwrap();
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .install(&plugin)
+        .unwrap();
+    let grant = PluginGrant {
+        id: installed.manifest.id.clone(),
+        version: installed.manifest.version.clone(),
+        component_sha256: installed.manifest.component_sha256.clone(),
+        capabilities: installed.manifest.requested_capabilities.clone(),
+        settings: json!({"start": 10}),
+        enabled: true,
+    };
+    let run = |state| {
+        PluginHost::new(PluginLimits::default())
+            .execute(
+                &installed,
+                &grant,
+                PluginInput {
+                    event: PluginEvent::PrePrompt,
+                    plugin_id: installed.manifest.id.clone(),
+                    settings: grant.settings.clone(),
+                    context: json!({}),
+                    state,
+                    session: json!(null),
+                },
+            )
+            .unwrap()
+    };
+
+    let first = run(json!({}));
+    assert_eq!(
+        serde_json::to_value(&first.effects).unwrap(),
+        json!([
+            {
+                "effect": "state-write",
+                "key": {
+                    "scope": "local",
+                    "name": "org.stcli.turn-counter.turns"
+                },
+                "value": 11
+            },
+            {
+                "effect": "prompt",
+                "contribution": {
+                    "slot": "after-character-definitions",
+                    "name": "org.stcli.turn-counter#1",
+                    "role": "system",
+                    "content": "[Turn 11]",
+                    "depth": null,
+                    "order": 1,
+                    "outlet": null
+                }
+            }
+        ])
+    );
+    assert_eq!(first.script_logs.len(), 1);
+    assert_eq!(first.script_logs[0].level, "info");
+    assert_eq!(first.script_logs[0].message, "turn 11");
+
+    let second = run(json!({"turns": 11}));
+    assert_eq!(
+        serde_json::to_value(&second.effects).unwrap(),
+        json!([
+            {
+                "effect": "state-write",
+                "key": {
+                    "scope": "local",
+                    "name": "org.stcli.turn-counter.turns"
+                },
+                "value": 12
+            },
+            {
+                "effect": "prompt",
+                "contribution": {
+                    "slot": "after-character-definitions",
+                    "name": "org.stcli.turn-counter#1",
+                    "role": "system",
+                    "content": "[Turn 12]",
+                    "depth": null,
+                    "order": 1,
+                    "outlet": null
+                }
+            }
+        ])
+    );
+}
+
+#[test]
 fn script_syntax_and_runtime_errors_are_reported() {
     let directory = tempdir().unwrap();
     assert!(matches!(
