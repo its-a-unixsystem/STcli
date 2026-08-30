@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
@@ -199,7 +199,7 @@ fn render_sessions(frame: &mut Frame<'_>, app: &mut App) {
         });
     }
     let empty = if app.sessions.is_empty() {
-        Some("No Sessions. Create one with the debug CLI, then return here.")
+        Some("No sessions. Press n to create a new session.")
     } else if entries_empty {
         Some("No Sessions match this filter. Press Escape to clear it.")
     } else {
@@ -243,7 +243,7 @@ fn render_sessions(frame: &mut Frame<'_>, app: &mut App) {
     };
     frame.render_widget(
         Paragraph::new(format!(
-            "↑/k ↓/j navigate  Enter open  / filter  s sort ({:?})  {branches_hint}  x delete  r rename  ? help  q quit",
+            "n new  ↑/k ↓/j navigate  Enter open  / filter  s sort ({:?})  {branches_hint}  x delete  r rename  ? help  q quit",
             app.sort
         ))
         .style(Style::default().fg(app.theme.muted)),
@@ -766,7 +766,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
         Popup::Help => {
             frame.render_widget(Clear, area);
             frame.render_widget(
-                Paragraph::new("Sessions\n  ↑/↓ or j/k  navigate\n  /  filter · s  sort · Enter  open\n  b  toggle branch tree · x  delete · r  rename\n\nChat composer\n  Enter  send or answer an unanswered user message · Shift+Enter  newline\n  Escape or Tab  focus history\n\nChat history\n  ↑/↓ or j/k  scroll · Tab  focus next message · c  copy\n  ←/→  select Greeting or Candidate\n  x  delete candidate (on user message: delete turn)\n  r  regenerate · e  continue · Enter  compose or answer selected user message\n  b  Branches · p  providers · P  presets\n\nEvery action is available without a mouse. Escape closes this help.")
+                Paragraph::new("Sessions\n  n  new session · ↑/↓ or j/k  navigate\n  /  filter · s  sort · Enter  open\n  b  toggle branch tree · x  delete · r  rename\n\nChat composer\n  Enter  send or answer an unanswered user message · Shift+Enter  newline\n  Escape or Tab  focus history\n\nChat history\n  ↑/↓ or j/k  scroll · Tab  focus next message · c  copy\n  ←/→  select Greeting or Candidate\n  x  delete candidate (on user message: delete turn)\n  r  regenerate · e  continue · Enter  compose or answer selected user message\n  b  Branches · p  providers · P  presets\n\nEvery action is available without a mouse. Escape closes this help.")
                     .wrap(Wrap { trim: false })
                     .block(Block::default().borders(Borders::ALL).title(" Help "))
                     .style(Style::default().bg(app.theme.background).fg(app.theme.foreground)),
@@ -870,7 +870,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 .history
                 .as_ref()
                 .map(|history| &history.configuration.configuration.provider);
-            let labels = names
+            let mut labels: Vec<String> = names
                 .iter()
                 .map(|name| {
                     let provider = &app.config.core.providers[name];
@@ -886,11 +886,12 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                     )
                 })
                 .collect();
+            labels.push("+ Add new profile...".to_owned());
             render_list_popup(
                 frame,
                 app,
                 area,
-                " Provider profiles · * current ",
+                " Provider profiles · * current · n/a add ",
                 labels,
                 *selected,
             );
@@ -926,6 +927,400 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 " Prompt preset · * current ",
                 labels,
                 *selected,
+            );
+        }
+        Popup::ImportCharacter(state) => {
+            let import_area = centered(frame.area(), 68, 7);
+            frame.render_widget(Clear, import_area);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(" Import Character Card from File · Enter import · Esc cancel ");
+            let content = vec![
+                Line::from(vec![
+                    Span::styled(
+                        "Path: ",
+                        Style::default()
+                            .fg(app.theme.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(&state.input, Style::default().fg(app.theme.foreground)),
+                    Span::styled("█", Style::default().fg(app.theme.accent)),
+                ]),
+                Line::from(""),
+                Line::from(vec![Span::styled(
+                    "Supported: .json, .png character cards (supports ~/ paths)",
+                    Style::default().fg(app.theme.muted),
+                )]),
+            ];
+            frame.render_widget(
+                Paragraph::new(content).block(block).style(
+                    Style::default()
+                        .bg(app.theme.background)
+                        .fg(app.theme.foreground),
+                ),
+                import_area,
+            );
+        }
+        Popup::NewProviderProfile(state) => {
+            let profile_area = centered(frame.area(), 72, 19);
+            frame.render_widget(Clear, profile_area);
+            let template_name = if state.selected_template == 0 {
+                "Custom".to_owned()
+            } else if let Some(t) = state.templates.get(state.selected_template - 1) {
+                format!("{} ({})", t.name, t.id)
+            } else {
+                "Custom".to_owned()
+            };
+            let env_status = if state.api_key_env.trim().is_empty() {
+                Span::styled(
+                    " (no key required/set)",
+                    Style::default().fg(app.theme.muted),
+                )
+            } else if std::env::var(state.api_key_env.trim()).is_ok() {
+                Span::styled(" [set]", Style::default().fg(Color::Green))
+            } else {
+                Span::styled(" [not set]", Style::default().fg(Color::Yellow))
+            };
+
+            let field_style = |idx: usize| {
+                if state.focused_field == idx {
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(app.theme.foreground)
+                }
+            };
+            let cursor = |idx: usize| {
+                if state.focused_field == idx {
+                    "█"
+                } else {
+                    ""
+                }
+            };
+
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled(
+                        if state.focused_field == 0 {
+                            "> Template:    < "
+                        } else {
+                            "  Template:    < "
+                        },
+                        field_style(0),
+                    ),
+                    Span::styled(template_name, field_style(0)),
+                    Span::styled(
+                        " >  (Space/←/→ to cycle)",
+                        Style::default().fg(app.theme.muted),
+                    ),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(
+                        if state.focused_field == 1 {
+                            "> Name:        "
+                        } else {
+                            "  Name:        "
+                        },
+                        field_style(1),
+                    ),
+                    Span::styled(&state.name, field_style(1)),
+                    Span::styled(cursor(1), Style::default().fg(app.theme.accent)),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        if state.focused_field == 2 {
+                            "> Base URL:    "
+                        } else {
+                            "  Base URL:    "
+                        },
+                        field_style(2),
+                    ),
+                    Span::styled(&state.base_url, field_style(2)),
+                    Span::styled(cursor(2), Style::default().fg(app.theme.accent)),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        if state.focused_field == 3 {
+                            "> Model:       "
+                        } else {
+                            "  Model:       "
+                        },
+                        field_style(3),
+                    ),
+                    Span::styled(&state.model, field_style(3)),
+                    Span::styled(cursor(3), Style::default().fg(app.theme.accent)),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        if state.focused_field == 4 {
+                            "> Chat Path:   "
+                        } else {
+                            "  Chat Path:   "
+                        },
+                        field_style(4),
+                    ),
+                    Span::styled(&state.chat_path, field_style(4)),
+                    Span::styled(cursor(4), Style::default().fg(app.theme.accent)),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        if state.focused_field == 5 {
+                            "> API Key Env: "
+                        } else {
+                            "  API Key Env: "
+                        },
+                        field_style(5),
+                    ),
+                    Span::styled(&state.api_key_env, field_style(5)),
+                    Span::styled(cursor(5), Style::default().fg(app.theme.accent)),
+                    env_status,
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        if state.focused_field == 6 {
+                            "> Stream:      < "
+                        } else {
+                            "  Stream:      < "
+                        },
+                        field_style(6),
+                    ),
+                    Span::styled(if state.stream { "true" } else { "false" }, field_style(6)),
+                    Span::styled(
+                        " >  (Space to toggle)",
+                        Style::default().fg(app.theme.muted),
+                    ),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        if state.focused_field == 7 {
+                            "[ Save Profile ]"
+                        } else {
+                            "  Save Profile  "
+                        },
+                        if state.focused_field == 7 {
+                            Style::default()
+                                .bg(app.theme.accent)
+                                .fg(app.theme.background)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(app.theme.muted)
+                        },
+                    ),
+                    Span::raw("     "),
+                    Span::styled(
+                        if state.focused_field == 8 {
+                            "[ Cancel ]"
+                        } else {
+                            "  Cancel  "
+                        },
+                        if state.focused_field == 8 {
+                            Style::default()
+                                .bg(app.theme.accent)
+                                .fg(app.theme.background)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(app.theme.muted)
+                        },
+                    ),
+                ]),
+                Line::from(""),
+                Line::from(vec![Span::styled(
+                    "Tab/↓ next · Shift+Tab/↑ prev · Space/←/→ cycle · Enter/Ctrl+S save · Esc cancel",
+                    Style::default().fg(app.theme.muted),
+                )]),
+            ];
+
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" New Provider Profile "),
+                    )
+                    .style(
+                        Style::default()
+                            .bg(app.theme.background)
+                            .fg(app.theme.foreground),
+                    ),
+                profile_area,
+            );
+        }
+        Popup::NewSession(state) => {
+            let session_area = centered(frame.area(), 72, 17);
+            frame.render_widget(Clear, session_area);
+
+            let char_label = if state.characters.is_empty() {
+                "<No characters - Press Enter to import from file>".to_owned()
+            } else if state.selected_character == state.characters.len() {
+                "<Import from file...>".to_owned()
+            } else {
+                let c = &state.characters[state.selected_character];
+                format!(
+                    "<{} ({} greeting{})>",
+                    c.name,
+                    c.greeting_count,
+                    if c.greeting_count == 1 { "" } else { "s" }
+                )
+            };
+
+            let prov_label = if state.providers.is_empty() {
+                "<No providers - Press Enter to add profile>".to_owned()
+            } else if state.selected_provider == state.providers.len() {
+                "<+ Add new profile...>".to_owned()
+            } else {
+                format!("<{}>", state.providers[state.selected_provider])
+            };
+
+            let preset_label = if state.selected_preset == 0 {
+                "<None>".to_owned()
+            } else if let Some(p) = state.presets.get(state.selected_preset - 1) {
+                format!("<{}>", p.label)
+            } else {
+                "<None>".to_owned()
+            };
+
+            let greeting_label = {
+                let total = state
+                    .characters
+                    .get(state.selected_character)
+                    .map(|c| c.greeting_count)
+                    .unwrap_or(1);
+                format!("<Greeting {} of {}>", state.selected_greeting + 1, total)
+            };
+
+            let field_style = |idx: usize| {
+                if state.focused_field == idx {
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(app.theme.foreground)
+                }
+            };
+            let cursor = |idx: usize| {
+                if state.focused_field == idx {
+                    "█"
+                } else {
+                    ""
+                }
+            };
+
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled(
+                        if state.focused_field == 0 {
+                            "> Character:    "
+                        } else {
+                            "  Character:    "
+                        },
+                        field_style(0),
+                    ),
+                    Span::styled(char_label, field_style(0)),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        if state.focused_field == 1 {
+                            "> Provider:     "
+                        } else {
+                            "  Provider:     "
+                        },
+                        field_style(1),
+                    ),
+                    Span::styled(prov_label, field_style(1)),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        if state.focused_field == 2 {
+                            "> Preset:       "
+                        } else {
+                            "  Preset:       "
+                        },
+                        field_style(2),
+                    ),
+                    Span::styled(preset_label, field_style(2)),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        if state.focused_field == 3 {
+                            "> Persona Name: "
+                        } else {
+                            "  Persona Name: "
+                        },
+                        field_style(3),
+                    ),
+                    Span::styled(&state.persona, field_style(3)),
+                    Span::styled(cursor(3), Style::default().fg(app.theme.accent)),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        if state.focused_field == 4 {
+                            "> Greeting:     "
+                        } else {
+                            "  Greeting:     "
+                        },
+                        field_style(4),
+                    ),
+                    Span::styled(greeting_label, field_style(4)),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        if state.focused_field == 5 {
+                            "[ Create Session ]"
+                        } else {
+                            "  Create Session  "
+                        },
+                        if state.focused_field == 5 {
+                            Style::default()
+                                .bg(app.theme.accent)
+                                .fg(app.theme.background)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(app.theme.muted)
+                        },
+                    ),
+                    Span::raw("     "),
+                    Span::styled(
+                        if state.focused_field == 6 {
+                            "[ Cancel ]"
+                        } else {
+                            "  Cancel  "
+                        },
+                        if state.focused_field == 6 {
+                            Style::default()
+                                .bg(app.theme.accent)
+                                .fg(app.theme.background)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(app.theme.muted)
+                        },
+                    ),
+                ]),
+                Line::from(""),
+                Line::from(vec![Span::styled(
+                    "Tab/↓ next · Shift+Tab/↑ prev · Space/←/→ cycle · Enter/Ctrl+S create · Esc cancel",
+                    Style::default().fg(app.theme.muted),
+                )]),
+            ];
+
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" Create New Session "),
+                    )
+                    .style(
+                        Style::default()
+                            .bg(app.theme.background)
+                            .fg(app.theme.foreground),
+                    ),
+                session_area,
             );
         }
     }
@@ -1159,5 +1554,57 @@ mod tests {
 
         assert_eq!(after.symbol(), before.symbol());
         assert_eq!(after.style(), before.style());
+    }
+
+    #[test]
+    fn new_modals_render_without_panicking_and_display_expected_titles() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let mut store = stcli_core::Store::open(&database).unwrap();
+        store
+            .import_artifact(stcli_testkit::fixtures::minimal_card().as_bytes())
+            .unwrap();
+        drop(store);
+        let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // 1. Test NewSession popup render
+        app.open_new_session_popup();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Create New Session"));
+
+        // 2. Test ImportCharacter popup render
+        app.popup = Some(Popup::ImportCharacter(
+            crate::app::ImportCharacterState::default(),
+        ));
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Import Character Card from File"));
+
+        // 3. Test NewProviderProfile popup render
+        app.open_new_provider_profile_popup(None, false);
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("New Provider Profile"));
     }
 }

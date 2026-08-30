@@ -17,6 +17,7 @@ Replace placeholders such as `<character-revision>`, `<session-id>`, and `<branc
 - [Export and replay capsules](#export-and-replay-capsules)
 - [Archive and purge](#archive-and-purge)
 - [Install and adopt a plugin](#install-and-adopt-a-plugin)
+- [Use a Text Completion provider](#use-a-text-completion-provider)
 - [Output formats](#output-formats)
 - [Security and privacy](#security-and-privacy)
 
@@ -42,6 +43,30 @@ cargo run --quiet --bin stcli -- artifact list
 ```
 
 For a field-by-field breakdown of each sample artifact, see [`examples/README.md`](../examples/README.md).
+
+### Import character cards from images and archives
+
+The `artifact import` command reads the card format from the file content, not the file name. It accepts these formats:
+
+- **JSON**: Character Card V1, V2, and V3.
+- **PNG**: A character card embedded in a PNG image. The image becomes the card avatar.
+- **WebP**: A character card embedded in a WebP image (V2 or V3 only). The image becomes the avatar.
+- **CHARX**: A character card archive (V3) with bundled assets and lorebooks.
+
+The command works the same for every format:
+
+```bash
+cargo run --quiet --bin stcli -- --output json artifact import ./my-card.png
+cargo run --quiet --bin stcli -- --output json artifact import ./my-card.charx
+```
+
+Import returns a bundle with three parts:
+
+- `primary`: The imported character card revision.
+- `supplementary_artifacts`: Extra revisions from the archive, such as bundled lorebooks.
+- `asset_count`: The number of media files stored, such as the avatar.
+
+STcli stores media files in a content-addressed asset store, apart from the main database. For the reason, see [ADR 0007](adr/0007-external-content-addressed-asset-storage.md).
 
 ## Configure a provider and create a session
 
@@ -217,7 +242,27 @@ cargo run --quiet --bin stcli -- turn export \
   --file turn-capsule.json
 ```
 
-Add `--thin` to reference content already in the local store. Add `--redact-content` to remove narrative and provider content. The engine then disables Replay and Rerun capabilities rather than make a false claim.
+Add `--thin` to reference content already in the local store.
+
+### Redacted export (`--redact-content`)
+
+Use a redacted export to share a turn without exposing private stories or character cards:
+
+- **What it is for:** Safely reporting bugs or sharing technical turn data without leaking personal chat text. (API keys and auth headers are never stored in any capsule).
+- **How to use it:** Pass `--redact-content` when exporting:
+
+```bash
+cargo run --quiet --bin stcli -- turn export \
+  --session <session-id> \
+  <attempt-id> \
+  --file redacted-capsule.json \
+  --redact-content
+```
+
+- **How it works:**
+  - **Cleared:** Prompt strings, model output text, character card bodies, and state variables are set to empty.
+  - **Retained:** Engine version, compatibility profile, artifact hashes, and turn IDs stay intact for inspection.
+  - **Capabilities:** Replay and rerun are disabled (`"replay": false`, `"rerun": false`) so the capsule cannot make false claims. Only `"inspect": true` remains.
 
 Replay does no provider call and runs no plugin:
 
@@ -278,6 +323,25 @@ cargo run --quiet --bin stcli -- --output json plugin adopt \
 Use `plugin inspect`, `plugin upgrade`, `plugin enable`, and `plugin disable` for lifecycle management. An upgrade keeps the session's grants and settings. It pins the explicit replacement version and digest in a new Session Configuration Revision. Invoke a registered command with `plugin invoke`. Its declarative effects and namespaced state changes enter the authoritative trace. `plugin remove` refuses a plugin that any stored Session Configuration Revision references.
 
 Plugins receive canonical JSON input and return declarative effects through [`wit/plugin.wit`](../wit/plugin.wit). The host links no WASI or other imports. A plugin gets no network, filesystem, provider, secret, subprocess, or native-library access. [`schemas/plugin-manifest.schema.json`](../schemas/plugin-manifest.schema.json) defines the public manifest format.
+
+STcli also runs plugins written in JavaScript through a sandboxed QuickJS runtime. To write a Wasm plugin or a script plugin, see [Writing plugins](plugins.md).
+
+## Use a Text Completion provider
+
+By default STcli sends role-tagged messages to a Chat Completion endpoint. For local backends and instruct-tuned models, STcli can send one flat text prompt instead.
+
+You set this through a provider profile. Add a profile with `format_mode` set to `text-completion`, then create a session with it:
+
+```bash
+cargo run --quiet --bin stcli -- profile add local-text --file ./text-profile.json
+cargo run --quiet --bin stcli -- --output json session create \
+  --character <character-revision> \
+  --provider-profile local-text
+```
+
+For the profile fields, the instruct template, and the story string, see [Text Completion prompts](text-completion.md).
+
+> **Note**: Text Completion is untested against a live provider. Use it with care.
 
 ## Output formats
 

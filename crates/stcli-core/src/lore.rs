@@ -477,10 +477,12 @@ pub fn parse_lore_entries(
     let entries = semantic
         .get("entries")
         .or_else(|| {
-            semantic
-                .get("data")
-                .and_then(|data| data.get("character_book"))
-                .and_then(|book| book.get("entries"))
+            semantic.get("data").and_then(|data| {
+                data.get("entries").or_else(|| {
+                    data.get("character_book")
+                        .and_then(|book| book.get("entries"))
+                })
+            })
         })
         .ok_or(LoreError::MissingEntries)?;
     let values: Vec<(String, &Value)> = if let Some(entries) = entries.as_array() {

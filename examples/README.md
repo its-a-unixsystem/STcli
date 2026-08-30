@@ -29,6 +29,8 @@ cargo run --quiet --bin stcli -- --output json \
   artifact import ./examples/character.json
 ```
 
+> **Note**: The same command imports PNG cards, WebP cards, and CHARX archives. STcli reads the format from the file content. See [Import character cards](../docs/guide.md#import-character-cards-from-images-and-archives).
+
 ---
 
 ## 2. Lorebook (`lorebook.json`)

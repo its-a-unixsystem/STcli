@@ -54,10 +54,10 @@ async fn reasoning_json_event_is_flushed_before_generation_completes() {
     let mut session_configuration = configuration(character.revision_hash);
     session_configuration.provider = provider.provider_settings();
     session_configuration.provider.stream = true;
-    session_configuration.provider.timeout_seconds = 5;
+    session_configuration.provider.timeout_seconds = 15;
     session_configuration.generation_settings = serde_json::json!({
         "fixture_reasoning": "Planning response",
-        "fixture_chunk_delay_ms": 2_000
+        "fixture_chunk_delay_ms": 5_000
     });
     let created = store.create_session(session_configuration, 0).unwrap();
     drop(store);
@@ -90,12 +90,19 @@ async fn reasoning_json_event_is_flushed_before_generation_completes() {
         }
     });
 
+    // Regression test for coverage-instrumented startup: prove early flushing from process state,
+    // not a one-second wall-clock deadline.
     let first_events = receiver
-        .recv_timeout(Duration::from_secs(1))
-        .expect("reasoning event should be flushed during the provider delay");
+        .recv_timeout(Duration::from_secs(15))
+        .expect("reasoning event should be emitted while generation is still running");
     assert_eq!(first_events[0]["event_type"], "provider.started");
     assert_eq!(first_events[1]["event_type"], "provider.reasoning-delta");
-    assert!(child.wait().unwrap().success());
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "generation completed before the reasoning event was observed"
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
     reader.join().unwrap();
 }
 

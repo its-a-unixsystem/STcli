@@ -98,14 +98,6 @@
     },
     {
       "kind": "compatibility-outcome",
-      "id": "scope.text-completion.negative",
-      "name": "text completion is hard-unsupported",
-      "subject_kind": "feature",
-      "subject": "text-completion",
-      "expected_outcome": "hard-unsupported"
-    },
-    {
-      "kind": "compatibility-outcome",
       "id": "scope.stscript.negative",
       "name": "stscript is hard-unsupported",
       "subject_kind": "feature",

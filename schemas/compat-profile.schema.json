@@ -22,11 +22,12 @@
     "scope": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["formats", "prompt_path", "generation_types", "documented_fallback", "hard_unsupported", "preserved_metadata"],
+      "required": ["formats", "prompt_paths", "generation_types", "exact_features", "documented_fallback", "hard_unsupported", "preserved_metadata"],
       "properties": {
         "formats": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-        "prompt_path": { "type": "string", "minLength": 1 },
+        "prompt_paths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
         "generation_types": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "exact_features": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
         "documented_fallback": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
         "hard_unsupported": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
         "preserved_metadata": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }

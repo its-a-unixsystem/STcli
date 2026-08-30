@@ -145,7 +145,7 @@ fn real_provider_completes_two_streamed_turns_without_persisting_credentials() {
         &[&"artifact", &"import", &example("character.json")],
     );
     let character = envelope_data(&imported, &configuration.api_key);
-    let character_hash = character["revision_hash"].as_str().unwrap();
+    let character_hash = character["primary"]["revision_hash"].as_str().unwrap();
 
     let created = run(
         &home,

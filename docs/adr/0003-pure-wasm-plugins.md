@@ -1,5 +1,7 @@
 # Limit MVP Plugins to pure Wasm effects
 
+**Status:** superseded by [ADR 0006](0006-layered-plugins-and-brokered-effects.md) for the post-MVP roadmap. Still in force for the MVP, which ships only the pure Engine Hook layer.
+
 MVP Plugins use the WebAssembly Component Model and return declarative effects through closed capabilities. We rejected native dynamic libraries, arbitrary JavaScript, and plugin network/model/filesystem/secret access because they expand the trust boundary, make replay dependent on live side effects, and delay the compatibility engine.
 
 ## Consequences

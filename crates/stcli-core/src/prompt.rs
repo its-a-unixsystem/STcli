@@ -425,6 +425,8 @@ pub enum PromptError {
     MissingIdentifier,
     #[error("prompt preset macro evaluation failed: {0}")]
     Render(String),
+    #[error("context formatting template failed: {0}")]
+    ContextTemplate(String),
     #[error(
         "protected prompt content requires {required} tokens, but only {available} are available"
     )]

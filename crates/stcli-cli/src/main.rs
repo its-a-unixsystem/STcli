@@ -14,11 +14,12 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use serde_json::{Value, json};
 use stcli_core::{
-    AppPaths, CapsuleKind, CliEnvelope, CliError, Config, ContentHash, EngineCommand,
-    EngineInspection, EngineQuery, EngineResult, EntityId, InstalledPlugin, PluginCapability,
-    PromptDiff, PromptSegmentChange, PromptSegmentInspection, PromptTextChangeKind, ProviderEvent,
-    ProviderSettings, RegexReplaceRequest, RegexRequest, SessionConfiguration, StcliEngine,
-    TurnCapsule, run_replace_worker, run_worker, verify_fixture_suite,
+    AppPaths, ArtifactBundle, CapsuleKind, CliEnvelope, CliError, Config, ContentHash,
+    EngineCommand, EngineInspection, EngineQuery, EngineResult, EntityId, InstalledPlugin,
+    PluginCapability, PromptDiff, PromptSegmentChange, PromptSegmentInspection,
+    PromptTextChangeKind, ProviderEvent, ProviderSettings, RegexReplaceRequest, RegexRequest,
+    SessionConfiguration, StcliEngine, TurnCapsule, run_replace_worker, run_worker,
+    verify_fixture_suite,
 };
 
 #[derive(Debug, Parser)]
@@ -79,6 +80,10 @@ enum Command {
     Tui {
         session: Option<EntityId>,
     },
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
     ProviderTest {
         #[command(subcommand)]
         command: ProviderTestCommand,
@@ -101,6 +106,7 @@ impl Command {
             Self::Candidate { command } => command.name(),
             Self::Plugin { command } => command.name(),
             Self::Prompt { command } => command.name(),
+            Self::Profile { command } => command.name(),
             Self::Compat { .. } => "compat.verify",
             Self::Tui { .. } => "tui",
             Self::ProviderTest { .. } => "provider-test.serve",
@@ -489,6 +495,33 @@ struct CliStreamEvent<'a> {
 }
 
 #[derive(Debug, Subcommand)]
+enum ProfileCommand {
+    List,
+    Show {
+        name: String,
+    },
+    Add {
+        name: String,
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+    Remove {
+        name: String,
+    },
+}
+
+impl ProfileCommand {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::List => "profile.list",
+            Self::Show { .. } => "profile.show",
+            Self::Add { .. } => "profile.add",
+            Self::Remove { .. } => "profile.remove",
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
 enum CompatCommand {
     Verify(VerifyArgs),
 }
@@ -546,6 +579,7 @@ async fn run(output: OutputFormat, command: Command) -> Result<()> {
         Command::Candidate { command } => candidate(output, command).await,
         Command::Plugin { command } => plugin(output, command).await,
         Command::Prompt { command } => prompt(output, command),
+        Command::Profile { command } => profile(output, command).await,
         Command::Compat {
             command: CompatCommand::Verify(args),
         } => verify(output, args).await,
@@ -592,13 +626,25 @@ async fn artifact(output: OutputFormat, command: ArtifactCommand) -> Result<()> 
         ArtifactCommand::Import { path } => {
             let source = fs::read(&path)
                 .with_context(|| format!("failed to read artifact '{}'", path.display()))?;
-            let EngineResult::Artifact(record) = engine
+            let EngineResult::ArtifactBundle {
+                primary,
+                supplementary_artifacts,
+                asset_count,
+            } = engine
                 .execute(EngineCommand::ImportArtifact { source }, |_| {})
                 .await?
             else {
                 unreachable!()
             };
-            emit(output, command_name, &record)
+            emit(
+                output,
+                command_name,
+                &ArtifactBundle {
+                    primary,
+                    supplementary_artifacts,
+                    asset_count,
+                },
+            )
         }
         ArtifactCommand::List => {
             let EngineInspection::Artifacts(records) =
@@ -694,6 +740,10 @@ fn configuration_from_args(
             ca_certificate_pem,
             model: args.model.unwrap_or_else(|| "fixture-model".to_owned()),
             stream: args.provider_stream.unwrap_or(true),
+            format_mode: Default::default(),
+            completions_path: None,
+            instruct_template: None,
+            context_formatting: None,
         }
     };
     let generation_settings = serde_json::from_str::<Value>(&args.generation_settings)
@@ -710,6 +760,66 @@ fn configuration_from_args(
         plugins: vec![],
         script_grants: args.grant_script,
     })
+}
+
+async fn profile(output: OutputFormat, command: ProfileCommand) -> Result<()> {
+    let command_name = command.name();
+    let paths = AppPaths::discover()?;
+    paths.ensure_exists()?;
+    match command {
+        ProfileCommand::List => {
+            let config = Config::load(&paths.config)?;
+            emit(output, command_name, &config.providers)
+        }
+        ProfileCommand::Show { name } => {
+            let config = Config::load(&paths.config)?;
+            let profile = config
+                .resolve_provider_profile(&name)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            emit(output, command_name, profile)
+        }
+        ProfileCommand::Add { name, file } => {
+            let content = if let Some(file_path) = file {
+                if file_path == Path::new("-") {
+                    let mut buffer = String::new();
+                    io::stdin().read_to_string(&mut buffer)?;
+                    buffer
+                } else {
+                    fs::read_to_string(&file_path).with_context(|| {
+                        format!("failed to read profile file '{}'", file_path.display())
+                    })?
+                }
+            } else {
+                let mut buffer = String::new();
+                io::stdin().read_to_string(&mut buffer)?;
+                buffer
+            };
+            let settings: ProviderSettings = if content.trim_start().starts_with('{') {
+                serde_json::from_str(&content).context("failed to parse profile JSON")?
+            } else {
+                toml::from_str(&content).context("failed to parse profile TOML")?
+            };
+            Config::add_provider_profile(&paths.config, &name, settings.clone())
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            emit(
+                output,
+                command_name,
+                &json!({ "name": name, "profile": settings }),
+            )
+        }
+        ProfileCommand::Remove { name } => {
+            let removed = Config::remove_provider_profile(&paths.config, &name)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            if !removed {
+                anyhow::bail!("provider profile '{name}' not found");
+            }
+            emit(
+                output,
+                command_name,
+                &json!({ "name": name, "removed": true }),
+            )
+        }
+    }
 }
 
 async fn session(output: OutputFormat, command: SessionCommand) -> Result<()> {
@@ -1576,7 +1686,19 @@ fn emit_engine_result(output: OutputFormat, command: &str, result: &EngineResult
     match result {
         EngineResult::InstalledPlugin(data) => emit(output, command, data),
         EngineResult::PluginRemoval(data) => emit(output, command, data),
-        EngineResult::Artifact(data) => emit(output, command, data),
+        EngineResult::ArtifactBundle {
+            primary,
+            supplementary_artifacts,
+            asset_count,
+        } => emit(
+            output,
+            command,
+            &ArtifactBundle {
+                primary: primary.clone(),
+                supplementary_artifacts: supplementary_artifacts.clone(),
+                asset_count: *asset_count,
+            },
+        ),
         EngineResult::CreatedSession(data) => emit(output, command, data),
         EngineResult::Session(data) => emit(output, command, data),
         EngineResult::Purge(data) => emit(output, command, data),

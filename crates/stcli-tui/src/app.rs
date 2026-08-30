@@ -1,12 +1,17 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use stcli_core::{
     ArtifactKind, ArtifactRecord, AttemptStatus, BranchHistory, BranchProjection,
-    CandidateProjection, EngineCommand, EngineInspection, EngineQuery, EngineResult, EntityId,
-    ProviderEvent, SessionSummary, StcliEngine, decode_artifact,
+    CandidateProjection, ContentHash, EngineCommand, EngineInspection, EngineQuery, EngineResult,
+    EntityId, ProviderEvent, ProviderSettings, ProviderTemplate, SessionConfiguration,
+    SessionSummary, StcliEngine, decode_artifact, validate_provider_settings,
 };
-use std::collections::HashMap;
 
 use crate::{config::Config, theme::Theme};
 
@@ -50,6 +55,48 @@ pub struct PresetOption {
 }
 
 #[derive(Clone, Debug)]
+pub struct CharacterOption {
+    pub revision_hash: ContentHash,
+    pub name: String,
+    pub greeting_count: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct NewSessionState {
+    pub characters: Vec<CharacterOption>,
+    pub selected_character: usize,
+    pub providers: Vec<String>,
+    pub selected_provider: usize,
+    pub presets: Vec<PresetOption>,
+    pub selected_preset: usize,
+    pub persona: String,
+    pub selected_greeting: usize,
+    pub focused_field: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ImportCharacterState {
+    pub input: String,
+    pub return_to_new_session: Option<Box<NewSessionState>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct NewProviderProfileState {
+    pub templates: Vec<ProviderTemplate>,
+    pub selected_template: usize,
+    pub name: String,
+    pub base_url: String,
+    pub model: String,
+    pub chat_path: String,
+    pub api_key_env: String,
+    pub stream: bool,
+    pub timeout_seconds: u64,
+    pub focused_field: usize,
+    pub return_to_new_session: Option<Box<NewSessionState>>,
+    pub return_to_providers: bool,
+}
+
+#[derive(Clone, Debug)]
 pub enum Popup {
     Help,
     Branches {
@@ -73,6 +120,9 @@ pub enum Popup {
         session_id: EntityId,
         name: String,
     },
+    NewSession(Box<NewSessionState>),
+    ImportCharacter(ImportCharacterState),
+    NewProviderProfile(Box<NewProviderProfileState>),
 }
 
 #[derive(Clone, Debug)]
@@ -158,6 +208,7 @@ pub struct App {
     deletion_pending: bool,
     pub hit_targets: Vec<HitTarget>,
     toast_timeout: Duration,
+    pub config_dir: Option<PathBuf>,
 }
 
 impl App {
@@ -192,6 +243,7 @@ impl App {
             deletion_pending: false,
             hit_targets: Vec::new(),
             toast_timeout,
+            config_dir: None,
         };
         app.reload_sessions()?;
         if let Some(session_id) = direct_session
@@ -200,6 +252,17 @@ impl App {
             app.show_error(error.to_string());
         }
         Ok(app)
+    }
+
+    pub fn set_config_dir(&mut self, path: PathBuf) {
+        self.config_dir = Some(path);
+    }
+
+    pub fn reload_config(&mut self) -> anyhow::Result<()> {
+        if let Some(dir) = &self.config_dir {
+            self.config = Config::load(dir)?;
+        }
+        Ok(())
     }
 
     pub fn reload_sessions(&mut self) -> anyhow::Result<()> {
@@ -238,7 +301,7 @@ impl App {
             unreachable!("branch history query returned another inspection type")
         };
         self.focused_message = message_count(&history).saturating_sub(1);
-        self.history = Some(history);
+        self.history = Some(*history);
         self.chat_focus = ChatFocus::Composer;
         self.screen = Screen::Chat;
         self.scroll = u16::MAX;
@@ -263,7 +326,7 @@ impl App {
         self.focused_message = self
             .focused_message
             .min(message_count(&history).saturating_sub(1));
-        self.history = Some(history);
+        self.history = Some(*history);
         Ok(())
     }
     pub fn filtered_sessions(&self) -> Vec<&SessionSummary> {
@@ -421,6 +484,7 @@ impl App {
             }
             KeyCode::Char('x') => return self.delete_session_list_entry(),
             KeyCode::Char('r') => self.start_rename(),
+            KeyCode::Char('n') => self.open_new_session_popup(),
             KeyCode::Char('?') => self.popup = Some(Popup::Help),
             KeyCode::Enter => {
                 let entries = self.session_list_entries();
@@ -613,6 +677,24 @@ impl App {
 
     fn handle_popup(&mut self, key: KeyEvent, mut popup: Popup) -> Effect {
         if key.code == KeyCode::Esc {
+            match popup {
+                Popup::ImportCharacter(mut state) => {
+                    if let Some(session_state) = state.return_to_new_session.take() {
+                        self.popup = Some(Popup::NewSession(session_state));
+                        return Effect::None;
+                    }
+                }
+                Popup::NewProviderProfile(mut state) => {
+                    if let Some(session_state) = state.return_to_new_session.take() {
+                        self.popup = Some(Popup::NewSession(session_state));
+                        return Effect::None;
+                    } else if state.return_to_providers {
+                        self.open_provider_popup();
+                        return Effect::None;
+                    }
+                }
+                _ => {}
+            }
             return Effect::None;
         }
         match &mut popup {
@@ -658,10 +740,16 @@ impl App {
             },
             Popup::Providers { names, selected } => match key.code {
                 KeyCode::Up | KeyCode::Char('k') => *selected = selected.saturating_sub(1),
-                KeyCode::Down | KeyCode::Char('j') => {
-                    *selected = (*selected + 1).min(names.len().saturating_sub(1))
+                KeyCode::Down | KeyCode::Char('j') => *selected = (*selected + 1).min(names.len()),
+                KeyCode::Char('a') | KeyCode::Char('n') => {
+                    self.open_new_provider_profile_popup(None, true);
+                    return Effect::None;
                 }
                 KeyCode::Enter => {
+                    if *selected == names.len() {
+                        self.open_new_provider_profile_popup(None, true);
+                        return Effect::None;
+                    }
                     if let (Some(history), Some(name)) = (&self.history, names.get(*selected))
                         && let Some(provider) = self.config.core.providers.get(name)
                     {
@@ -710,6 +798,274 @@ impl App {
                 }
                 _ => {}
             },
+            Popup::ImportCharacter(state) => match key.code {
+                KeyCode::Backspace => {
+                    state.input.pop();
+                }
+                KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    state.input.push(character);
+                }
+                KeyCode::Enter => {
+                    let path_str = state.input.trim();
+                    if path_str.is_empty() {
+                        self.show_error("Path cannot be empty");
+                        self.popup = Some(Popup::ImportCharacter(state.clone()));
+                        return Effect::None;
+                    }
+                    let expanded = if let Some(stripped) = path_str.strip_prefix("~/") {
+                        if let Ok(home) = std::env::var("HOME") {
+                            Path::new(&home).join(stripped)
+                        } else {
+                            PathBuf::from(path_str)
+                        }
+                    } else {
+                        PathBuf::from(path_str)
+                    };
+                    if !expanded.exists() {
+                        self.show_error(format!("File does not exist: {}", expanded.display()));
+                        self.popup = Some(Popup::ImportCharacter(state.clone()));
+                        return Effect::None;
+                    }
+                    let source = match fs::read(&expanded) {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            self.show_error(format!("Failed to read file: {error}"));
+                            self.popup = Some(Popup::ImportCharacter(state.clone()));
+                            return Effect::None;
+                        }
+                    };
+                    self.popup = Some(Popup::ImportCharacter(state.clone()));
+                    return Effect::Execute(EngineCommand::ImportArtifact { source });
+                }
+                _ => {}
+            },
+            Popup::NewProviderProfile(state) => {
+                if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return self.submit_provider_profile(state.as_ref().clone());
+                }
+                match key.code {
+                    KeyCode::Tab | KeyCode::Down => {
+                        state.focused_field = (state.focused_field + 1) % 9;
+                    }
+                    KeyCode::Char('j') if !(1..=5).contains(&state.focused_field) => {
+                        state.focused_field = (state.focused_field + 1) % 9;
+                    }
+                    KeyCode::BackTab | KeyCode::Up => {
+                        state.focused_field = (state.focused_field + 8) % 9;
+                    }
+                    KeyCode::Char('k') if !(1..=5).contains(&state.focused_field) => {
+                        state.focused_field = (state.focused_field + 8) % 9;
+                    }
+                    _ => match state.focused_field {
+                        0 => match key.code {
+                            KeyCode::Left | KeyCode::Char('h') => {
+                                state.selected_template = state.selected_template.saturating_sub(1);
+                                Self::apply_template_to_profile_state(state);
+                            }
+                            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => {
+                                state.selected_template =
+                                    (state.selected_template + 1).min(state.templates.len());
+                                Self::apply_template_to_profile_state(state);
+                            }
+                            KeyCode::Enter => state.focused_field = 1,
+                            _ => {}
+                        },
+                        1 => match key.code {
+                            KeyCode::Backspace => {
+                                state.name.pop();
+                            }
+                            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                state.name.push(c);
+                            }
+                            KeyCode::Enter => state.focused_field = 2,
+                            _ => {}
+                        },
+                        2 => match key.code {
+                            KeyCode::Backspace => {
+                                state.base_url.pop();
+                            }
+                            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                state.base_url.push(c);
+                            }
+                            KeyCode::Enter => state.focused_field = 3,
+                            _ => {}
+                        },
+                        3 => match key.code {
+                            KeyCode::Backspace => {
+                                state.model.pop();
+                            }
+                            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                state.model.push(c);
+                            }
+                            KeyCode::Enter => state.focused_field = 4,
+                            _ => {}
+                        },
+                        4 => match key.code {
+                            KeyCode::Backspace => {
+                                state.chat_path.pop();
+                            }
+                            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                state.chat_path.push(c);
+                            }
+                            KeyCode::Enter => state.focused_field = 5,
+                            _ => {}
+                        },
+                        5 => match key.code {
+                            KeyCode::Backspace => {
+                                state.api_key_env.pop();
+                            }
+                            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                state.api_key_env.push(c);
+                            }
+                            KeyCode::Enter => state.focused_field = 6,
+                            _ => {}
+                        },
+                        6 => match key.code {
+                            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') => {
+                                state.stream = !state.stream;
+                            }
+                            KeyCode::Enter => state.focused_field = 7,
+                            _ => {}
+                        },
+                        7 => {
+                            if key.code == KeyCode::Enter {
+                                return self.submit_provider_profile(state.as_ref().clone());
+                            }
+                        }
+                        8 => {
+                            if key.code == KeyCode::Enter {
+                                if let Some(session_state) = state.return_to_new_session.take() {
+                                    self.popup = Some(Popup::NewSession(session_state));
+                                } else if state.return_to_providers {
+                                    self.open_provider_popup();
+                                } else {
+                                    self.popup = None;
+                                }
+                                return Effect::None;
+                            }
+                        }
+                        _ => {}
+                    },
+                }
+            }
+            Popup::NewSession(state) => {
+                if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return self.submit_new_session(state.as_ref().clone());
+                }
+                match key.code {
+                    KeyCode::Tab | KeyCode::Down => {
+                        state.focused_field = (state.focused_field + 1) % 7;
+                    }
+                    KeyCode::Char('j') if state.focused_field != 3 => {
+                        state.focused_field = (state.focused_field + 1) % 7;
+                    }
+                    KeyCode::BackTab | KeyCode::Up => {
+                        state.focused_field = (state.focused_field + 6) % 7;
+                    }
+                    KeyCode::Char('k') if state.focused_field != 3 => {
+                        state.focused_field = (state.focused_field + 6) % 7;
+                    }
+                    _ => match state.focused_field {
+                        0 => match key.code {
+                            KeyCode::Left | KeyCode::Char('h') => {
+                                state.selected_character =
+                                    state.selected_character.saturating_sub(1);
+                                state.selected_greeting = 0;
+                            }
+                            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => {
+                                state.selected_character =
+                                    (state.selected_character + 1).min(state.characters.len());
+                                state.selected_greeting = 0;
+                            }
+                            KeyCode::Enter => {
+                                if state.characters.is_empty()
+                                    || state.selected_character == state.characters.len()
+                                {
+                                    self.popup =
+                                        Some(Popup::ImportCharacter(ImportCharacterState {
+                                            input: String::new(),
+                                            return_to_new_session: Some(state.clone()),
+                                        }));
+                                    return Effect::None;
+                                }
+                                state.focused_field = 1;
+                            }
+                            _ => {}
+                        },
+                        1 => match key.code {
+                            KeyCode::Left | KeyCode::Char('h') => {
+                                state.selected_provider = state.selected_provider.saturating_sub(1);
+                            }
+                            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => {
+                                state.selected_provider =
+                                    (state.selected_provider + 1).min(state.providers.len());
+                            }
+                            KeyCode::Enter => {
+                                if state.providers.is_empty()
+                                    || state.selected_provider == state.providers.len()
+                                {
+                                    self.open_new_provider_profile_popup(
+                                        Some(state.clone()),
+                                        false,
+                                    );
+                                    return Effect::None;
+                                }
+                                state.focused_field = 2;
+                            }
+                            _ => {}
+                        },
+                        2 => match key.code {
+                            KeyCode::Left | KeyCode::Char('h') => {
+                                state.selected_preset = state.selected_preset.saturating_sub(1);
+                            }
+                            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => {
+                                state.selected_preset =
+                                    (state.selected_preset + 1).min(state.presets.len());
+                            }
+                            KeyCode::Enter => state.focused_field = 3,
+                            _ => {}
+                        },
+                        3 => match key.code {
+                            KeyCode::Backspace => {
+                                state.persona.pop();
+                            }
+                            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                state.persona.push(c);
+                            }
+                            KeyCode::Enter => state.focused_field = 4,
+                            _ => {}
+                        },
+                        4 => match key.code {
+                            KeyCode::Left | KeyCode::Char('h') => {
+                                state.selected_greeting = state.selected_greeting.saturating_sub(1);
+                            }
+                            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => {
+                                let max = state
+                                    .characters
+                                    .get(state.selected_character)
+                                    .map(|c| c.greeting_count)
+                                    .unwrap_or(1);
+                                state.selected_greeting =
+                                    (state.selected_greeting + 1).min(max.saturating_sub(1));
+                            }
+                            KeyCode::Enter => state.focused_field = 5,
+                            _ => {}
+                        },
+                        5 => {
+                            if key.code == KeyCode::Enter {
+                                return self.submit_new_session(state.as_ref().clone());
+                            }
+                        }
+                        6 => {
+                            if key.code == KeyCode::Enter {
+                                self.popup = None;
+                                return Effect::None;
+                            }
+                        }
+                        _ => {}
+                    },
+                }
+            }
         }
         self.popup = Some(popup);
         Effect::None
@@ -740,81 +1096,341 @@ impl App {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
-        if names.is_empty() {
-            self.show_error("No provider profiles are configured");
-        } else {
-            let selected = self
-                .history
-                .as_ref()
-                .and_then(|history| {
-                    names.iter().position(|name| {
-                        self.config.core.providers.get(name)
-                            == Some(&history.configuration.configuration.provider)
-                    })
+        let selected = self
+            .history
+            .as_ref()
+            .and_then(|history| {
+                names.iter().position(|name| {
+                    self.config.core.providers.get(name)
+                        == Some(&history.configuration.configuration.provider)
                 })
-                .unwrap_or(0);
-            self.popup = Some(Popup::Providers { names, selected });
+            })
+            .unwrap_or(0);
+        self.popup = Some(Popup::Providers { names, selected });
+    }
+
+    pub fn query_character_options(&self) -> Vec<CharacterOption> {
+        let mut options = Vec::new();
+        for kind in [
+            ArtifactKind::CharacterCardV3,
+            ArtifactKind::CharacterCardV2,
+            ArtifactKind::CharacterCardV1,
+        ] {
+            if let Ok(EngineInspection::Artifacts(records)) = self
+                .engine
+                .inspect(EngineQuery::Artifacts { kind: Some(kind) })
+            {
+                for record in records {
+                    let hash_str = record.revision_hash.to_string();
+                    let mut name = hash_str[hash_str.len().saturating_sub(12)..].to_owned();
+                    let mut greeting_count = 1;
+                    if let Ok(EngineInspection::ArtifactSource(source)) =
+                        self.engine.inspect(EngineQuery::ArtifactSource {
+                            revision_hash: record.revision_hash.clone(),
+                        })
+                        && let Ok(decoded) = decode_artifact(&source)
+                    {
+                        greeting_count = decoded.greetings.len().max(1);
+                        if let Some(n) = decoded
+                            .semantic
+                            .get("data")
+                            .and_then(|d| d.get("name"))
+                            .and_then(|n| n.as_str())
+                        {
+                            if !n.trim().is_empty() {
+                                name = n.to_owned();
+                            }
+                        } else if let Some(n) =
+                            decoded.semantic.get("name").and_then(|n| n.as_str())
+                            && !n.trim().is_empty()
+                        {
+                            name = n.to_owned();
+                        }
+                    }
+                    options.push(CharacterOption {
+                        revision_hash: record.revision_hash,
+                        name,
+                        greeting_count,
+                    });
+                }
+            }
+        }
+        options
+    }
+
+    pub fn query_preset_options(&self) -> anyhow::Result<Vec<PresetOption>> {
+        let EngineInspection::Artifacts(records) = self.engine.inspect(EngineQuery::Artifacts {
+            kind: Some(ArtifactKind::ChatCompletionPreset),
+        })?
+        else {
+            unreachable!("artifacts query returned another inspection type")
+        };
+        Ok(records
+            .into_iter()
+            .map(|record| {
+                let label = self
+                    .engine
+                    .inspect(EngineQuery::ArtifactSource {
+                        revision_hash: record.revision_hash.clone(),
+                    })
+                    .ok()
+                    .and_then(|inspection| match inspection {
+                        EngineInspection::ArtifactSource(source) => decode_artifact(&source).ok(),
+                        _ => None,
+                    })
+                    .and_then(|artifact| {
+                        artifact
+                            .semantic
+                            .get("name")
+                            .and_then(|name| name.as_str())
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_else(|| {
+                        let hash = record.revision_hash.to_string();
+                        format!(
+                            "{} · {}",
+                            record.source_format,
+                            &hash[hash.len().saturating_sub(12)..]
+                        )
+                    });
+                PresetOption { record, label }
+            })
+            .collect())
+    }
+
+    pub fn open_new_session_popup(&mut self) {
+        let characters = self.query_character_options();
+        let presets = match self.query_preset_options() {
+            Ok(presets) => presets,
+            Err(error) => {
+                self.show_error(error.to_string());
+                Vec::new()
+            }
+        };
+        let state = Box::new(NewSessionState {
+            selected_character: 0,
+            characters,
+            providers: self.config.core.providers.keys().cloned().collect(),
+            selected_provider: 0,
+            presets,
+            selected_preset: 0,
+            persona: "User".to_owned(),
+            selected_greeting: 0,
+            focused_field: 0,
+        });
+        self.popup = if state.characters.is_empty() {
+            Some(Popup::ImportCharacter(ImportCharacterState {
+                input: String::new(),
+                return_to_new_session: Some(state),
+            }))
+        } else {
+            Some(Popup::NewSession(state))
+        };
+    }
+
+    pub fn open_new_provider_profile_popup(
+        &mut self,
+        return_to_new_session: Option<Box<NewSessionState>>,
+        return_to_providers: bool,
+    ) {
+        let templates = match self
+            .config_dir
+            .as_ref()
+            .map(|directory| stcli_core::Config::load_provider_templates(directory))
+        {
+            Some(Ok(templates)) => templates.into_values().collect(),
+            Some(Err(error)) => {
+                self.show_error(error.to_string());
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        self.popup = Some(Popup::NewProviderProfile(Box::new(
+            NewProviderProfileState {
+                templates,
+                selected_template: 0,
+                name: String::new(),
+                base_url: "https://".to_owned(),
+                model: String::new(),
+                chat_path: "/v1/chat/completions".to_owned(),
+                api_key_env: String::new(),
+                stream: true,
+                timeout_seconds: 120,
+                focused_field: 1,
+                return_to_new_session,
+                return_to_providers,
+            },
+        )));
+    }
+
+    fn apply_template_to_profile_state(state: &mut NewProviderProfileState) {
+        if state.selected_template == 0 {
+            return;
+        }
+        if let Some(template) = state.templates.get(state.selected_template - 1) {
+            state.base_url = template.base_url.clone();
+            state.chat_path = template.chat_completions_path.clone();
+            state.model = template.default_model.clone();
+            state.api_key_env = template.api_key_env.clone().unwrap_or_default();
+            state.stream = template.stream;
+            state.timeout_seconds = template.timeout_seconds;
+            if state.name.is_empty() {
+                state.name = template.id.clone();
+            }
         }
     }
 
-    fn open_preset_popup(&mut self) {
-        match self.engine.inspect(EngineQuery::Artifacts {
-            kind: Some(ArtifactKind::ChatCompletionPreset),
-        }) {
-            Ok(EngineInspection::Artifacts(records)) => {
-                let rows = records
-                    .into_iter()
-                    .map(|record| {
-                        let label = self
-                            .engine
-                            .inspect(EngineQuery::ArtifactSource {
-                                revision_hash: record.revision_hash.clone(),
-                            })
-                            .ok()
-                            .and_then(|inspection| match inspection {
-                                EngineInspection::ArtifactSource(source) => {
-                                    decode_artifact(&source).ok()
-                                }
-                                _ => None,
-                            })
-                            .and_then(|artifact| {
-                                artifact
-                                    .semantic
-                                    .get("name")
-                                    .and_then(|name| name.as_str())
-                                    .map(str::to_owned)
-                            })
-                            .unwrap_or_else(|| {
-                                let hash = record.revision_hash.to_string();
-                                format!(
-                                    "{} · {}",
-                                    record.source_format,
-                                    &hash[hash.len().saturating_sub(12)..]
-                                )
-                            });
-                        PresetOption { record, label }
-                    })
-                    .collect::<Vec<_>>();
-                let selected = self
-                    .history
-                    .as_ref()
-                    .and_then(|history| {
-                        history
-                            .configuration
-                            .configuration
-                            .prompt_preset_revision
-                            .as_ref()
-                    })
-                    .and_then(|current| {
-                        rows.iter()
-                            .position(|row| &row.record.revision_hash == current)
-                    })
-                    .map_or(0, |index| index + 1);
-                self.popup = Some(Popup::Presets { rows, selected });
-            }
-            Err(error) => self.show_error(error.to_string()),
-            _ => unreachable!(),
+    fn submit_provider_profile(&mut self, mut state: NewProviderProfileState) -> Effect {
+        if state.name.trim().is_empty() {
+            self.show_error("Profile name cannot be empty");
+            self.popup = Some(Popup::NewProviderProfile(Box::new(state)));
+            return Effect::None;
         }
+        let settings = ProviderSettings {
+            id: state.name.clone(),
+            base_url: state.base_url.trim().to_owned(),
+            chat_completions_path: state.chat_path.trim().to_owned(),
+            api_key_env: if state.api_key_env.trim().is_empty() {
+                None
+            } else {
+                Some(state.api_key_env.trim().to_owned())
+            },
+            static_headers: BTreeMap::new(),
+            timeout_seconds: state.timeout_seconds,
+            ca_certificate_pem: None,
+            model: state.model.trim().to_owned(),
+            stream: state.stream,
+            format_mode: Default::default(),
+            completions_path: None,
+            instruct_template: None,
+            context_formatting: None,
+        };
+        if let Err(error) = validate_provider_settings(&settings) {
+            self.show_error(format!("Invalid settings: {error}"));
+            self.popup = Some(Popup::NewProviderProfile(Box::new(state)));
+            return Effect::None;
+        }
+        let config_dir = match &self.config_dir {
+            Some(dir) => dir.clone(),
+            None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        };
+        if let Err(error) =
+            stcli_core::Config::add_provider_profile(&config_dir, &state.name, settings)
+        {
+            self.show_error(format!("Failed to save profile: {error}"));
+            self.popup = Some(Popup::NewProviderProfile(Box::new(state)));
+            return Effect::None;
+        }
+        if let Err(error) = self.reload_config() {
+            self.show_error(format!("Failed to reload config: {error}"));
+        }
+        let profile_name = state.name.clone();
+        if let Some(mut session_state) = state.return_to_new_session.take() {
+            session_state.providers = self.config.core.providers.keys().cloned().collect();
+            if let Some(pos) = session_state
+                .providers
+                .iter()
+                .position(|p| p == &profile_name)
+            {
+                session_state.selected_provider = pos;
+            }
+            self.show_info(format!("Created provider profile '{profile_name}'"));
+            self.popup = Some(Popup::NewSession(session_state));
+        } else if state.return_to_providers {
+            let names = self
+                .config
+                .core
+                .providers
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            let selected = names.iter().position(|p| p == &profile_name).unwrap_or(0);
+            self.show_info(format!("Created provider profile '{profile_name}'"));
+            self.popup = Some(Popup::Providers { names, selected });
+        } else {
+            self.show_info(format!("Created provider profile '{profile_name}'"));
+            self.popup = None;
+        }
+        Effect::None
+    }
+
+    fn submit_new_session(&mut self, state: NewSessionState) -> Effect {
+        if state.characters.is_empty() || state.selected_character >= state.characters.len() {
+            self.show_error("Please select or import a character card first");
+            self.popup = Some(Popup::NewSession(Box::new(state)));
+            return Effect::None;
+        }
+        if state.providers.is_empty() || state.selected_provider >= state.providers.len() {
+            self.show_error("Please select or add a provider profile first");
+            self.popup = Some(Popup::NewSession(Box::new(state)));
+            return Effect::None;
+        }
+        let character = &state.characters[state.selected_character];
+        let provider_name = &state.providers[state.selected_provider];
+        let Some(provider_settings) = self.config.core.providers.get(provider_name) else {
+            self.show_error(format!("Provider profile '{provider_name}' not found"));
+            self.popup = Some(Popup::NewSession(Box::new(state)));
+            return Effect::None;
+        };
+        let prompt_preset_revision =
+            if state.selected_preset > 0 && state.selected_preset <= state.presets.len() {
+                Some(
+                    state.presets[state.selected_preset - 1]
+                        .record
+                        .revision_hash
+                        .clone(),
+                )
+            } else {
+                None
+            };
+        let configuration = SessionConfiguration {
+            compatibility_profile: "sillytavern-1.18-core".to_owned(),
+            character_revision: character.revision_hash.clone(),
+            persona_name: if state.persona.trim().is_empty() {
+                "User".to_owned()
+            } else {
+                state.persona.clone()
+            },
+            lorebook_revisions: vec![],
+            prompt_preset_revision,
+            provider: provider_settings.clone(),
+            tokenizer: "tiktoken:o200k_base".to_owned(),
+            generation_settings: serde_json::json!({}),
+            plugins: vec![],
+            script_grants: vec![],
+        };
+        let greeting_index = state.selected_greeting;
+        self.popup = None;
+        Effect::Execute(EngineCommand::CreateSession {
+            configuration: Box::new(configuration),
+            greeting_index,
+        })
+    }
+
+    fn open_preset_popup(&mut self) {
+        let rows = match self.query_preset_options() {
+            Ok(rows) => rows,
+            Err(error) => {
+                self.show_error(error.to_string());
+                return;
+            }
+        };
+        let selected = self
+            .history
+            .as_ref()
+            .and_then(|history| {
+                history
+                    .configuration
+                    .configuration
+                    .prompt_preset_revision
+                    .as_ref()
+            })
+            .and_then(|current| {
+                rows.iter()
+                    .position(|row| &row.record.revision_hash == current)
+            })
+            .map_or(0, |index| index + 1);
+        self.popup = Some(Popup::Presets { rows, selected });
     }
 
     fn delete_session_list_entry(&mut self) -> Effect {
@@ -995,6 +1611,48 @@ impl App {
     pub fn finish_command(&mut self, result: Result<EngineResult, String>) -> bool {
         self.deletion_pending = false;
         match result {
+            Ok(EngineResult::CreatedSession(created)) => {
+                self.popup = None;
+                if let Err(error) = self.reload_sessions() {
+                    self.show_error(error.to_string());
+                }
+                if let Err(error) = self.open_session(created.session.session_id) {
+                    self.show_error(error.to_string());
+                }
+                true
+            }
+            Ok(EngineResult::ArtifactBundle {
+                primary,
+                supplementary_artifacts,
+                asset_count,
+            }) => {
+                let status = format!(
+                    "Imported character card ({} supplementary Artifacts, {asset_count} assets)",
+                    supplementary_artifacts.len()
+                );
+                if let Some(Popup::ImportCharacter(mut state)) = self.popup.take() {
+                    if let Some(mut session_state) = state.return_to_new_session.take() {
+                        session_state.characters = self.query_character_options();
+                        if let Some(pos) = session_state
+                            .characters
+                            .iter()
+                            .position(|character| character.revision_hash == primary.revision_hash)
+                        {
+                            session_state.selected_character = pos;
+                            session_state.selected_greeting = 0;
+                        }
+                        self.show_info(status);
+                        self.popup = Some(Popup::NewSession(session_state));
+                    } else {
+                        self.show_info(status);
+                        self.popup = None;
+                    }
+                } else {
+                    self.show_info(status);
+                    self.popup = None;
+                }
+                true
+            }
             Ok(_) => {
                 self.popup = None;
                 match self.screen {
@@ -1132,7 +1790,10 @@ impl App {
                 Popup::Help
                 | Popup::ConfirmExit
                 | Popup::ConfirmDelete { .. }
-                | Popup::Rename { .. },
+                | Popup::Rename { .. }
+                | Popup::NewSession(_)
+                | Popup::ImportCharacter(_)
+                | Popup::NewProviderProfile(_),
             ) => return,
             None => {}
         }
@@ -1910,5 +2571,252 @@ mod tests {
             Effect::Execute(EngineCommand::RenameSession { session_id: id, name })
                 if id == session_id && name.is_empty()
         ));
+    }
+
+    #[test]
+    fn rename_completion_stays_on_sessions_screen() {
+        // Regression test: renaming a Session must not open it in Chat.
+        let (mut app, _directory) = app_with_session();
+        let session_id = app.history.as_ref().unwrap().session.session_id;
+        app.screen = Screen::Sessions;
+        app.history = None;
+
+        execute_command(
+            &mut app,
+            Effect::Execute(EngineCommand::RenameSession {
+                session_id,
+                name: "Renamed".to_owned(),
+            }),
+        );
+
+        assert_eq!(app.screen, Screen::Sessions);
+        assert_eq!(app.sessions[0].display_name, "Renamed");
+    }
+
+    #[test]
+    fn new_session_popup_opens_with_n_key_and_shows_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let mut store = stcli_core::Store::open(&database).unwrap();
+        let character = store
+            .import_artifact(stcli_testkit::fixtures::minimal_card().as_bytes())
+            .unwrap();
+        drop(store);
+
+        let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+        assert_eq!(app.screen, Screen::Sessions);
+
+        let effect = app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(matches!(effect, Effect::None));
+
+        let Some(Popup::NewSession(state)) = &app.popup else {
+            panic!("expected Popup::NewSession");
+        };
+        assert_eq!(state.characters.len(), 1);
+        assert_eq!(state.characters[0].revision_hash, character.revision_hash);
+        assert_eq!(state.persona, "User");
+        assert_eq!(state.selected_greeting, 0);
+        assert_eq!(state.focused_field, 0);
+    }
+    #[test]
+    fn new_session_selector_cycles_with_space() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let mut store = stcli_core::Store::open(&database).unwrap();
+        store
+            .import_artifact(stcli_testkit::fixtures::minimal_card().as_bytes())
+            .unwrap();
+        drop(store);
+        let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+        app.open_new_session_popup();
+        let Some(Popup::NewSession(state)) = &mut app.popup else {
+            panic!("expected Popup::NewSession");
+        };
+        state.characters.push(state.characters[0].clone());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        let Some(Popup::NewSession(state)) = &app.popup else {
+            panic!("expected Popup::NewSession");
+        };
+        assert_eq!(state.focused_field, 1);
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+
+        let Some(Popup::NewSession(state)) = &app.popup else {
+            panic!("expected Popup::NewSession");
+        };
+        assert_eq!(state.selected_character, 1);
+    }
+
+    #[test]
+    fn new_session_navigates_to_import_character_and_resumes_with_selection() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let card_path = directory.path().join("character.json");
+        fs::write(&card_path, stcli_testkit::fixtures::minimal_card()).unwrap();
+
+        let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        let Some(Popup::ImportCharacter(import_state)) = &mut app.popup else {
+            panic!("expected Popup::ImportCharacter");
+        };
+        assert!(import_state.return_to_new_session.is_some());
+
+        for c in card_path.to_str().unwrap().chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+
+        let effect = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        execute_command(&mut app, effect);
+
+        let Some(Popup::NewSession(session_state)) = &app.popup else {
+            panic!("expected resumed Popup::NewSession");
+        };
+        assert_eq!(session_state.characters.len(), 1);
+        assert_eq!(session_state.selected_character, 0);
+    }
+
+    #[test]
+    fn new_provider_profile_saves_and_reloads_config_and_resumes_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let mut store = stcli_core::Store::open(&database).unwrap();
+        store
+            .import_artifact(stcli_testkit::fixtures::minimal_card().as_bytes())
+            .unwrap();
+        drop(store);
+        let config_dir = directory.path().join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+        app.set_config_dir(config_dir.clone());
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let Some(Popup::NewProviderProfile(state)) = &mut app.popup else {
+            panic!("expected Popup::NewProviderProfile");
+        };
+        assert_eq!(state.focused_field, 1);
+
+        for c in "openrouter-test".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        for _ in 0..8 {
+            app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+        for c in "https://openrouter.ai".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        for c in "anthropic/claude-3.5-sonnet".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+
+        let effect = app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(matches!(effect, Effect::None));
+
+        assert!(app.config.core.providers.contains_key("openrouter-test"));
+
+        let Some(Popup::NewSession(session_state)) = &app.popup else {
+            panic!("expected resumed Popup::NewSession");
+        };
+        assert_eq!(session_state.providers, vec!["openrouter-test"]);
+        assert_eq!(session_state.selected_provider, 0);
+    }
+
+    #[test]
+    fn provider_template_timeout_is_persisted() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let config_dir = directory.path().join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("provider-templates.toml"),
+            r#"
+[fast]
+name = "Fast"
+id = "fast"
+base_url = "https://fast.example.com"
+chat_completions_path = "/v1/chat/completions"
+default_model = "fast-model"
+stream = true
+timeout_seconds = 45
+"#,
+        )
+        .unwrap();
+        let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+        app.set_config_dir(config_dir.clone());
+        app.open_new_provider_profile_popup(None, false);
+        let Some(Popup::NewProviderProfile(state)) = &mut app.popup else {
+            panic!("expected Popup::NewProviderProfile");
+        };
+        state.focused_field = 0;
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        let effect = app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+
+        assert!(matches!(effect, Effect::None));
+        let config = stcli_core::Config::load(&config_dir).unwrap();
+        assert_eq!(config.providers["fast"].timeout_seconds, 45);
+    }
+
+    #[test]
+    fn submitting_new_session_creates_session_and_transitions_to_chat() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let config_dir = directory.path().join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let mut store = stcli_core::Store::open(&database).unwrap();
+        let _character = store
+            .import_artifact(stcli_testkit::fixtures::minimal_card().as_bytes())
+            .unwrap();
+        drop(store);
+
+        let provider_settings = ProviderSettings {
+            id: "my-provider".to_owned(),
+            base_url: "https://api.example.com".to_owned(),
+            chat_completions_path: "/v1/chat/completions".to_owned(),
+            api_key_env: None,
+            static_headers: BTreeMap::new(),
+            timeout_seconds: 60,
+            ca_certificate_pem: None,
+            model: "test-model".to_owned(),
+            stream: false,
+            format_mode: Default::default(),
+            completions_path: None,
+            instruct_template: None,
+            context_formatting: None,
+        };
+        stcli_core::Config::add_provider_profile(&config_dir, "my-provider", provider_settings)
+            .unwrap();
+
+        let mut app = App::load(
+            StcliEngine::new(database),
+            Config::load(&config_dir).unwrap(),
+            None,
+        )
+        .unwrap();
+        app.set_config_dir(config_dir);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+
+        let effect = app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(matches!(
+            effect,
+            Effect::Execute(EngineCommand::CreateSession { .. })
+        ));
+
+        execute_command(&mut app, effect);
+
+        assert_eq!(app.screen, Screen::Chat);
+        assert!(app.history.is_some());
+        assert!(app.popup.is_none());
     }
 }

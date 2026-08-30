@@ -70,7 +70,10 @@ All modules live in `crates/stcli-core/src/`. The public API is re-exported from
 | Lore Engine | [`lore.rs`](crates/stcli-core/src/lore.rs) |
 | Tokenizer Registry | [`tokenizer.rs`](crates/stcli-core/src/tokenizer.rs) |
 | Prompt Manager | [`prompt.rs`](crates/stcli-core/src/prompt.rs) |
+| Text Completion Formatter | [`text_completion.rs`](crates/stcli-core/src/text_completion.rs) |
 | Provider Client | [`provider.rs`](crates/stcli-core/src/provider.rs) |
+| Plugin Host | [`plugin.rs`](crates/stcli-core/src/plugin.rs) |
+| Script Runtime | [`script.rs`](crates/stcli-core/src/script.rs) |
 | Turn Orchestrator | [`turn.rs`](crates/stcli-core/src/turn.rs) |
 | Capsule System | [`capsule.rs`](crates/stcli-core/src/capsule.rs) |
 | Compatibility Profile | [`profile.rs`](crates/stcli-core/src/profile.rs) |
@@ -79,7 +82,7 @@ All modules live in `crates/stcli-core/src/`. The public API is re-exported from
 
 ## Data model
 
-### SQLite schema (v7)
+### SQLite schema (v10)
 
 The database lives at `$STCLI_HOME/data/stcli.sqlite3` (or XDG equivalent) and runs in WAL mode with foreign keys enabled.
 
@@ -89,6 +92,8 @@ trace_events            Append-only authoritative event log (event sourcing)
 content_blobs           Content-addressed artifact storage
 content_refs            Reference counting for blob GC
 artifact_revisions      Artifact metadata indexed by content hash
+assets                  Media asset index (avatars and CHARX files)
+asset_refs              Reference counting for external asset files
 sessions                Session projection
 branches                Branch projection
 session_configurations  Immutable configuration revisions
@@ -97,6 +102,8 @@ attempts                Generation attempt projection
 candidates              Candidate projection
 state_cells             Variable state projection (local/global)
 ```
+
+Media assets are not stored in SQLite. The `assets` and `asset_refs` tables track files under `data/assets/sha256/`. See [ADR 0007](docs/adr/0007-external-content-addressed-asset-storage.md).
 
 ### Entity identity
 
@@ -132,7 +139,9 @@ Both Dry Run and live Generation Attempts go through a unified preparation path 
 4. **Assembly behaviors**: Consecutive system messages are squashed when `squash_system_messages` is active, `use_sysprompt` gates the main prompt, and trailing assistant/continuation prefills are appended.
 5. **Safety diagnostics**: Embedded regex scripts and third-party prompt directives (e.g. NemoPresetExt comments) are indexed without execution and emit non-blocking [`CompatibilityWarning`](crates/stcli-core/src/turn.rs) records.
 
-See [`docs/presets.md`](docs/presets.md) for full details on preset semantics and field classifications.
+6. **Output formatting**: The provider client formats the assembled prompt for the target endpoint. Chat Completion sends role-tagged messages. Text Completion joins the segments into one flat string with instruct sequences and a story block (`text_completion.rs`). The provider profile `format_mode` field selects the path.
+
+See [`docs/presets.md`](docs/presets.md) for full details on preset semantics and field classifications. See [`docs/text-completion.md`](docs/text-completion.md) for the Text Completion format.
 
 ## Plugin system
 
@@ -144,13 +153,16 @@ A plugin is an unpacked directory containing:
 
 ```text
 my-plugin/
-  manifest.json       Declares ID, version, engine range, component path,
-                       component SHA-256, dependencies, SPDX license,
+  manifest.json       Declares ID, version, engine range, runtime, component
+                       path, component SHA-256, dependencies, SPDX license,
                        subscriptions, prompt slots, commands/macros,
                        settings, and requested capabilities
-  component.wasm      WebAssembly Component Model binary
+  component.wasm      WebAssembly Component Model binary (runtime: wasm), or
+  plugin.js           JavaScript source (runtime: script)
   settings.schema.json  (optional) JSON Schema for plugin settings
 ```
+
+The `runtime` manifest field selects the runtime. A `wasm` plugin runs in Wasmtime. A `script` plugin runs in a sandboxed QuickJS engine (`script.rs`), gated by the `scripting` build feature. Both runtimes return the same declarative effect types. For the manifest and the script API, see [`docs/plugins.md`](docs/plugins.md).
 
 ### Capability model
 
@@ -181,11 +193,11 @@ Plugins return **declarative, serializable effects** and receive no mutable engi
 
 ### Plugin data flow
 
-![Plugin execution: during a turn the Turn Orchestrator invokes the Plugin Host in topological order (1), which calls each pure Wasm plugin inside a capability sandbox with a lifecycle event and permitted reads (2); the plugin returns declarative effects (3), the host applies own-namespace state writes to the overlay (4) and injects prompt contributions into closed slots (5), and the orchestrator records the effect receipt in the SQLite trace (6). The host and plugin runtime are planned, not yet implemented.](docs/diagrams/plugin-data-flow.png)
+![Plugin execution: during a turn the Turn Orchestrator invokes the Plugin Host in topological order (1), which calls each sandboxed plugin with a lifecycle event and permitted reads (2); the plugin returns declarative effects (3), the host applies own-namespace state writes to the overlay (4) and injects prompt contributions into closed slots (5), and the orchestrator records the effect receipt in the SQLite trace (6).](docs/diagrams/plugin-data-flow.png)
 
 <!-- Editable source: docs/diagrams/plugin-data-flow.html — re-export the PNG with headless Chromium after edits. -->
 
-> **Note**: The plugin host is specified in the PRD and has foundational types in the codebase (`ExtensionPin`), but the Wasm runtime is not yet implemented. The `plugins` field on `SessionConfiguration` is wired through but always empty in current sessions.
+The Plugin Host (`plugin.rs`) runs both runtimes. The Wasmtime path enforces fuel, epoch timeouts, and memory limits. The QuickJS path enforces memory, stack, and step limits. Each run returns an effect receipt that the trace records for replay.
 
 ## Key patterns
 
@@ -243,3 +255,6 @@ Formal ADRs live in [`docs/adr/`](docs/adr/):
 | [0003](docs/adr/0003-pure-wasm-plugins.md) | Plugins limited to pure Wasm declarative effects | Plugins cannot access network, filesystem, or secrets; replay works without component execution |
 | [0004](docs/adr/0004-preset-settings-and-transformations.md) | Resolve preset settings without implicitly trusting transformations | Explicit session overrides preset over profile defaults; embedded scripts and directives produce machine-readable warnings without execution |
 | [0005](docs/adr/0005-granular-deletion-tombstones.md) | Granular deletion as tombstones plus session compaction | Turn, Candidate, and Branch deletion appends tombstone events; physical compaction reaps only entities with no active descendants |
+| [0006](docs/adr/0006-layered-plugins-and-brokered-effects.md) | Layered plugins with a single brokered live-effect boundary | Supersedes 0003 post-MVP; adds QuickJS Plugin Scripts and brokered HTTPS egress/secondary inference |
+| [0007](docs/adr/0007-external-content-addressed-asset-storage.md) | External content-addressed filesystem storage for media assets | SQLite store.db remains lightweight and vacuum-friendly; avatars and media are stored in data/assets/sha256/ with SQLite reference tracking |
+

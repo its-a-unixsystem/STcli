@@ -133,6 +133,9 @@ mod tests {
                 kept_tokens: 0,
                 pruned_tokens: 0,
             },
+            format_mode: Default::default(),
+            text_prompt: None,
+            stop_sequences: Vec::new(),
         };
 
         let by_slot = plan.inspect_segments("main").unwrap();

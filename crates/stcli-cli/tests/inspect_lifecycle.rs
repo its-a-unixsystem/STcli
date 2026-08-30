@@ -109,22 +109,22 @@ async fn artifact_list_show_and_export_are_exercised_through_the_real_binary() {
         &home,
         &[&"artifact", &"import", &example("character.json")],
     ));
-    let character_hash = character["revision_hash"].as_str().unwrap();
-    assert_eq!(character["kind"], "character-card-v2");
+    let character_hash = character["primary"]["revision_hash"].as_str().unwrap();
+    assert_eq!(character["primary"]["kind"], "character-card-v2");
 
     let lorebook = envelope_data(&run(
         &home,
         &[&"artifact", &"import", &example("lorebook.json")],
     ));
-    let lorebook_hash = lorebook["revision_hash"].as_str().unwrap();
-    assert_eq!(lorebook["kind"], "lorebook");
+    let lorebook_hash = lorebook["primary"]["revision_hash"].as_str().unwrap();
+    assert_eq!(lorebook["primary"]["kind"], "lorebook");
 
     let preset = envelope_data(&run(
         &home,
         &[&"artifact", &"import", &example("preset.json")],
     ));
-    let preset_hash = preset["revision_hash"].as_str().unwrap();
-    assert_eq!(preset["kind"], "chat-completion-preset");
+    let preset_hash = preset["primary"]["revision_hash"].as_str().unwrap();
+    assert_eq!(preset["primary"]["kind"], "chat-completion-preset");
 
     // artifact list
     let list = run(&home, &[&"artifact", &"list"]);
@@ -191,13 +191,13 @@ async fn archive_and_purge_preserve_shared_artifact_revisions() {
         &home,
         &[&"artifact", &"import", &example("character.json")],
     ));
-    let character_hash = character["revision_hash"].as_str().unwrap();
+    let character_hash = character["primary"]["revision_hash"].as_str().unwrap();
 
     let lorebook = envelope_data(&run(
         &home,
         &[&"artifact", &"import", &example("lorebook.json")],
     ));
-    let lorebook_hash = lorebook["revision_hash"].as_str().unwrap();
+    let lorebook_hash = lorebook["primary"]["revision_hash"].as_str().unwrap();
 
     let base_url = provider.provider_settings().base_url.clone();
 
@@ -321,19 +321,19 @@ async fn prompt_inspect_and_dry_run_produce_documented_protocol_output() {
         &home,
         &[&"artifact", &"import", &example("character.json")],
     ));
-    let character_hash = character["revision_hash"].as_str().unwrap();
+    let character_hash = character["primary"]["revision_hash"].as_str().unwrap();
 
     let lorebook = envelope_data(&run(
         &home,
         &[&"artifact", &"import", &example("lorebook.json")],
     ));
-    let lorebook_hash = lorebook["revision_hash"].as_str().unwrap();
+    let lorebook_hash = lorebook["primary"]["revision_hash"].as_str().unwrap();
 
     let preset = envelope_data(&run(
         &home,
         &[&"artifact", &"import", &example("preset.json")],
     ));
-    let preset_hash = preset["revision_hash"].as_str().unwrap();
+    let preset_hash = preset["primary"]["revision_hash"].as_str().unwrap();
 
     let base_url = provider.provider_settings().base_url.clone();
     let create = run(

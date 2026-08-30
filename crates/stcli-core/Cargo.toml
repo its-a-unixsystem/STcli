@@ -7,11 +7,16 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
+crc32fast.workspace = true
 eventsource-stream.workspace = true
 futures.workspace = true
 parking_lot.workspace = true
+flate2.workspace = true
 reqwest.workspace = true
+handlebars.workspace = true
 regress.workspace = true
+rquickjs = { workspace = true, optional = true }
 rusqlite.workspace = true
 serde.workspace = true
 serde_path_to_error.workspace = true
@@ -24,10 +29,16 @@ spdx.workspace = true
 thiserror.workspace = true
 tiktoken-rs.workspace = true
 toml.workspace = true
+toml_edit.workspace = true
 tokio.workspace = true
 ulid.workspace = true
 wait-timeout.workspace = true
 wasmtime.workspace = true
+zip.workspace = true
+
+[features]
+default = ["scripting"]
+scripting = ["dep:rquickjs"]
 
 [dev-dependencies]
 criterion.workspace = true

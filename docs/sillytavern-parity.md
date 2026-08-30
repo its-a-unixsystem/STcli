@@ -1,141 +1,184 @@
 # SillyTavern Parity Matrix
 
-This document tracks STcli's implementation status against [SillyTavern](https://github.com/SillyTavern/SillyTavern) features, specifically focusing on the pinned [`sillytavern-1.18-core`](../compat/profiles/sillytavern-1.18-core.json) profile and post-MVP roadmap progression.
+This document tracks how much of [SillyTavern](https://github.com/SillyTavern/SillyTavern) STcli can run. It targets the pinned [`sillytavern-1.18-core`](../compat/profiles/sillytavern-1.18-core.json) profile and the post-MVP roadmap.
 
-**Compatibility Progress**: `[█████████████░░░░░░░]` **65%** (46 / 71 tracked features implemented)
+SillyTavern has two kinds of features:
 
-## Status Legend
+- **Core features.** These are built into the SillyTavern app. Examples are character cards, World Info, macros, and the chat loop.
+- **Built-in extensions.** SillyTavern ships a fixed set of bundled extensions. Examples are Summarize, Vector Storage, Image Generation, and Text To Speech.
+
+This document keeps the same split, so a SillyTavern user recognizes the structure.
+
+## How to read this document
+
+There are two matrices:
+
+- **Part 1 — SillyTavern parity.** Only real SillyTavern features. Each row is a feature that SillyTavern has. The status says whether STcli runs it.
+- **Part 2 — Beyond SillyTavern.** STcli features that SillyTavern does not have. These do not count toward parity, because there is nothing in SillyTavern to match.
+
+A feature is in Part 2, not Part 1, when SillyTavern has no equivalent. A command-line interface is one example. SillyTavern is a web app and has no command-line interface.
+
+## Compatibility progress
+
+`[█████████████░░░░░░░]` **67%** (44 / 66 SillyTavern features fully implemented)
+
+The percentage counts fully implemented features (✅) against all tracked SillyTavern features. Partial features (⚠️), planned gaps (❌), and by-design exclusions (🛑) are not counted as implemented. STcli-only features (Part 2) are excluded from the total.
+
+## Status legend
 
 | Status | Meaning |
 | :--- | :--- |
-| ✅ **Implemented** | Full functional parity with passing fixtures and tests. |
-| ⚠️ **Partial / Fallback** | Preserved metadata, non-blocking warning, or bounded fallback. |
-| ❌ **Planned / Gap** | Out of scope for MVP; planned in roadmap (version indicated). |
-| 🛑 **Hard Unsupported** | Excluded by design (violates deterministic replay, local-first, or security). |
+| ✅ **Implemented** | Full parity with passing fixtures and tests. |
+| ⚠️ **Partial / Fallback** | Preserved metadata, a non-blocking warning, or a bounded fallback. |
+| ❌ **Planned / Gap** | Not built yet. Planned in the roadmap (version shown). |
+| 🛑 **Excluded by design** | Left out on purpose. It breaks deterministic replay, the local-first model, or the security model. |
 
 ---
 
-## 1. Content & File Formats
+# Part 1 — SillyTavern parity
+
+## 1. Character cards and content formats
 
 | Feature / Format | Status | Remarks & Implementation Seam |
 | :--- | :---: | :--- |
-| **Character Card V1 JSON** | ✅ | Full import & export parity in [`crates/stcli-core/src/artifact.rs`](file:///home/thomas/src/STcli/crates/stcli-core/src/artifact.rs). |
-| **Character Card V2 JSON** | ✅ | Exact data model support; byte-accurate re-export of untouched content. |
-| **Character Book V2 (Embedded)** | ✅ | Embedded lorebook extracted and activated via lore engine. |
-| **Standalone Lorebook JSON** | ✅ | SillyTavern 1.18 format imported as versioned immutable artifact revisions. |
-| **Chat Completion Preset JSON** | ✅ | Parses prompt list, order profiles (`100001`), and generation parameters. |
-| **Character Card V3 (CCv3) JSON** | ❌ | Target for **v0.2** as external `artifact-codec` Wasm proof candidate ([#20](https://github.com/its-a-unixsystem/STcli/issues/20)). |
-| **PNG / APNG Image Cards** | ❌ | Target for **v0.3** (`tEXt` / `iTXt` chunk parsing and asset extraction). |
-| **WebP Image Cards** | ❌ | Target for **v0.3** (subject to explicit embedding container contract). |
-| **CHARX Archive Containers** | ❌ | Target for **v0.3** (multi-file card archives with bundled assets). |
-| **Duplicate JSON Keys** | 🛑 | Hard unsupported; rejected on import with path-aware validation error. |
+| **Character Card V1 JSON** | ✅ | Full import and export in [`crates/stcli-core/src/artifact.rs`](../crates/stcli-core/src/artifact.rs). |
+| **Character Card V2 JSON** | ✅ | Exact data model. Untouched content is re-exported byte for byte. |
+| **Character Card V3 (CCv3) JSON** | ✅ | Full import and export in [`crates/stcli-core/src/artifact.rs`](../crates/stcli-core/src/artifact.rs). |
+| **Character Book V2 (embedded)** | ✅ | The embedded lorebook is extracted and activated by the lore engine. |
+| **Standalone Lorebook JSON** | ✅ | The SillyTavern 1.18 format is imported as a versioned, immutable revision. |
+| **PNG / APNG image cards** | ✅ | `tEXt` and `iTXt` chunks are parsed. The image is stored as the avatar in the asset store. |
+| **WebP image cards** | ✅ | EXIF and XMP chunks are parsed for V2 and V3 cards. The image is stored as the avatar. |
+| **CHARX archive containers** | ✅ | Multi-file V3 archives with bundled assets and lorebooks. Asset references are validated on import. |
+| **Duplicate JSON keys** | 🛑 | Rejected on import with a path-aware validation error. |
 
----
-
-## 2. Prompt Compilation & Presets
+## 2. Prompt building and presets
 
 | Feature | Status | Remarks & Implementation Seam |
 | :--- | :---: | :--- |
-| **Sequential Prompt Assembly** | ✅ | Implemented in [`Store::prepare_turn`](file:///home/thomas/src/STcli/crates/stcli-core/src/turn.rs#L127-L135). Order profile `100001` selected. |
-| **In-Chat Prompt Injection** | ✅ | Supports dynamic history depth slicing (both relative and absolute depths). |
-| **System Message Squashing** | ✅ | Consecutive system messages combined when `squash_system_messages` is active. |
-| **System Prompt Gating** | ✅ | Respects `use_sysprompt` toggle. |
-| **Assistant & Continuation Prefill** | ✅ | Prefills appended to trailing assistant turn for supported models. |
-| **Exact Tokenization & Budgeting** | ✅ | Exact counts via [`TokenizerRegistry`](file:///home/thomas/src/STcli/crates/stcli-core/src/tokenizer.rs) (`tiktoken-rs` & HF tokenizers). |
-| **Context Pruning** | ✅ | Prunes earliest messages to respect `openai_max_context` and response limits. |
-| **Embedded Regex Scripts (Presets & Characters)** | ✅ | Extracted from both Prompt Presets (`/extensions/regex_scripts`) and Character Cards (`extensions.regex_scripts`). Applied via isolated worker with ReDoS protection. Supports `$0`..`$n`, `{{match}}`, `trimStrings`, `minDepth`/`maxDepth`, global flag, macros in `replaceString`, and `substituteRegex` modes. **Grant-gated**: requires explicit SHA-256 digest in `script_grants` (`--grant-script`). Stored content strictly raw; presentation scripts produce `rendered_content` on projections ([#19](https://github.com/its-a-unixsystem/STcli/issues/19)). |
-| **Regex Placements (Display, World Info, Reasoning)** | ✅ | Full placement parity: **Placement 1 (`UserInput`)** & **2 (`AiOutput`)** in prompt assembly; **Placement 5 (`WorldInfo`)** applied to activated lorebook entries before token budgeting; **Placement 6 (`Reasoning`)** cleanses finalized reasoning buffers; `markdownOnly` / display scripts precomputed on candidate projections for TUI/CLI rendering. Placement 3 (`SlashCommand`) deferred to **v0.6**. |
-| **Prompt Itemization & Segment Detail** | ✅ | Granular inspection of raw vs. rendered content for individual prompt segments via `stcli prompt inspect <attempt> --segment <slot_or_index>` with correlated macro, regex, and state metadata ([#61](https://github.com/its-a-unixsystem/STcli/issues/61)). |
-| **Generation Prompt Diffing (`diffPrevPrompt`)** | ✅ | Structural segment, textual line/word diffing, and kept/pruned token delta accounting between generation attempts or predecessor turns via `stcli prompt diff` and `stcli prompt inspect --diff-prev` ([#62](https://github.com/its-a-unixsystem/STcli/issues/62)). |
-| **Flat Text Completion Prompts** | ❌ | Story strings, instruct templates, and separators planned for **v0.4**. |
-| **Extension Directive Comments** | ⚠️ | Directives (e.g. `NemoPresetExt` comments) preserved intact as text with warnings. |
+| **Chat Completion preset JSON** | ✅ | Parses the prompt list, order profiles (`100001`), and generation parameters. |
+| **Sequential prompt assembly** | ✅ | Built in [`Store::prepare_turn`](../crates/stcli-core/src/turn.rs). Order profile `100001` is selected. |
+| **In-chat prompt injection** | ✅ | Supports relative and absolute history depth. |
+| **System message squashing** | ✅ | Consecutive system messages are combined when `squash_system_messages` is active. |
+| **System prompt gating** | ✅ | Respects the `use_sysprompt` toggle. |
+| **Assistant and continuation prefill** | ✅ | The prefill is added to the trailing assistant turn for models that support it. |
+| **Exact tokenization and budgeting** | ✅ | Exact counts from the [`TokenizerRegistry`](../crates/stcli-core/src/tokenizer.rs) (`tiktoken-rs` and HF tokenizers). |
+| **Context pruning** | ✅ | Prunes the earliest messages to respect `openai_max_context` and the response limit. |
+| **Prompt itemization** | ✅ | Inspect raw and rendered content per segment with `stcli prompt inspect <attempt> --segment <slot_or_index>`. Shows correlated macro, regex, and state metadata. |
+| **Generation prompt diffing (`diffPrevPrompt`)** | ✅ | Segment, line, word, and token-delta diffing between attempts or predecessor turns. Use `stcli prompt diff` or `stcli prompt inspect --diff-prev`. |
+| **Flat text completion prompts** | ⚠️ | Story strings, instruct templates, and separators in [`crates/stcli-core/src/text_completion.rs`](../crates/stcli-core/src/text_completion.rs). Selected per provider profile (`format_mode: text-completion`). Not yet tested against a live provider. See [`docs/text-completion.md`](text-completion.md). Planned for **v0.4**. |
+| **Extension directive comments** | ⚠️ | Directives such as `NemoPresetExt` comments are kept intact as text, with a warning. |
 
----
-
-## 3. World Info / Lorebook Engine
+## 3. World Info / lorebooks
 
 | Feature | Status | Remarks & Implementation Seam |
 | :--- | :---: | :--- |
-| **Keyword Matching (Primary & Secondary)** | ✅ | Implemented in [`crates/stcli-core/src/lore.rs`](file:///home/thomas/src/STcli/crates/stcli-core/src/lore.rs). Selective and logic filters. |
-| **Recursive Activation** | ✅ | Multi-pass scanning with cycle detection and depth boundaries. |
-| **Insertion Order & Position** | ✅ | Inset at character, before/after chat history, or specific depth. |
-| **Activation Limits & Probabilities** | ✅ | Deterministic evaluation using attempt-seeded PRNG. |
-| **Vector / Semantic Lore Retrieval** | ❌ | Smart Context / embeddings planned for **v0.7** via `lore-retriever` ([#24](https://github.com/its-a-unixsystem/STcli/issues/24)). |
+| **Keyword matching (primary and secondary)** | ✅ | Built in [`crates/stcli-core/src/lore.rs`](../crates/stcli-core/src/lore.rs). Selective and logic filters. |
+| **Recursive activation** | ✅ | Multi-pass scanning with cycle detection and depth limits. |
+| **Insertion order and position** | ✅ | Inserts at the character, before or after the chat history, or at a set depth. |
+| **Activation limits and probabilities** | ✅ | Deterministic evaluation with an attempt-seeded PRNG. |
 
----
-
-## 4. Macros & Dynamic State
+## 4. Macros and dynamic state
 
 | Feature | Status | Remarks & Implementation Seam |
 | :--- | :---: | :--- |
-| **Context Macros (50+ Core)** | ✅ | Exact parity in [`crates/stcli-core/src/macros.rs`](file:///home/thomas/src/STcli/crates/stcli-core/src/macros.rs) (`{{user}}`, `{{char}}`, `{{scenario}}`, etc.). |
-| **Deterministic PRNG Macros** | ✅ | `{{random}}`, `{{pick}}`, `{{roll}}` resolve deterministically from attempt seed. |
-| **Date & Time Macros** | ✅ | `{{time}}`, `{{date}}`, `{{isodate}}`, `{{datetimeformat}}` evaluated at turn prep. |
-| **Local & Global Variables** | ✅ | Full support for `.var` (local) and `$var` (global) in [`state_cells`](file:///home/thomas/src/STcli/crates/stcli-core/src/state.rs). |
-| **Variable Shorthand Operators** | ✅ | `=`, `+=`, `-=`, `++`, `--`, `??=`, `||=`, `==`, `!=`, `>`, `<`, `>=`, `<=`. |
-| **Block Conditionals** | ✅ | `{{if condition}}...{{else}}...{{/if}}` with side-effect isolation for skipped blocks. |
-| **Whitespace Control** | ✅ | `{{trim}}`, `#` whitespace preservation (`{{#tag}}`), `{{reverse}}`, `{{space}}`. |
-| **Solo Group / Memory Fallbacks** | ✅ | Solo `{{group}}` resolves empty; `{{summary}}` and memories use core fallbacks. |
-| **Unknown Macro Fallback** | ⚠️ | Preserved literally in prompt text; logs non-blocking `MacroWarning`. |
-| **Interactive UI Macros** | 🛑 | `{{input}}`, `{{ismobile}}`, `{{banned}}`, `{{systemprompt}}` hard-unsupported. |
-| **STscript Execution** | ❌ | Command piping, closures, and loops planned for **v0.6**. |
+| **Context macros (50+ core)** | ✅ | Exact parity in [`crates/stcli-core/src/macros.rs`](../crates/stcli-core/src/macros.rs) (`{{user}}`, `{{char}}`, `{{scenario}}`, and more). |
+| **PRNG macros** | ✅ | `{{random}}`, `{{pick}}`, and `{{roll}}` resolve from the attempt seed. See Part 2 for why this is deterministic. |
+| **Date and time macros** | ✅ | `{{time}}`, `{{date}}`, `{{isodate}}`, and `{{datetimeformat}}` are evaluated at turn prep. |
+| **Local and global variables** | ✅ | Full support for `.var` (local) and `$var` (global) in [`state_cells`](../crates/stcli-core/src/state.rs). |
+| **Variable shorthand operators** | ✅ | `=`, `+=`, `-=`, `++`, `--`, `??=`, `\|\|=`, `==`, `!=`, `>`, `<`, `>=`, `<=`. |
+| **Block conditionals** | ✅ | `{{if condition}}...{{else}}...{{/if}}`. Skipped blocks have no side effects. |
+| **Whitespace control** | ✅ | `{{trim}}`, `#` whitespace preservation (`{{#tag}}`), `{{reverse}}`, and `{{space}}`. |
+| **Solo group and memory fallbacks** | ✅ | A solo `{{group}}` resolves empty. `{{summary}}` and memories use core fallbacks. |
+| **Unknown macro fallback** | ⚠️ | The macro is kept as literal text. A non-blocking `MacroWarning` is logged. |
+| **Interactive UI macros** | 🛑 | `{{input}}`, `{{ismobile}}`, `{{banned}}`, and `{{systemprompt}}` need a live GUI. Not supported. |
+| **STscript execution** | ❌ | Command pipes, closures, and loops planned for **v0.6**. |
 
----
-
-## 5. Turn Operations & Roleplaying Loop
+## 5. Chat loop and roleplay
 
 | Feature | Status | Remarks & Implementation Seam |
 | :--- | :---: | :--- |
-| **Normal Send Turn** | ✅ | Atomic turn orchestration ([`crates/stcli-core/src/turn.rs`](file:///home/thomas/src/STcli/crates/stcli-core/src/turn.rs)). |
-| **Continue Generation** | ✅ | Trailing assistant message continuation via model prefill. |
-| **Regenerate Turn** | ✅ | Re-executes generation attempt with identical context settings. |
-| **Swipe / Candidate Variants** | ✅ | Preserves multiple candidate responses per turn; switchable active selection. |
-| **Alternate Greetings** | ✅ | Choose between author-provided first messages at branch creation. |
-| **Branching History Tree** | ✅ | Create new branches from arbitrary points in history without mutating original branch. |
-| **Dry Run Preview** | ✅ | Full turn prep preview without calling provider, committing state, or writing trace. |
-| **Offline Deterministic Replay** | ✅ | Replays turns from turn trace without calling live APIs or clocks. |
-| **Turn Capsules (Portability)** | ✅ | Export/import self-contained `.capsule` files embedding full replay history. |
-| **Group Chat (Multi-Character)** | ❌ | Multi-character rooms, speaker selection, and nudges planned for **v0.5**. |
-| **Quiet / Background Generation** | ❌ | Nested generation attempts (e.g. summarization) planned for **v0.7** ([#25](https://github.com/its-a-unixsystem/STcli/issues/25)). |
-| **In-Place Message Deletion** | ✅ | Event-sourced tombstones (`turn delete`, `candidate delete`, `branch delete`) and session compaction (`session compact`). Hiding (`turn hide`, `candidate hide`) keeps entities in projection but excludes from prompt. |
+| **Normal send turn** | ✅ | Atomic turn orchestration in [`crates/stcli-core/src/turn.rs`](../crates/stcli-core/src/turn.rs). |
+| **Continue generation** | ✅ | Continues the trailing assistant message with model prefill. |
+| **Regenerate turn** | ✅ | Re-runs the attempt with the same context settings. |
+| **Swipe / candidate variants** | ✅ | Keeps several candidate responses per turn. You can switch the active one. |
+| **Alternate greetings** | ✅ | Choose between author-provided first messages when you create a branch. |
+| **Branching history tree** | ✅ | Create a branch from any point in the history. The original branch does not change. |
+| **In-place message deletion** | ✅ | Event-sourced tombstones (`turn delete`, `candidate delete`, `branch delete`) and `session compact`. Hiding (`turn hide`, `candidate hide`) keeps the entity but drops it from the prompt. |
+| **Group chat (multi-character)** | ❌ | Multi-character rooms, speaker selection, and nudges planned for **v0.5**. |
+| **Quiet / background generation** | ❌ | Nested generation attempts, such as summarization, planned for **v0.7**. |
 
----
-
-## 6. Provider & AI Backends
+## 6. Personas and notes
 
 | Feature | Status | Remarks & Implementation Seam |
 | :--- | :---: | :--- |
-| **OpenAI-Compatible HTTPS** | ✅ | Full streaming SSE adapter in [`crates/stcli-core/src/provider.rs`](file:///home/thomas/src/STcli/crates/stcli-core/src/provider.rs). |
-| **Request Parameters** | ✅ | Temperature, top-p, max tokens, stop sequences, seed, static headers. |
-| **Proprietary Direct Adapters** | ❌ | Native Anthropic, Gemini, KoboldCpp APIs require OpenAI-compatible proxy endpoints. |
-| **Connection Profile Switching** | ✅ | Loaded from `config.toml` via `[providers.<name>]`, selectable at session create/update (`--provider-profile`), and switchable interactively in the TUI picker ([#22](https://github.com/its-a-unixsystem/STcli/issues/22)). |
-| **Reasoning Delta Streaming** | ✅ | Extracts `/choices/0/delta/reasoning` and `reasoning_content` as `ProviderEvent::ReasoningDelta`, streaming thinking tokens in real time in CLI JSONL and TUI live thinking view ([#60](https://github.com/its-a-unixsystem/STcli/issues/60)). |
-| **Automatic Provider Retries** | 🛑 | Excluded by design; failures preserve status and response body for auditability. |
+| **User persona name** | ✅ | `session create --persona <text>` sets the name used by future turns. |
+| **User persona description** | ⚠️ | The `personaDescription` slot is recognized but not yet populated. Rich persona descriptions, macro expansion, and `--persona-description` planned. |
+| **Author's Note** | ✅ | Author's Note positions (`AuthorNoteTop`, `AuthorNoteBottom`) are honored for insertion. |
 
----
-
-## 7. Frontend, Media & UI
+## 7. Providers and connections
 
 | Feature | Status | Remarks & Implementation Seam |
 | :--- | :---: | :--- |
-| **Headless / Scriptable CLI** | ✅ | Full CLI with human and JSON output modes ([`docs/cli.md`](cli.md)). |
-| **Interactive Terminal UI (TUI)** | ✅ | Full-screen terminal roleplay with chat, prompt, and lore views, session browser, and candidate swiping ([`PRD-TUI.md`](../PRD-TUI.md)). |
-| **Themes, Mouse, Nerd Fonts** | ✅ | Dark/light themes, plain-glyph fallback, full keyboard parity, and assisted mouse navigation. |
-| **Browser / Web Frontend** | ❌ | Target for **v1.x** with DOM slot integration. |
-| **Asset Storage & Avatars** | ❌ | Content-addressed asset store planned for **v0.3** ([#20](https://github.com/its-a-unixsystem/STcli/issues/20)). |
-| **Character Expressions** | ❌ | Dynamic emotion classification and sprites planned for **v0.3 / v1.x** ([#27](https://github.com/its-a-unixsystem/STcli/issues/27)). |
-| **Quick Replies Palette** | ❌ | Action shortcuts in TUI planned for **v0.2** ([#23](https://github.com/its-a-unixsystem/STcli/issues/23)). |
-| **Media Gallery** | ❌ | Media viewer planned for **v1.x** ([#30](https://github.com/its-a-unixsystem/STcli/issues/30)). |
-| **Text-to-Speech (TTS)** | ❌ | Audio CLI pipe / sidecar planned for **v1.x** ([#29](https://github.com/its-a-unixsystem/STcli/issues/29)). |
-| **Image Generation / Captioning**| ❌ | Sidecar multimodal integrations planned for **v1.x** ([#31](https://github.com/its-a-unixsystem/STcli/issues/31), [#32](https://github.com/its-a-unixsystem/STcli/issues/32)). |
+| **OpenAI-compatible HTTPS** | ✅ | Full streaming SSE adapter in [`crates/stcli-core/src/provider.rs`](../crates/stcli-core/src/provider.rs). |
+| **Request parameters** | ✅ | Temperature, top-p, max tokens, stop sequences, seed, and static headers. |
+| **Reasoning delta streaming** | ✅ | Streams `reasoning` and `reasoning_content` deltas as `ProviderEvent::ReasoningDelta`. Shown live in CLI JSONL and the TUI thinking view. |
+| **Proprietary direct adapters** | ❌ | Native Anthropic, Gemini, and KoboldCpp APIs need an OpenAI-compatible proxy. |
+| **Automatic provider retries** | 🛑 | Excluded by design. A failure keeps the status and body for audit. See Part 2 on determinism. |
 
----
-
-## 8. Extensibility & Plugins
+## 8. Frontend
 
 | Feature | Status | Remarks & Implementation Seam |
 | :--- | :---: | :--- |
-| **Pure Wasm Plugins** | ✅ | Component Model host with declarative effects ([`ADR 0003`](adr/0003-pure-wasm-plugins.md)). |
-| **External Wasm Codecs** | ❌ | Extensible artifact parsing interface planned for **v0.2**. |
-| **SillyTavern JS UI Extensions** | 🛑 | MVP non-goal. Sandboxed JS subset bridge planned for **v1.0**. |
-| **Server Plugins** | 🛑 | MVP non-goal. Trusted sidecars planned for **v1.x**. |
+| **Browser / web frontend** | ❌ | SillyTavern's frontend is a browser app. STcli uses a CLI and a TUI instead (see Part 2). A web frontend is a target for **v1.x**. |
+| **Character expressions** | ❌ | See the Expressions built-in extension in section 10. |
+| **Media gallery** | ❌ | See the Gallery built-in extension in section 10. |
+
+## 9. Built-in extensions
+
+SillyTavern ships these bundled extensions. Each row is one of them.
+
+| Extension | Status | Remarks & Implementation Seam |
+| :--- | :---: | :--- |
+| **Regex** | ✅ | Regex scripts from presets (`/extensions/regex_scripts`) and cards (`extensions.regex_scripts`). Runs in an isolated worker with ReDoS protection. Supports `$0`..`$n`, `{{match}}`, `trimStrings`, `minDepth`/`maxDepth`, the global flag, macros in `replaceString`, and `substituteRegex` modes. Placements 1, 2, 5, and 6 are covered; placement 3 (`SlashCommand`) planned for **v0.6**. See Part 2 for the grant model. |
+| **Connection Manager** | ✅ | Connection profiles loaded from `config.toml` (`[providers.<name>]`). Selectable at session create or update (`--provider-profile`) and in the TUI picker. |
+| **Token Counter** | ✅ | Exact token counts per segment through the tokenizer registry. See "Exact tokenization" in section 2. |
+| **Assets** | ✅ | Content-addressed asset store at `data/assets/sha256/` with SQLite reference tracking ([ADR 0007](adr/0007-external-content-addressed-asset-storage.md)). Stores card avatars and CHARX assets. See Part 2. |
+| **Expressions** | ❌ | Emotion classification and character sprites planned for **v0.3 / v1.x**. |
+| **Image Captioning** | ❌ | Multimodal captioning adapter planned for **v1.x**. |
+| **Gallery** | ❌ | Media gallery viewer planned for **v1.x**. |
+| **Summarize (Memory)** | ❌ | Chat summarization needs background generation. Planned for **v0.7**. |
+| **Quick Reply** | ❌ | Shortcut action palette in the TUI planned for **v0.2**. |
+| **Image Generation** | ❌ | Stable Diffusion, FLUX, and DALL-E integration planned for **v1.x**. |
+| **Chat Translation** | ❌ | Provider-backed message translation planned for the roadmap. |
+| **Text To Speech (TTS)** | ❌ | Audio pipe or sidecar planned for **v1.x**. |
+| **Vector Storage** | ❌ | Smart Context and embeddings planned for **v0.7** through `lore-retriever`. |
+| **Data Bank (Attachments)** | ❌ | Chat attachments and document ingestion planned for the roadmap. |
+
+## 10. Extension and plugin compatibility
+
+| Feature | Status | Remarks & Implementation Seam |
+| :--- | :---: | :--- |
+| **SillyTavern JS UI extensions** | 🛑 | An MVP non-goal. A sandboxed JS subset bridge is planned for **v1.0**. STcli runs its own sandboxed plugins instead (see Part 2). |
+| **Server plugins** | 🛑 | An MVP non-goal. Trusted sidecars planned for **v1.x**. |
+| **External Wasm codecs** | ❌ | An extensible artifact-parsing interface planned for **v0.2**. |
+
+---
+
+# Part 2 — Beyond SillyTavern
+
+These are STcli features. SillyTavern has no equivalent, or STcli does the job in a safer way. They do not count toward the parity percentage.
+
+| STcli feature | Why it matters |
+| :--- | :--- |
+| **Scriptable CLI with JSON output** | Every command has a human mode and a JSON mode. You can drive STcli from scripts and pipelines. SillyTavern is a web app and has no command-line interface. See [`docs/cli.md`](cli.md). |
+| **Terminal UI (TUI)** | A full roleplay UI in the terminal, with chat, prompt, and lore views, a session browser, and candidate swiping. No browser and no server are needed. |
+| **Deterministic engine** | Seeded PRNG macros, seeded lore probabilities, and seeded attempts. The same inputs give the same output. SillyTavern's randomness is not reproducible. |
+| **Offline turn replay** | Rebuild any past turn from its turn trace, with no live API call and no clock read. See [ADR 0001](adr/0001-authoritative-turn-trace.md). |
+| **Turn capsules** | Export a turn as one self-contained `.capsule` file with its full replay history. Import it elsewhere and replay it. SillyTavern has no such portable unit. |
+| **Dry-run preview** | See the exact prompt for a turn without calling the provider, committing state, or writing a trace. |
+| **Immutable versioned artifacts** | Every import is a fixed revision. Edits create a new revision and never change history. See [ADR 0002](adr/0002-versioned-compatibility-and-revisions.md). |
+| **Content-addressed asset store** | Avatars and assets are stored by SHA-256 hash and deduplicated. This is STcli's take on the Assets extension. |
+| **Grant-gated regex scripts** | A regex script runs only after you approve its SHA-256 digest (`--grant-script`). SillyTavern runs card regex with no such gate. This is STcli's take on the Regex extension. |
+| **Sandboxed plugins (Wasm + QuickJS)** | Plugins run in isolation with brokered effects ([ADR 0003](adr/0003-pure-wasm-plugins.md), [ADR 0006](adr/0006-layered-plugins-and-brokered-effects.md)). SillyTavern third-party extensions run as unsandboxed browser JavaScript. See [`docs/plugins.md`](plugins.md). |
+| **Prompt itemization with diff** | Inspect raw and rendered content per segment, and diff segments across attempts. This goes past SillyTavern's prompt itemizer. See section 2. |
+| **Local-first, no telemetry** | The only network call is to the model provider you choose. There is no cloud account and no analytics. |

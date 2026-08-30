@@ -57,6 +57,20 @@ pub enum PluginEvent {
     Command,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PluginRuntime {
+    #[default]
+    Wasm,
+    Script,
+}
+
+impl PluginRuntime {
+    fn is_wasm(&self) -> bool {
+        matches!(self, Self::Wasm)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PromptSlot {
@@ -83,6 +97,8 @@ pub struct PluginManifest {
     pub id: String,
     pub version: Version,
     pub engine: VersionReq,
+    #[serde(default, skip_serializing_if = "PluginRuntime::is_wasm")]
+    pub runtime: PluginRuntime,
     pub component: String,
     pub component_sha256: ContentHash,
     pub dependencies: Vec<PluginDependency>,
@@ -122,6 +138,8 @@ pub struct PluginInput {
     pub settings: Value,
     #[serde(default)]
     pub context: Value,
+    #[serde(default)]
+    pub state: Value,
     pub session: Value,
 }
 
@@ -163,6 +181,34 @@ pub struct PluginReceipt {
     pub input: PluginInput,
     pub effects: Vec<PluginEffect>,
     pub fuel_consumed: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub script_logs: Vec<ScriptLog>,
+}
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ScriptLog {
+    pub level: String,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ScriptLimits {
+    pub memory_bytes: usize,
+    pub stack_bytes: usize,
+    pub interrupt_ticks: u64,
+    pub log_entries: usize,
+    pub log_message_bytes: usize,
+}
+
+impl Default for ScriptLimits {
+    fn default() -> Self {
+        Self {
+            memory_bytes: 16 * 1024 * 1024,
+            stack_bytes: 256 * 1024,
+            interrupt_ticks: 200,
+            log_entries: 64,
+            log_message_bytes: 2048,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -173,6 +219,7 @@ pub struct PluginLimits {
     pub memory_bytes: usize,
     pub fuel: u64,
     pub timeout: Duration,
+    pub script: ScriptLimits,
 }
 
 impl Default for PluginLimits {
@@ -184,6 +231,7 @@ impl Default for PluginLimits {
             memory_bytes: 16 * 1024 * 1024,
             fuel: 10_000_000,
             timeout: Duration::from_millis(250),
+            script: ScriptLimits::default(),
         }
     }
 }
@@ -227,12 +275,68 @@ impl PluginHost {
         if digest != installed.manifest.component_sha256 || digest != grant.component_sha256 {
             return Err(PluginError::DigestMismatch);
         }
+        let (effects, fuel_consumed, script_logs) = match installed.manifest.runtime {
+            PluginRuntime::Wasm => {
+                let (output_json, fuel_consumed) =
+                    self.execute_wasm(&component_bytes, &input_json)?;
+                if output_json.len() > self.limits.output_bytes {
+                    return Err(PluginError::OutputLimit);
+                }
+                let output = serde_json::from_str::<PluginOutput>(&output_json)?;
+                (output.effects, fuel_consumed, Vec::new())
+            }
+            PluginRuntime::Script => {
+                #[cfg(feature = "scripting")]
+                {
+                    let source = String::from_utf8(component_bytes)
+                        .map_err(|_| PluginError::ScriptNotUtf8(installed.manifest.id.clone()))?;
+                    let outcome = crate::script::execute(
+                        &installed.manifest.id,
+                        &source,
+                        input.event,
+                        &input_json,
+                        self.limits.script,
+                    )?;
+                    let output_json = serde_json::to_string(&PluginOutput {
+                        effects: outcome.effects.clone(),
+                    })?;
+                    if output_json.len() > self.limits.output_bytes {
+                        return Err(PluginError::OutputLimit);
+                    }
+                    (outcome.effects, 0, outcome.logs)
+                }
+                #[cfg(not(feature = "scripting"))]
+                return Err(PluginError::ScriptingUnavailable(
+                    installed.manifest.id.clone(),
+                ));
+            }
+        };
+        validate_effects(installed, grant, input.event, &effects)?;
+        Ok(PluginReceipt {
+            manifest: installed.manifest.clone(),
+            id: installed.manifest.id.clone(),
+            version: installed.manifest.version.clone(),
+            component_sha256: digest,
+            grants: grant.capabilities.clone(),
+            event: input.event,
+            input,
+            effects,
+            fuel_consumed,
+            script_logs,
+        })
+    }
+
+    fn execute_wasm(
+        &self,
+        component_bytes: &[u8],
+        input_json: &str,
+    ) -> Result<(String, u64), PluginError> {
         let mut config = Config::new();
         config.wasm_component_model(true);
         config.consume_fuel(true);
         config.epoch_interruption(true);
         let engine = Engine::new(&config).map_err(PluginError::Wasmtime)?;
-        let component = Component::new(&engine, &component_bytes).map_err(PluginError::Wasmtime)?;
+        let component = Component::new(&engine, component_bytes).map_err(PluginError::Wasmtime)?;
         let linker = Linker::new(&engine);
         let limits = StoreLimitsBuilder::new()
             .memory_size(self.limits.memory_bytes)
@@ -261,30 +365,15 @@ impl PluginHost {
             let run = instance
                 .get_typed_func::<(String,), (Result<String, String>,)>(&mut store, "run")
                 .map_err(PluginError::Wasmtime)?;
-            run.call(&mut store, (input_json,))
+            run.call(&mut store, (input_json.to_owned(),))
                 .map_err(PluginError::Wasmtime)
         })();
         let _ = cancel_timer.send(());
         timer.join().map_err(|_| PluginError::TimerPanicked)?;
         let (guest_result,) = result?;
         let output_json = guest_result.map_err(PluginError::Guest)?;
-        if output_json.len() > self.limits.output_bytes {
-            return Err(PluginError::OutputLimit);
-        }
-        let output = serde_json::from_str::<PluginOutput>(&output_json)?;
-        validate_effects(installed, grant, input.event, &output.effects)?;
         let remaining = store.get_fuel().map_err(PluginError::Wasmtime)?;
-        Ok(PluginReceipt {
-            manifest: installed.manifest.clone(),
-            id: installed.manifest.id.clone(),
-            version: installed.manifest.version.clone(),
-            component_sha256: digest,
-            grants: grant.capabilities.clone(),
-            event: input.event,
-            input,
-            effects: output.effects,
-            fuel_consumed: self.limits.fuel - remaining,
-        })
+        Ok((output_json, self.limits.fuel - remaining))
     }
 }
 
@@ -772,4 +861,16 @@ pub enum PluginError {
     DependencyVersion { plugin: String, dependency: String },
     #[error("plugin dependency ordering contains a cycle")]
     DependencyCycle,
+    #[error("plugin '{0}' is a script plugin but this build has scripting disabled")]
+    ScriptingUnavailable(String),
+    #[error("plugin script source for '{0}' is not valid UTF-8")]
+    ScriptNotUtf8(String),
+    #[error("plugin script '{plugin}' does not export the '{hook}' hook")]
+    ScriptHookMissing { plugin: String, hook: String },
+    #[error("plugin script '{plugin}' failed: {message}")]
+    ScriptTrap { plugin: String, message: String },
+    #[error("plugin script exceeded its execution step budget")]
+    ScriptStepLimit,
+    #[error("QuickJS runtime setup failed: {0}")]
+    ScriptRuntime(String),
 }

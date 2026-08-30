@@ -14,6 +14,7 @@ futures.workspace = true
 pulldown-cmark.workspace = true
 ratatui.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 stcli-core.workspace = true
 tokio.workspace = true
 unicode-width.workspace = true

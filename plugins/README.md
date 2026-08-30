@@ -4,6 +4,8 @@ This directory contains WebAssembly Component Model plugins maintained in the ST
 
 STcli plugins are pure, capability-gated Wasm modules executed inside a sandboxed Wasmtime runtime with **no WASI imports** (no network, filesystem, process, or secret access). Plugins interact with the engine exclusively through canonical JSON input and declarative effect receipts defined by [`wit/plugin.wit`](../wit/plugin.wit).
 
+STcli also runs plugins written in JavaScript through a sandboxed QuickJS runtime (manifest `runtime: "script"`). Script plugins share the same capability model and effect types as Wasm plugins. To write either kind, see [Writing plugins](../docs/plugins.md).
+
 ## Directory layout
 
 | Plugin | Identifier | Purpose |

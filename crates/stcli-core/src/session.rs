@@ -9,10 +9,12 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::{
-    ArtifactKind, ContentHash, EntityId, PluginCapability, PluginError, PluginRegistry,
-    StateMutation, Store, TraceEventRecord, VariableScope,
+    ArtifactKind, ContentHash, ContextFormatting, EntityId, FormatMode, InstructTemplate,
+    PluginCapability, PluginError, PluginRegistry, ProviderError, StateMutation, Store,
+    TraceEventRecord, VariableScope,
     artifact::ArtifactError,
     identity::{canonical_json, canonical_json_hash},
+    provider::validate_text_completion_settings,
     storage::{StorageError, append_event},
 };
 
@@ -45,6 +47,14 @@ pub struct ProviderSettings {
     pub id: String,
     pub base_url: String,
     pub chat_completions_path: String,
+    #[serde(default, skip_serializing_if = "FormatMode::is_chat_completion")]
+    pub format_mode: FormatMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completions_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruct_template: Option<InstructTemplate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_formatting: Option<ContextFormatting>,
     #[serde(default)]
     pub api_key_env: Option<String>,
     #[serde(default)]
@@ -1739,12 +1749,15 @@ fn validate_configuration(
     store: &Store,
     configuration: &SessionConfiguration,
 ) -> Result<(), SessionError> {
+    validate_text_completion_settings(&configuration.provider)?;
     let character = store
         .artifact(&configuration.character_revision)?
         .ok_or_else(|| SessionError::ArtifactNotFound(configuration.character_revision.clone()))?;
     if !matches!(
         character.kind,
-        ArtifactKind::CharacterCardV1 | ArtifactKind::CharacterCardV2
+        ArtifactKind::CharacterCardV1
+            | ArtifactKind::CharacterCardV2
+            | ArtifactKind::CharacterCardV3
     ) {
         return Err(SessionError::CharacterRequired(character.kind));
     }
@@ -1906,6 +1919,8 @@ pub enum SessionError {
     Json(#[from] serde_json::Error),
     #[error("Plugin operation failed: {0}")]
     Plugin(#[from] PluginError),
+    #[error("provider settings are invalid: {0}")]
+    Provider(#[from] ProviderError),
     #[error("Plugin '{0}' appears more than once")]
     DuplicatePlugin(String),
     #[error("Plugin version '{0}' is invalid")]
@@ -1974,6 +1989,10 @@ mod tests {
                 ca_certificate_pem: None,
                 model: "fixture-model".to_owned(),
                 stream: true,
+                format_mode: Default::default(),
+                completions_path: None,
+                instruct_template: None,
+                context_formatting: None,
             },
             tokenizer: "tiktoken:o200k_base".to_owned(),
             generation_settings: json!({"temperature": 1.0}),

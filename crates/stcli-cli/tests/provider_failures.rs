@@ -38,7 +38,7 @@ fn import_artifact(home: &TestHome, bytes: &[u8]) -> Value {
     );
     let envelope = last_envelope(&output.stdout);
     assert_eq!(envelope["ok"], true);
-    envelope["data"].clone()
+    envelope["data"]["primary"].clone()
 }
 
 fn create_session(

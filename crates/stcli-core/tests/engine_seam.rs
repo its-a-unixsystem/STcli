@@ -78,7 +78,11 @@ async fn engine_owns_artifact_and_session_storage_operations() {
     let database = directory.path().join("stcli.sqlite3");
     let engine = StcliEngine::new(&database);
 
-    let EngineResult::Artifact(character) = engine
+    let EngineResult::ArtifactBundle {
+        primary: character,
+        supplementary_artifacts,
+        asset_count,
+    } = engine
         .execute(
             EngineCommand::ImportArtifact {
                 source: fixtures::minimal_card().as_bytes().to_vec(),
@@ -90,6 +94,8 @@ async fn engine_owns_artifact_and_session_storage_operations() {
     else {
         panic!("unexpected import result");
     };
+    assert!(supplementary_artifacts.is_empty());
+    assert_eq!(asset_count, 0);
     let EngineResult::CreatedSession(created) = engine
         .execute(
             EngineCommand::CreateSession {

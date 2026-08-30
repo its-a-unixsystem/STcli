@@ -1,39 +1,52 @@
 use std::{
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{EntityId, canonical_json, canonical_json_hash};
+use crate::{ContentHash, EntityId, canonical_json, canonical_json_hash};
 
 const TRACE_PAYLOAD_DOMAIN: &str = "stcli:trace-payload:v1";
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 pub struct Store {
     pub(crate) connection: Connection,
     path: PathBuf,
+    assets_root: PathBuf,
 }
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let path = path.as_ref().to_owned();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|source| StorageError::CreateDirectory {
-                path: parent.to_owned(),
-                source,
-            })?;
-        }
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent).map_err(|source| StorageError::CreateDirectory {
+            path: parent.to_owned(),
+            source,
+        })?;
+        let assets_root = parent.join("assets").join("sha256");
+        fs::create_dir_all(&assets_root).map_err(|source| StorageError::CreateDirectory {
+            path: assets_root.clone(),
+            source,
+        })?;
+        set_private_directory_permissions(&assets_root)?;
         let connection = Connection::open(&path).map_err(StorageError::Sqlite)?;
         connection
             .execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
             .map_err(StorageError::Sqlite)?;
         migrate(&connection)?;
         set_private_file_permissions(&path)?;
-        Ok(Self { connection, path })
+        Ok(Self {
+            connection,
+            path,
+            assets_root,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -162,6 +175,107 @@ impl Store {
             .optional()
             .map_err(StorageError::Sqlite)
     }
+
+    pub fn put_asset(&mut self, data: &[u8]) -> Result<AssetRecord, StorageError> {
+        let record = persist_asset(&self.assets_root, data)?;
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(StorageError::Sqlite)?;
+        insert_asset(&transaction, &record)?;
+        transaction.commit().map_err(StorageError::Sqlite)?;
+        self.asset(&record.hash)?
+            .ok_or_else(|| StorageError::MissingAsset(record.hash))
+    }
+
+    pub fn asset(&self, hash: &ContentHash) -> Result<Option<AssetRecord>, StorageError> {
+        self.connection
+            .query_row(
+                "SELECT hash, mime_type, byte_size, created_at FROM assets WHERE hash = ?1",
+                [hash.to_string()],
+                decode_asset,
+            )
+            .optional()
+            .map_err(StorageError::Sqlite)
+    }
+
+    pub fn asset_bytes(&self, hash: &ContentHash) -> Result<Option<Vec<u8>>, StorageError> {
+        let path = asset_path(&self.assets_root, hash);
+        match fs::read(&path) {
+            Ok(data) => Ok(Some(data)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(StorageError::ReadAsset { path, source }),
+        }
+    }
+
+    pub fn asset_references(
+        &self,
+        owner_kind: &str,
+        owner_id: &str,
+    ) -> Result<Vec<AssetReference>, StorageError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT owner_kind, owner_id, asset_hash, logical_path FROM asset_refs WHERE owner_kind = ?1 AND owner_id = ?2 ORDER BY logical_path",
+            )
+            .map_err(StorageError::Sqlite)?;
+        let rows = statement
+            .query_map(params![owner_kind, owner_id], decode_asset_reference)
+            .map_err(StorageError::Sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StorageError::Sqlite)
+    }
+
+    pub(crate) fn put_asset_in_transaction(
+        transaction: &Transaction<'_>,
+        assets_root: &Path,
+        data: &[u8],
+    ) -> Result<AssetRecord, StorageError> {
+        let record = persist_asset(assets_root, data)?;
+        insert_asset(transaction, &record)?;
+        Ok(record)
+    }
+
+    pub(crate) fn validate_asset(data: &[u8]) -> Result<(), StorageError> {
+        validate_asset(data).map(|_| ())
+    }
+
+    pub(crate) fn asset_file_exists(assets_root: &Path, hash: &ContentHash) -> bool {
+        asset_path(assets_root, hash).exists()
+    }
+
+    pub(crate) fn remove_asset_file(
+        assets_root: &Path,
+        hash: &ContentHash,
+    ) -> Result<(), StorageError> {
+        let path = asset_path(assets_root, hash);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(StorageError::WriteAsset { path, source }),
+        }
+    }
+
+    pub(crate) fn add_asset_reference_in_transaction(
+        transaction: &Transaction<'_>,
+        owner_kind: &str,
+        owner_id: &str,
+        asset_hash: &ContentHash,
+        logical_path: &str,
+    ) -> Result<(), StorageError> {
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO asset_refs(owner_kind, owner_id, asset_hash, logical_path) VALUES (?1, ?2, ?3, ?4)",
+                params![owner_kind, owner_id, asset_hash.to_string(), logical_path],
+            )
+            .map_err(StorageError::Sqlite)?;
+        Ok(())
+    }
+
+    pub(crate) fn assets_root(&self) -> &Path {
+        &self.assets_root
+    }
+
     pub fn recover_interrupted_attempts(&mut self) -> Result<RecoveryReport, StorageError> {
         let interrupted = {
             let mut statement = self
@@ -215,6 +329,146 @@ impl Store {
         transaction.commit().map_err(StorageError::Sqlite)?;
         Ok(RecoveryReport { attempt_ids })
     }
+}
+
+fn persist_asset(assets_root: &Path, data: &[u8]) -> Result<AssetRecord, StorageError> {
+    let mime_type = validate_asset(data)?;
+    let hash = ContentHash::new(Sha256::digest(data).into());
+    let path = asset_path(assets_root, &hash);
+    if !path.exists() {
+        let parent = path
+            .parent()
+            .expect("content-addressed asset path has a parent");
+        fs::create_dir_all(parent).map_err(|source| StorageError::CreateDirectory {
+            path: parent.to_owned(),
+            source,
+        })?;
+        set_private_directory_permissions(parent)?;
+        let temporary = parent.join(format!(".{}.{}.tmp", asset_hex(&hash), EntityId::new()));
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .map_err(|source| StorageError::WriteAsset {
+                    path: temporary.clone(),
+                    source,
+                })?;
+            file.write_all(data)
+                .and_then(|()| file.sync_all())
+                .map_err(|source| StorageError::WriteAsset {
+                    path: temporary.clone(),
+                    source,
+                })?;
+            set_private_file_permissions(&temporary)?;
+            fs::rename(&temporary, &path).map_err(|source| StorageError::WriteAsset {
+                path: path.clone(),
+                source,
+            })
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result?;
+    }
+
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(StorageError::Clock)?
+        .as_secs()
+        .to_string();
+    Ok(AssetRecord {
+        hash,
+        mime_type: mime_type.to_owned(),
+        byte_size: data.len(),
+        created_at,
+    })
+}
+
+fn validate_asset(data: &[u8]) -> Result<&'static str, StorageError> {
+    if data.len() > crate::limits::MAX_ASSET_BYTES {
+        return Err(StorageError::AssetTooLarge {
+            size: data.len(),
+            limit: crate::limits::MAX_ASSET_BYTES,
+        });
+    }
+    let mime_type = if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        "image/webp"
+    } else if data.starts_with(b"\xff\xd8\xff") {
+        "image/jpeg"
+    } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        "image/gif"
+    } else if data.len() >= 12
+        && &data[4..8] == b"ftyp"
+        && matches!(&data[8..12], b"avif" | b"avis")
+    {
+        "image/avif"
+    } else if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WAVE" {
+        "audio/wav"
+    } else if data.starts_with(b"ID3")
+        || data
+            .get(..2)
+            .is_some_and(|header| header[0] == 0xff && header[1] & 0xe0 == 0xe0)
+    {
+        "audio/mpeg"
+    } else if data.starts_with(b"OggS") {
+        "audio/ogg"
+    } else {
+        return Err(StorageError::UnsupportedAsset);
+    };
+    Ok(mime_type)
+}
+
+fn insert_asset(transaction: &Transaction<'_>, record: &AssetRecord) -> Result<(), StorageError> {
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO assets(hash, mime_type, byte_size, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                record.hash.to_string(),
+                record.mime_type,
+                record.byte_size as i64,
+                record.created_at
+            ],
+        )
+        .map_err(StorageError::Sqlite)?;
+    Ok(())
+}
+
+fn asset_path(assets_root: &Path, hash: &ContentHash) -> PathBuf {
+    let hex = asset_hex(hash);
+    assets_root.join(&hex[..2]).join(hex)
+}
+
+fn asset_hex(hash: &ContentHash) -> String {
+    hash.to_string()
+        .strip_prefix("sha256:")
+        .expect("ContentHash display includes its algorithm")
+        .to_owned()
+}
+
+fn decode_asset(row: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
+    let hash: String = row.get(0)?;
+    let byte_size: i64 = row.get(2)?;
+    Ok(AssetRecord {
+        hash: hash.parse().map_err(|error| conversion_error(0, error))?,
+        mime_type: row.get(1)?,
+        byte_size: usize::try_from(byte_size).map_err(|error| conversion_error(2, error))?,
+        created_at: row.get(3)?,
+    })
+}
+
+fn decode_asset_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<AssetReference> {
+    let asset_hash: String = row.get(2)?;
+    Ok(AssetReference {
+        owner_kind: row.get(0)?,
+        owner_id: row.get(1)?,
+        asset_hash: asset_hash
+            .parse()
+            .map_err(|error| conversion_error(2, error))?,
+        logical_path: row.get(3)?,
+    })
 }
 
 pub(crate) fn append_event(
@@ -326,6 +580,19 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
                 semantic_hash TEXT NOT NULL,
                 source_blob_hash TEXT NOT NULL REFERENCES content_blobs(hash),
                 imported_event_id TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS assets (
+                hash TEXT PRIMARY KEY,
+                mime_type TEXT NOT NULL,
+                byte_size INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS asset_refs (
+                owner_kind TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                asset_hash TEXT NOT NULL REFERENCES assets(hash) ON DELETE CASCADE,
+                logical_path TEXT NOT NULL,
+                PRIMARY KEY(owner_kind, owner_id, asset_hash, logical_path)
             );
             CREATE TABLE IF NOT EXISTS session_config_revisions (
                 revision_hash TEXT PRIMARY KEY,
@@ -530,6 +797,23 @@ fn column_not_null(
 }
 
 #[cfg(unix)]
+fn set_private_directory_permissions(path: &Path) -> Result<(), StorageError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|source| {
+        StorageError::Permissions {
+            path: path.to_owned(),
+            source,
+        }
+    })
+}
+
+#[cfg(not(unix))]
+fn set_private_directory_permissions(_path: &Path) -> Result<(), StorageError> {
+    Ok(())
+}
+
+#[cfg(unix)]
 fn set_private_file_permissions(path: &Path) -> Result<(), StorageError> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -544,6 +828,22 @@ fn set_private_file_permissions(path: &Path) -> Result<(), StorageError> {
 #[cfg(not(unix))]
 fn set_private_file_permissions(_path: &Path) -> Result<(), StorageError> {
     Ok(())
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AssetRecord {
+    pub hash: ContentHash,
+    pub mime_type: String,
+    pub byte_size: usize,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AssetReference {
+    pub owner_kind: String,
+    pub owner_id: String,
+    pub asset_hash: ContentHash,
+    pub logical_path: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -568,11 +868,29 @@ pub enum StorageError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("failed to secure SQLite file '{path}': {source}")]
+    #[error("failed to secure storage path '{path}': {source}")]
     Permissions {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error("asset exceeds {limit} byte limit ({size} bytes)")]
+    AssetTooLarge { size: usize, limit: usize },
+    #[error("asset format is unsupported")]
+    UnsupportedAsset,
+    #[error("asset metadata {0} is missing after insertion")]
+    MissingAsset(ContentHash),
+    #[error("failed to write asset '{path}': {source}")]
+    WriteAsset {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to read asset '{path}': {source}")]
+    ReadAsset {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("system clock is before the Unix epoch: {0}")]
+    Clock(std::time::SystemTimeError),
     #[error(
         "store schema version {found} is newer than supported version {supported}; upgrade STcli"
     )]

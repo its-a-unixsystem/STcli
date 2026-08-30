@@ -28,6 +28,9 @@ impl AppPaths {
     pub fn database(&self) -> PathBuf {
         self.data.join("stcli.sqlite3")
     }
+    pub fn assets(&self) -> PathBuf {
+        self.data.join("assets").join("sha256")
+    }
     pub fn plugins(&self) -> PathBuf {
         self.data.join("plugins")
     }
@@ -109,6 +112,10 @@ mod tests {
     fn stcli_home_overrides_platform_paths() {
         let environment = BTreeMap::from([("STCLI_HOME", PathBuf::from("/portable"))]);
         let paths = resolve_with(|name| environment.get(name).cloned()).unwrap();
+        assert_eq!(
+            paths.assets(),
+            PathBuf::from("/portable/data/assets/sha256")
+        );
         assert_eq!(paths.config, PathBuf::from("/portable/config"));
         assert_eq!(paths.data, PathBuf::from("/portable/data"));
         assert_eq!(paths.cache, PathBuf::from("/portable/cache"));

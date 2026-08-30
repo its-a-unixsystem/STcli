@@ -5,7 +5,10 @@
 //! points `STCLI_REGEX_WORKER` at the built `stcli` binary for the test scope.
 
 use serde_json::{Value, json};
-use stcli_core::{ContentHash, ScriptSource, Store, extract_character_scripts};
+use stcli_core::{
+    ContentHash, ContextFormatting, FormatMode, InstructTemplate, ScriptSource, Store,
+    extract_character_scripts,
+};
 use stcli_testkit::{EnvironmentGuard, configuration, fixtures};
 use tempfile::tempdir;
 
@@ -43,6 +46,23 @@ fn with_real_worker<T>(body: impl FnOnce() -> T) -> T {
         env!("CARGO_BIN_EXE_stcli"),
     );
     body()
+}
+
+fn configure_text_completion(config: &mut stcli_core::SessionConfiguration) {
+    config.provider.format_mode = FormatMode::TextCompletion;
+    config.provider.completions_path = Some("/v1/completions".to_owned());
+    config.provider.instruct_template = Some(InstructTemplate {
+        input_sequence: "<user>".to_owned(),
+        output_sequence: "<assistant>".to_owned(),
+        system_sequence: "<system>".to_owned(),
+        stop_sequence: "</turn>".to_owned(),
+        wrap: true,
+        ..InstructTemplate::default()
+    });
+    config.provider.context_formatting = Some(ContextFormatting {
+        story_string: "{{system}}\n{{description}}\n{{wiAfter}}".to_owned(),
+        ..ContextFormatting::default()
+    });
 }
 
 #[test]
@@ -88,6 +108,53 @@ fn granted_user_input_script_transforms_the_prompt() {
             digest.to_string()
         );
         assert_eq!(dry_run.prompt_plan.regex_applications[0].placement, 1);
+    });
+}
+
+#[test]
+fn granted_script_preserves_flat_prompt_segment_attribution() {
+    with_real_worker(|| {
+        let directory = tempdir().unwrap();
+        let mut store = Store::open(directory.path().join("stcli.sqlite3")).unwrap();
+        let character = store
+            .import_artifact(fixtures::minimal_card().as_bytes())
+            .unwrap();
+        let (preset_revision, digest) = preset_with_regex_script(
+            &mut store,
+            json!({
+                "id": "flat-redact",
+                "scriptName": "Flat Redact",
+                "findRegex": "/secret/gi",
+                "replaceString": "safe",
+                "placement": [1]
+            }),
+        );
+        let mut config = configuration(character.revision_hash);
+        config.prompt_preset_revision = Some(preset_revision);
+        config.script_grants = vec![digest];
+        configure_text_completion(&mut config);
+        let created = store.create_session(config, 0).unwrap();
+
+        let dry_run = store
+            .dry_run_message(
+                created.session.session_id,
+                created.branch.branch_id,
+                "the SECRET code",
+            )
+            .unwrap();
+
+        let user = dry_run
+            .prompt_plan
+            .segments
+            .iter()
+            .find(|segment| segment.source == "current-user-action")
+            .unwrap();
+        assert_eq!(user.raw_content, "the SECRET code");
+        assert_eq!(user.content, "the safe code");
+        assert_eq!(user.regex_applications.len(), 1);
+        let prompt = dry_run.prompt_plan.text_prompt.as_deref().unwrap();
+        assert!(prompt.contains("the safe code"));
+        assert!(!prompt.contains("the SECRET code"));
     });
 }
 

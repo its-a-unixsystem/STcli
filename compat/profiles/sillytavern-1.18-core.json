@@ -15,18 +15,23 @@
       "lorebook-json",
       "chat-completion-preset-json"
     ],
-    "prompt_path": "chat-completion-prompt-manager",
+    "prompt_paths": [
+      "chat-completion-prompt-manager",
+      "text-completion-advanced-formatting"
+    ],
     "generation_types": [
       "normal",
       "continue",
       "regenerate",
       "swipe"
     ],
+    "exact_features": [
+      "text-completion"
+    ],
     "hard_unsupported": [
       "duplicate-json-keys",
       "group-chat",
       "quiet-generation",
-      "text-completion",
       "stscript",
       "ui-extension",
       "server-plugin",

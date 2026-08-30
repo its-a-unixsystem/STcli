@@ -464,6 +464,9 @@ mod tests {
                 kept_tokens,
                 pruned_tokens,
             },
+            format_mode: Default::default(),
+            text_prompt: None,
+            stop_sequences: Vec::new(),
         }
     }
 

@@ -1,4 +1,6 @@
 pub const MAX_ARTIFACT_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_ASSET_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_CHARX_UNCOMPRESSED_BYTES: usize = 128 * 1024 * 1024;
 pub const MAX_RESPONSE_BODY_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_RESPONSE_TEXT_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_CAPSULE_BYTES: usize = 64 * 1024 * 1024;

@@ -1,4 +1,7 @@
-use std::fs;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use std::{fs, io::Write as _};
+
+use flate2::{Compression, write::ZlibEncoder};
 
 use serde_json::json;
 use stcli_core::{
@@ -7,6 +10,29 @@ use stcli_core::{
 };
 use stcli_testkit::{EnvironmentGuard, configuration, fixtures};
 use tempfile::tempdir;
+
+fn append_png_chunk(png: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    png.extend_from_slice(kind);
+    png.extend_from_slice(data);
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(kind);
+    hasher.update(data);
+    png.extend_from_slice(&hasher.finalize().to_be_bytes());
+}
+
+fn png_card() -> Vec<u8> {
+    let mut metadata = b"chara\0".to_vec();
+    metadata.extend_from_slice(STANDARD.encode(fixtures::minimal_card()).as_bytes());
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    append_png_chunk(&mut png, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    append_png_chunk(&mut png, b"tEXt", &metadata);
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&[0, 0, 0, 0, 0]).unwrap();
+    append_png_chunk(&mut png, b"IDAT", &encoder.finish().unwrap());
+    append_png_chunk(&mut png, b"IEND", &[]);
+    png
+}
 
 #[test]
 fn dry_run_builds_prompt_without_trace_or_turn() {
@@ -288,9 +314,8 @@ async fn provider_setup_failure_leaves_failed_attempt_without_candidate() {
 async fn capsules_replay_offline_import_isolated_and_recalculate_redaction_capabilities() {
     let directory = tempdir().unwrap();
     let mut store = Store::open(directory.path().join("source.sqlite3")).unwrap();
-    let character = store
-        .import_artifact(fixtures::minimal_card().as_bytes())
-        .unwrap();
+    // Regression test: portable capsules must preserve binary PNG artifact sources.
+    let character = store.import_artifact(&png_card()).unwrap();
     let created = store
         .create_session(configuration(character.revision_hash), 0)
         .unwrap();
@@ -323,6 +348,12 @@ async fn capsules_replay_offline_import_isolated_and_recalculate_redaction_capab
             .iter()
             .all(|artifact| artifact.source.is_some())
     );
+    let schema =
+        serde_json::from_str(include_str!("../../../schemas/turn-capsule.schema.json")).unwrap();
+    jsonschema::validator_for(&schema)
+        .unwrap()
+        .validate(&serde_json::to_value(&portable).unwrap())
+        .unwrap();
     assert!(portable.capabilities.replay);
     let replay = store.replay_turn_capsule(&portable).unwrap();
     assert_eq!(replay.provider_calls, 0);

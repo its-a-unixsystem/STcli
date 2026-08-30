@@ -89,6 +89,29 @@ impl StateTransaction {
             .or_else(|| self.get(VariableScope::Global, name))
     }
 
+    pub fn local_namespace(&self, prefix: &str) -> BTreeMap<String, Value> {
+        let qualified = format!("{prefix}.");
+        let mut namespace = BTreeMap::new();
+        for (key, cell) in &self.baseline {
+            if key.scope == VariableScope::Local
+                && let Some(relative) = key.name.strip_prefix(&qualified)
+            {
+                namespace.insert(relative.to_owned(), cell.value.clone());
+            }
+        }
+        for (key, write) in &self.writes {
+            if key.scope == VariableScope::Local
+                && let Some(relative) = key.name.strip_prefix(&qualified)
+            {
+                match write {
+                    Some(cell) => namespace.insert(relative.to_owned(), cell.value.clone()),
+                    None => namespace.remove(relative),
+                };
+            }
+        }
+        namespace
+    }
+
     pub fn set(
         &mut self,
         scope: VariableScope,

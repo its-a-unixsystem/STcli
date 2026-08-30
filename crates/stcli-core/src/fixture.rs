@@ -907,8 +907,9 @@ mod tests {
             },
             scope: ProfileScope {
                 formats: vec![],
-                prompt_path: "test".to_owned(),
+                prompt_paths: vec!["test".to_owned()],
                 generation_types: vec![],
+                exact_features: vec![],
                 documented_fallback: vec![],
                 hard_unsupported: vec![],
                 preserved_metadata: vec![],

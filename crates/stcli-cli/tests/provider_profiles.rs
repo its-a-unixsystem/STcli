@@ -61,7 +61,10 @@ fn import_character(home: &TestHome) -> String {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/character.json");
     let output = run(home, &[&"artifact", &"import", &example.to_str().unwrap()]);
     let data = envelope_data(&output);
-    data["revision_hash"].as_str().unwrap().to_owned()
+    data["primary"]["revision_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned()
 }
 
 const PROVIDER_CONFIG: &str = r#"
@@ -295,4 +298,63 @@ fn session_create_without_profile_uses_flag_defaults() {
     assert_eq!(provider["model"], "fixture-model");
     assert_eq!(provider["stream"], true);
     assert_eq!(provider["timeout_seconds"], 120);
+}
+
+#[test]
+fn profile_cli_lifecycle_list_show_add_remove() {
+    let home = TestHome::new().unwrap();
+    write_config_toml(&home, PROVIDER_CONFIG);
+
+    // List profiles
+    let output = run(&home, &[&"profile", &"list"]);
+    let data = envelope_data(&output);
+    assert!(data.get("openrouter").is_some());
+    assert!(data.get("local").is_some());
+
+    // Show profile
+    let output = run(&home, &[&"profile", &"show", &"openrouter"]);
+    let data = envelope_data(&output);
+    assert_eq!(data["model"], "anthropic/claude-3.5-sonnet");
+
+    // Add profile from JSON file
+    let new_profile_path = home.root().join("new_profile.json");
+    fs::write(
+        &new_profile_path,
+        r#"{
+            "id": "deepseek",
+            "base_url": "https://api.deepseek.com",
+            "chat_completions_path": "/chat/completions",
+            "model": "deepseek-chat",
+            "stream": true,
+            "timeout_seconds": 90,
+            "api_key_env": "DEEPSEEK_API_KEY"
+        }"#,
+    )
+    .unwrap();
+
+    let output = run(
+        &home,
+        &[
+            &"profile",
+            &"add",
+            &"deepseek",
+            &"--file",
+            &new_profile_path.to_str().unwrap(),
+        ],
+    );
+    assert!(output.status.success());
+
+    // Show the newly added profile
+    let output = run(&home, &[&"profile", &"show", &"deepseek"]);
+    let data = envelope_data(&output);
+    assert_eq!(data["model"], "deepseek-chat");
+    assert_eq!(data["base_url"], "https://api.deepseek.com");
+
+    // Remove profile
+    let output = run(&home, &[&"profile", &"remove", &"deepseek"]);
+    assert!(output.status.success());
+
+    // Show removed profile fails
+    let output = run(&home, &[&"profile", &"show", &"deepseek"]);
+    assert!(!output.status.success());
 }

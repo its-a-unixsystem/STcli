@@ -76,17 +76,31 @@
                 "enum": [
                   "character-card-v1",
                   "character-card-v2",
+                  "character-card-v3",
                   "lorebook",
                   "chat-completion-preset"
                 ]
               },
-              "source_format": { "const": "json" },
+              "source_format": { "enum": ["json", "png"] },
               "semantic_hash": { "$ref": "#/$defs/hash" },
               "source_blob_hash": { "$ref": "#/$defs/hash" },
               "imported_event_id": { "$ref": "#/$defs/ulid" }
             }
           },
-          "source": { "type": ["string", "null"] }
+          "source": {
+            "oneOf": [
+              { "type": "string" },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["base64"],
+                "properties": {
+                  "base64": { "type": "string" }
+                }
+              },
+              { "type": "null" }
+            ]
+          }
         }
       }
     },

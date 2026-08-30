@@ -17,22 +17,26 @@ pub mod prompt_inspect;
 pub mod protocol;
 pub mod provider;
 pub mod regex_script;
+#[cfg(feature = "scripting")]
+pub mod script;
 pub mod session;
 pub mod state;
 pub mod storage;
+pub mod text_completion;
 pub mod tokenizer;
 pub mod turn;
 
 pub use artifact::{
-    ArtifactError, ArtifactKind, ArtifactRecord, DecodedArtifact, artifact_semantic_hash,
-    content_blob_hash, decode_artifact, decode_unique_json,
+    ArtifactBundle, ArtifactError, ArtifactKind, ArtifactRecord, DecodedArtifact,
+    artifact_semantic_hash, content_blob_hash, decode_artifact, decode_unique_json,
 };
 pub use capsule::{
-    CapsuleArtifact, CapsuleBaseline, CapsuleCapabilities, CapsuleCompatibility, CapsuleEngine,
-    CapsuleError, CapsuleIdentity, CapsuleKind, CapsuleProvider, CapsuleReference, CapsuleResult,
-    ImportedCapsule, RedactionEntry, ReplayReport, SessionProjectionSnapshot, TurnCapsule,
+    CapsuleArtifact, CapsuleArtifactSource, CapsuleBaseline, CapsuleCapabilities,
+    CapsuleCompatibility, CapsuleEngine, CapsuleError, CapsuleIdentity, CapsuleKind,
+    CapsuleProvider, CapsuleReference, CapsuleResult, ImportedCapsule, RedactionEntry,
+    ReplayReport, SessionProjectionSnapshot, TurnCapsule,
 };
-pub use config::{Config, ConfigError};
+pub use config::{Config, ConfigError, ProviderTemplate};
 pub use ecma_regex::{
     EcmaRegexError, EcmaRegexWorker, RegexMatch, RegexReplaceRequest, RegexReplaceResponse,
     RegexRequest, RegexResponse, run_replace_worker, run_worker,
@@ -62,8 +66,8 @@ pub use paths::AppPaths;
 pub use plugin::{
     InstalledPlugin, PluginCapability, PluginDependency, PluginEffect, PluginError, PluginEvent,
     PluginGrant, PluginHost, PluginInput, PluginLimits, PluginManifest, PluginOutput,
-    PluginReceipt, PluginRegistry, PromptContribution, PromptSlot, order_plugins, plugin_digest,
-    validate_recorded_receipt,
+    PluginReceipt, PluginRegistry, PluginRuntime, PromptContribution, PromptSlot, ScriptLimits,
+    ScriptLog, order_plugins, plugin_digest, validate_recorded_receipt,
 };
 pub use profile::{
     CompatibilityOutcome, CompatibilityProfile, CompatibilitySubject, CompatibilitySubjectKind,
@@ -88,13 +92,18 @@ pub use provider::{
 pub use regex_script::{
     RegexPlacement, RegexScript, RegexScriptApplication, SubstituteMode, apply_display_scripts,
 };
+#[cfg(feature = "scripting")]
+pub use script::{ScriptOutcome, execute};
 pub use session::{
     BranchProjection, CompactionCounts, CompactionReport, CreatedSession, HeaderSetting, PluginPin,
     ProviderSettings, SessionConfiguration, SessionConfigurationRecord, SessionError,
     SessionProjection,
 };
 pub use state::{StateCell, StateError, StateKey, StateMutation, StateTransaction, VariableScope};
-pub use storage::{RecoveryReport, StorageError, Store, TraceEventRecord};
+pub use storage::{
+    AssetRecord, AssetReference, RecoveryReport, StorageError, Store, TraceEventRecord,
+};
+pub use text_completion::{ContextFormatting, FormatMode, InstructTemplate, NamesBehavior};
 pub use tokenizer::{TokenizerError, TokenizerId};
 pub use turn::{
     AttemptEffectReceipt, AttemptProjection, AttemptStatus, CandidateOrigin, CandidateProjection,

@@ -12,8 +12,10 @@ This index maps every document to its audience and purpose.
 | [Usage guide](guide.md) | Task guide: import, sessions, generation, editing, capsules, plugins |
 | [CLI reference](cli.md) | Every command, argument, and value format |
 | [Chat Completion presets](presets.md) | Preset semantics, settings precedence, and field classification |
+| [Text Completion prompts](text-completion.md) | Text Completion provider profiles, instruct templates, and story strings |
+| [Writing plugins](plugins.md) | Wasm and QuickJS script plugins: manifest, script API, and limits |
 | [Examples](../examples/README.md) | Sample character, lorebook, and preset artifacts |
-| [Plugins](../plugins/README.md) | WebAssembly plugins and reference proof component |
+| [Plugins directory](../plugins/README.md) | In-tree plugins and the reference proof component |
 
 ## For contributors
 
@@ -37,6 +39,8 @@ Each ADR records one design decision and its consequences.
 | [0003](adr/0003-pure-wasm-plugins.md) | Plugins limited to pure Wasm declarative effects |
 | [0004](adr/0004-preset-settings-and-transformations.md) | Resolve preset settings without trusting embedded transformations |
 | [0005](adr/0005-granular-deletion-tombstones.md) | Granular deletion as tombstones plus session compaction |
+| [0006](adr/0006-layered-plugins-and-brokered-effects.md) | Layered plugins with a single brokered live-effect boundary |
+| [0007](adr/0007-external-content-addressed-asset-storage.md) | External content-addressed filesystem storage for media assets |
 
 ## Diagrams
 

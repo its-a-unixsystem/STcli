@@ -11,16 +11,16 @@ use thiserror::Error;
 
 use crate::{
     ActivatedLore, BranchProjection, CHAT_COMPLETION_CHARACTER_ID, ChatMessage, ChatRole,
-    ContentHash, EcmaRegexError, EcmaRegexWorker, EntityId, LoreEngine, LoreError, LorePosition,
-    LoreResult, LoreSettings, MacroContext, MacroEngine, MacroError, MacroEvaluation, MacroWarning,
-    OpenAiProvider, PluginEffect, PluginError, PluginEvent, PluginGrant, PluginHost, PluginInput,
-    PluginReceipt, PluginRegistry, PromptContribution, PromptError, PromptPreset, PromptPruning,
-    PromptSegment, PromptSlot, ProviderError, ProviderEvent, ProviderResult, RegexPlacement,
-    RegexScript, RegexScriptApplication, RenderedPromptContent, SessionConfigurationRecord,
-    SessionError, StateError, StateMutation, StateTransaction, Store, TokenizerError, TokenizerId,
-    apply_prompt_preset,
+    ContentHash, EcmaRegexError, EcmaRegexWorker, EntityId, FormatMode, LoreEngine, LoreError,
+    LorePosition, LoreResult, LoreSettings, MacroContext, MacroEngine, MacroError, MacroEvaluation,
+    MacroWarning, OpenAiProvider, PluginEffect, PluginError, PluginEvent, PluginGrant, PluginHost,
+    PluginInput, PluginReceipt, PluginRegistry, PromptContribution, PromptError, PromptPreset,
+    PromptPruning, PromptSegment, PromptSlot, ProviderError, ProviderEvent, ProviderResult,
+    RegexPlacement, RegexScript, RegexScriptApplication, RenderedPromptContent,
+    SessionConfigurationRecord, SessionError, StateError, StateMutation, StateTransaction, Store,
+    TokenizerError, TokenizerId, apply_prompt_preset,
     artifact::ArtifactError,
-    canonical_json,
+    canonical_json, insert_in_chat_segments,
     lore::parse_lore_entries,
     order_plugins,
     prompt::prune_segments,
@@ -28,6 +28,7 @@ use crate::{
     regex_script::apply_scripts,
     state::{apply_plugin_command_state_mutations, apply_state_mutations},
     storage::{StorageError, append_event},
+    text_completion::prune_text_completion,
 };
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -37,6 +38,12 @@ pub struct PromptPlan {
     pub rng_seed: u64,
     pub segments: Vec<PromptSegment>,
     pub messages: Vec<ChatMessage>,
+    #[serde(default, skip_serializing_if = "FormatMode::is_chat_completion")]
+    pub format_mode: FormatMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop_sequences: Vec<String>,
     pub total_tokens: usize,
     pub macro_evaluations: Vec<MacroEvaluation>,
     pub macro_warnings: Vec<MacroWarning>,
@@ -317,6 +324,32 @@ impl Store {
         let regex_scripts = granted_regex_scripts(&all_script_metadata);
         let effective_generation_settings =
             resolve_effective_generation_settings(configuration, preset_value);
+        let effective = effective_generation_settings
+            .values
+            .as_object()
+            .expect("effective settings are an object");
+        let text_prefill =
+            if configuration.configuration.provider.format_mode == FormatMode::TextCompletion {
+                if generation_type == GenerationType::Continue
+                    && effective
+                        .get("continue_prefill")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                {
+                    parent_candidate
+                        .as_ref()
+                        .map(|(_, content)| content.as_str())
+                } else if generation_type != GenerationType::Continue {
+                    effective
+                        .get("assistant_prefill")
+                        .and_then(Value::as_str)
+                        .filter(|content| !content.is_empty())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
         let mut prompt_plan = self.build_prompt_plan(
             session_id,
             branch_id,
@@ -328,43 +361,44 @@ impl Store {
             preset_value,
             &effective_generation_settings,
             &regex_scripts,
+            text_prefill,
         )?;
         if let Some((candidate_id, content)) = parent_candidate {
             prompt_plan.parent_candidate_id = Some(candidate_id);
             prompt_plan.continuation_prefix = Some(content);
         }
-        let mut request_messages = prompt_plan.messages.clone();
-        let effective = effective_generation_settings
-            .values
-            .as_object()
-            .expect("effective settings are an object");
-        if generation_type == GenerationType::Continue
-            && effective
-                .get("continue_prefill")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-        {
-            if let Some(content) = prompt_plan.continuation_prefix.clone() {
-                request_messages.push(ChatMessage {
+        let message_count = prompt_plan.messages.len();
+        if configuration.configuration.provider.format_mode == FormatMode::ChatCompletion {
+            if generation_type == GenerationType::Continue
+                && effective
+                    .get("continue_prefill")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            {
+                if let Some(content) = prompt_plan.continuation_prefix.clone() {
+                    prompt_plan.messages.push(ChatMessage {
+                        role: ChatRole::Assistant,
+                        content,
+                    });
+                }
+            } else if generation_type != GenerationType::Continue
+                && let Some(content) = effective.get("assistant_prefill").and_then(Value::as_str)
+                && !content.is_empty()
+            {
+                prompt_plan.messages.push(ChatMessage {
                     role: ChatRole::Assistant,
-                    content,
+                    content: content.to_owned(),
                 });
             }
-        } else if generation_type != GenerationType::Continue
-            && let Some(content) = effective.get("assistant_prefill").and_then(Value::as_str)
-            && !content.is_empty()
-        {
-            request_messages.push(ChatMessage {
-                role: ChatRole::Assistant,
-                content: content.to_owned(),
-            });
         }
         let provider_settings = provider_generation_settings(&effective_generation_settings);
-        let provider_request = provider_request(
+        let request = provider_request(
             &configuration.configuration.provider,
-            &request_messages,
+            &prompt_plan,
             &provider_settings,
-        )?;
+        );
+        prompt_plan.messages.truncate(message_count);
+        let provider_request = request?;
         let mut compatibility_warnings = preset_transformation
             .map(|transformation| transformation.warnings)
             .unwrap_or_default();
@@ -1330,6 +1364,12 @@ impl Store {
                         plugin_id: installed.manifest.id.clone(),
                         settings: grant.settings.clone(),
                         context: Value::Null,
+                        state: Value::Object(
+                            state
+                                .local_namespace(&installed.manifest.id)
+                                .into_iter()
+                                .collect(),
+                        ),
                         session,
                     },
                 )?;
@@ -1414,6 +1454,7 @@ impl Store {
         }
         let host = PluginHost::new(Default::default());
         let mut receipts = Vec::new();
+        let state = self.state_transaction(session_id)?;
         for installed in order_plugins(&selected)? {
             if !installed
                 .manifest
@@ -1436,17 +1477,25 @@ impl Store {
             } else {
                 Value::Null
             };
-            receipts.push(host.execute(
-                &installed,
-                grant,
-                PluginInput {
-                    event: PluginEvent::PostCommit,
-                    plugin_id: installed.manifest.id.clone(),
-                    settings: grant.settings.clone(),
-                    context: Value::Null,
-                    session,
-                },
-            )?);
+            receipts.push(
+                host.execute(
+                    &installed,
+                    grant,
+                    PluginInput {
+                        event: PluginEvent::PostCommit,
+                        plugin_id: installed.manifest.id.clone(),
+                        settings: grant.settings.clone(),
+                        context: Value::Null,
+                        state: Value::Object(
+                            state
+                                .local_namespace(&installed.manifest.id)
+                                .into_iter()
+                                .collect(),
+                        ),
+                        session,
+                    },
+                )?,
+            );
         }
         Ok(receipts)
     }
@@ -1503,6 +1552,7 @@ impl Store {
             settings: pin.settings.clone(),
             enabled: true,
         };
+        let mut state = self.state_transaction(session_id)?;
         let receipt = PluginHost::new(Default::default()).execute(
             &installed,
             &grant,
@@ -1511,10 +1561,10 @@ impl Store {
                 plugin_id: plugin_id.to_owned(),
                 settings: pin.settings.clone(),
                 context: json!({"command": command, "arguments": arguments}),
+                state: Value::Object(state.local_namespace(plugin_id).into_iter().collect()),
                 session: Value::Null,
             },
         )?;
-        let mut state = self.state_transaction(session_id)?;
         for effect in &receipt.effects {
             if let PluginEffect::StateWrite { key, value } = effect {
                 state.set(
@@ -1576,6 +1626,7 @@ impl Store {
         preset_value: Option<&Value>,
         effective_generation_settings: &EffectiveGenerationSettings,
         regex_scripts: &[RegexScript],
+        text_prefill: Option<&str>,
     ) -> Result<PromptPlan, TurnError> {
         let branch = self
             .branch(branch_id)?
@@ -1589,7 +1640,7 @@ impl Store {
             .parse::<TokenizerId>()?;
         let data = match character.kind {
             crate::ArtifactKind::CharacterCardV1 => character.semantic.as_object(),
-            crate::ArtifactKind::CharacterCardV2 => {
+            crate::ArtifactKind::CharacterCardV2 | crate::ArtifactKind::CharacterCardV3 => {
                 character.semantic.get("data").and_then(Value::as_object)
             }
             _ => None,
@@ -1851,20 +1902,49 @@ impl Store {
             &mut evaluations,
             &mut warnings,
         )?;
-        let definitions_raw = ["description", "personality", "scenario"]
-            .into_iter()
-            .filter_map(|field| data.get(field).and_then(Value::as_str))
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let definitions = render_segment_macro_text(
-            &mut engine,
-            &context,
-            &mut state,
-            &definitions_raw,
-            &mut evaluations,
-            &mut warnings,
-        )?;
+        let definition_fields = [
+            ("character-description", "description"),
+            ("character-personality", "personality"),
+            ("character-scenario", "scenario"),
+        ];
+        let mut definitions = Vec::new();
+        if configuration.configuration.provider.format_mode == FormatMode::TextCompletion {
+            for (source, field) in definition_fields {
+                let raw = data
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                if raw.is_empty() {
+                    continue;
+                }
+                let rendered = render_segment_macro_text(
+                    &mut engine,
+                    &context,
+                    &mut state,
+                    &raw,
+                    &mut evaluations,
+                    &mut warnings,
+                )?;
+                definitions.push((source, Some(field), raw, rendered));
+            }
+        } else {
+            let raw = definition_fields
+                .iter()
+                .filter_map(|(_, field)| data.get(*field).and_then(Value::as_str))
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let rendered = render_segment_macro_text(
+                &mut engine,
+                &context,
+                &mut state,
+                &raw,
+                &mut evaluations,
+                &mut warnings,
+            )?;
+            definitions.push(("character-definitions", None, raw, rendered));
+        }
         let greeting = render_segment_macro_text(
             &mut engine,
             &context,
@@ -1899,17 +1979,21 @@ impl Store {
             LorePosition::Before,
             "world-info-before",
         );
-        if !definitions.content.is_empty() {
+        for (source, source_field, raw, rendered) in definitions {
+            if rendered.content.is_empty() {
+                continue;
+            }
             push_segment(
                 &mut segments,
                 tokenizer,
-                "character-definitions",
+                source,
                 ChatRole::System,
-                definitions_raw,
-                definitions,
+                raw,
+                rendered,
             );
-            segments.last_mut().unwrap().source_revision =
-                Some(configuration.configuration.character_revision.clone());
+            let segment = segments.last_mut().unwrap();
+            segment.source_revision = Some(configuration.configuration.character_revision.clone());
+            segment.source_field = source_field.map(str::to_owned);
         }
         push_lore_segment(
             &mut segments,
@@ -1919,17 +2003,14 @@ impl Store {
             LorePosition::After,
             "world-info-after",
         );
-        for (index, (role, example)) in parse_example_messages(
+        for (block_index, message_index, role, example) in parse_example_messages(
             data.get("mes_example")
                 .and_then(Value::as_str)
                 .unwrap_or_default(),
             &configuration.configuration.persona_name,
             character_name,
-        )
-        .into_iter()
-        .enumerate()
-        {
-            let source = format!("example:{index}");
+        ) {
+            let source = format!("example:{block_index}:{message_index}");
             let content = render_segment_macro_text(
                 &mut engine,
                 &context,
@@ -2047,31 +2128,37 @@ impl Store {
             }
         }
         inject_plugin_contributions(tokenizer, &mut segments, plugin_contributions)?;
-        let preset = preset_value
-            .map(|value| PromptPreset::parse(value, CHAT_COMPLETION_CHARACTER_ID))
-            .transpose()?;
         let mut segments =
-            apply_prompt_preset(tokenizer, preset.as_ref(), segments, |_, input| {
-                let before = state.mutations();
-                let rendered = engine
-                    .render(input, &context, &mut state)
-                    .map_err(|error| PromptError::Render(error.to_string()))?;
-                let state_mutations = state_mutation_delta(&before, &state.mutations());
-                evaluations.extend(rendered.evaluations.iter().cloned());
-                warnings.extend(rendered.warnings);
-                Ok(RenderedPromptContent {
-                    content: rendered.text,
-                    macro_evaluations: rendered.evaluations,
-                    state_mutations,
-                })
-            })?;
-        if let Some(preset_revision) = &configuration.configuration.prompt_preset_revision {
-            for segment in &mut segments {
-                if segment.source.starts_with("preset:") {
-                    segment.source_revision = Some(preset_revision.clone());
+            if configuration.configuration.provider.format_mode == FormatMode::TextCompletion {
+                insert_in_chat_segments(segments)
+            } else {
+                let preset = preset_value
+                    .map(|value| PromptPreset::parse(value, CHAT_COMPLETION_CHARACTER_ID))
+                    .transpose()?;
+                let mut segments =
+                    apply_prompt_preset(tokenizer, preset.as_ref(), segments, |_, input| {
+                        let before = state.mutations();
+                        let rendered = engine
+                            .render(input, &context, &mut state)
+                            .map_err(|error| PromptError::Render(error.to_string()))?;
+                        let state_mutations = state_mutation_delta(&before, &state.mutations());
+                        evaluations.extend(rendered.evaluations.iter().cloned());
+                        warnings.extend(rendered.warnings);
+                        Ok(RenderedPromptContent {
+                            content: rendered.text,
+                            macro_evaluations: rendered.evaluations,
+                            state_mutations,
+                        })
+                    })?;
+                if let Some(preset_revision) = &configuration.configuration.prompt_preset_revision {
+                    for segment in &mut segments {
+                        if segment.source.starts_with("preset:") {
+                            segment.source_revision = Some(preset_revision.clone());
+                        }
+                    }
                 }
-            }
-        }
+                segments
+            };
         let regex_applications = apply_regex_scripts_to_segments(
             regex_scripts,
             &mut segments,
@@ -2093,10 +2180,11 @@ impl Store {
         {
             segments.retain(|segment| segment.slot != "main");
         }
-        if effective
-            .get("squash_system_messages")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
+        if configuration.configuration.provider.format_mode == FormatMode::ChatCompletion
+            && effective
+                .get("squash_system_messages")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
         {
             segments = squash_system_segments(tokenizer, segments);
         }
@@ -2108,8 +2196,38 @@ impl Store {
             .get("max_tokens")
             .and_then(Value::as_u64)
             .unwrap_or(512) as usize;
-        let pruning = prune_segments(&mut segments, context_limit, response_reserve)?;
-        let total_tokens = pruning.kept_tokens;
+        let (pruning, total_tokens, text_prompt, stop_sequences) =
+            if configuration.configuration.provider.format_mode == FormatMode::TextCompletion {
+                let provider = &configuration.configuration.provider;
+                let (projection, pruning) = prune_text_completion(
+                    tokenizer,
+                    &mut segments,
+                    provider
+                        .instruct_template
+                        .as_ref()
+                        .expect("validated Text Completion instruct template"),
+                    provider
+                        .context_formatting
+                        .as_ref()
+                        .expect("validated Text Completion context formatting"),
+                    &configuration.configuration.persona_name,
+                    character_name,
+                    text_prefill,
+                    context_limit,
+                    response_reserve,
+                )?;
+                let total_tokens = pruning.kept_tokens;
+                (
+                    pruning,
+                    total_tokens,
+                    Some(projection.prompt),
+                    projection.stop_sequences,
+                )
+            } else {
+                let pruning = prune_segments(&mut segments, context_limit, response_reserve)?;
+                let total_tokens = pruning.kept_tokens;
+                (pruning, total_tokens, None, Vec::new())
+            };
         let messages = segments
             .iter()
             .filter(|segment| !segment.pruned)
@@ -2123,6 +2241,9 @@ impl Store {
             rng_seed: context.random_seed,
             segments,
             messages,
+            format_mode: configuration.configuration.provider.format_mode,
+            text_prompt,
+            stop_sequences,
             total_tokens,
             macro_evaluations: evaluations,
             macro_warnings: warnings,
@@ -2656,11 +2777,11 @@ fn inject_plugin_contributions(
         let index = match contribution.slot {
             PromptSlot::BeforeCharacterDefinitions => segments
                 .iter()
-                .position(|segment| segment.source == "character-definitions")
+                .position(|segment| segment.source.starts_with("character-"))
                 .unwrap_or(segments.len()),
             PromptSlot::AfterCharacterDefinitions => segments
                 .iter()
-                .rposition(|segment| segment.source == "character-definitions")
+                .rposition(|segment| segment.source.starts_with("character-"))
                 .map_or(segments.len(), |index| index + 1),
             PromptSlot::BeforeExampleMessages => segments
                 .iter()
@@ -3227,18 +3348,34 @@ fn parse_example_messages(
     input: &str,
     user_name: &str,
     character_name: &str,
-) -> Vec<(ChatRole, String)> {
-    let mut messages = Vec::<(ChatRole, String)>::new();
-    for line in input.lines().filter(|line| line.trim() != "<START>") {
+) -> Vec<(usize, usize, ChatRole, String)> {
+    let mut messages = Vec::<(usize, usize, ChatRole, String)>::new();
+    let mut block_index = 0;
+    let mut message_index = 0;
+    let mut started_block = false;
+    for line in input.lines() {
         let line = line.trim();
+        if line == "<START>" {
+            if started_block {
+                block_index += 1;
+            }
+            message_index = 0;
+            started_block = true;
+            continue;
+        }
         if line.is_empty() {
             continue;
         }
-        if let Some(content) = line.strip_prefix(&format!("{user_name}:")) {
-            messages.push((ChatRole::User, content.trim().to_owned()));
-        } else if let Some(content) = line.strip_prefix(&format!("{character_name}:")) {
-            messages.push((ChatRole::Assistant, content.trim().to_owned()));
-        } else if let Some((_, content)) = messages.last_mut() {
+        let parsed = if let Some(content) = line.strip_prefix(&format!("{user_name}:")) {
+            Some((ChatRole::User, content.trim().to_owned()))
+        } else {
+            line.strip_prefix(&format!("{character_name}:"))
+                .map(|content| (ChatRole::Assistant, content.trim().to_owned()))
+        };
+        if let Some((role, content)) = parsed {
+            messages.push((block_index, message_index, role, content));
+            message_index += 1;
+        } else if let Some((_, _, _, content)) = messages.last_mut() {
             content.push('\n');
             content.push_str(line);
         }
@@ -3457,7 +3594,7 @@ fn push_segment(
     segment.state_mutations = rendered.state_mutations;
     segment.truncation_priority = if source == "main-prompt" || source == "current-user-action" {
         u32::MAX
-    } else if source == "character-definitions" {
+    } else if source.starts_with("character-") {
         800
     } else if source == "greeting" {
         75
@@ -3472,7 +3609,7 @@ fn push_segment(
 fn slot_for_source(source: &str) -> &'static str {
     if source == "main-prompt" {
         "main"
-    } else if source == "character-definitions" {
+    } else if source.starts_with("character-") {
         "charDescription"
     } else if source == "world-info-before" {
         "worldInfoBefore"

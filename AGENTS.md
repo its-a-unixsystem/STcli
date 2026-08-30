@@ -19,6 +19,7 @@ Planning can be ambitious, execution should be lightweight, constraints come fir
    - Non-goals
    - Acceptance criteria
    - Scope not to be changed
+7. Code push: pass Testing > Pre-push gate.
 
 ## Agent skills
 
@@ -206,6 +207,14 @@ Whenever you are tasked with fixing a bug or unexpected behavior, execute the fo
    - Add a brief comment or docstring to the new test referencing the bug description or issue ID (e.g., `// Regression test for issue #123: prevents null dereference on empty input`).
 
 ## Testing
+
+### Pre-push gate
+
+Code changes only; docs-only changes exempt. Before push:
+1. Run focused proof.
+2. Pass `.github/workflows/ci.yml` required checks: `cargo test --workspace --locked`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo fmt --all --check`.
+3. Run affected mode checks (e.g. coverage, `--no-default-features`).
+Missing/failing check: do not push; report gap.
 
 Tests only serve to verify the current changes.
 Tests are not responsible for filling historical coverage gaps or designing future test systems.

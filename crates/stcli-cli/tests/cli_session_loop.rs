@@ -105,19 +105,19 @@ async fn complete_binary_session_loop_exercises_send_swipe_regenerate_continue_b
         &home,
         &[&"artifact", &"import", &example("character.json")],
     ));
-    let character_hash = character["revision_hash"].as_str().unwrap();
+    let character_hash = character["primary"]["revision_hash"].as_str().unwrap();
 
     let lorebook = envelope_data(&run(
         &home,
         &[&"artifact", &"import", &example("lorebook.json")],
     ));
-    let lorebook_hash = lorebook["revision_hash"].as_str().unwrap();
+    let lorebook_hash = lorebook["primary"]["revision_hash"].as_str().unwrap();
 
     let preset = envelope_data(&run(
         &home,
         &[&"artifact", &"import", &example("preset.json")],
     ));
-    let preset_hash = preset["revision_hash"].as_str().unwrap();
+    let preset_hash = preset["primary"]["revision_hash"].as_str().unwrap();
 
     let base_url = provider.provider_settings().base_url.clone();
     let create = run(

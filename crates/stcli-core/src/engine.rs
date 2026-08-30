@@ -140,9 +140,9 @@ impl StcliEngine {
             EngineQuery::BranchHistory {
                 session_id,
                 branch_id,
-            } => Ok(EngineInspection::BranchHistory(branch_history(
+            } => Ok(EngineInspection::BranchHistory(Box::new(branch_history(
                 &store, session_id, branch_id,
-            )?)),
+            )?))),
             EngineQuery::Configuration { session_id } => {
                 let session = store
                     .session(session_id)?
@@ -333,9 +333,9 @@ impl StcliEngine {
                     settings,
                     enabled: true,
                 });
-                Ok(EngineResult::Configuration(
+                Ok(EngineResult::Configuration(Box::new(
                     store.update_session_configuration(session_id, configuration)?,
-                ))
+                )))
             }
             EngineCommand::UpgradePlugin {
                 session_id,
@@ -358,9 +358,9 @@ impl StcliEngine {
                 }
                 pin.version = installed.manifest.version.to_string();
                 pin.component_hash = installed.manifest.component_sha256;
-                Ok(EngineResult::Configuration(
+                Ok(EngineResult::Configuration(Box::new(
                     store.update_session_configuration(session_id, configuration)?,
-                ))
+                )))
             }
             EngineCommand::SetPluginEnabled {
                 session_id,
@@ -374,12 +374,17 @@ impl StcliEngine {
                     .find(|pin| pin.id == id)
                     .ok_or_else(|| EngineError::PluginNotPinned(id))?;
                 pin.enabled = enabled;
-                Ok(EngineResult::Configuration(
+                Ok(EngineResult::Configuration(Box::new(
                     store.update_session_configuration(session_id, configuration)?,
-                ))
+                )))
             }
             EngineCommand::ImportArtifact { source } => {
-                Ok(EngineResult::Artifact(store.import_artifact(&source)?))
+                let bundle = store.import_artifact_bundle(&source)?;
+                Ok(EngineResult::ArtifactBundle {
+                    primary: bundle.primary,
+                    supplementary_artifacts: bundle.supplementary_artifacts,
+                    asset_count: bundle.asset_count,
+                })
             }
             EngineCommand::CreateSession {
                 configuration,
@@ -508,9 +513,9 @@ impl StcliEngine {
             EngineCommand::UpdateConfiguration {
                 session_id,
                 configuration,
-            } => Ok(EngineResult::Configuration(
+            } => Ok(EngineResult::Configuration(Box::new(
                 store.update_session_configuration(session_id, *configuration)?,
-            )),
+            ))),
             EngineCommand::DryRunSend {
                 session_id,
                 branch_id,
@@ -754,7 +759,11 @@ pub enum EngineCommand {
 pub enum EngineResult {
     InstalledPlugin(InstalledPlugin),
     PluginRemoval(PluginRemovalReceipt),
-    Artifact(ArtifactRecord),
+    ArtifactBundle {
+        primary: ArtifactRecord,
+        supplementary_artifacts: Vec<ArtifactRecord>,
+        asset_count: usize,
+    },
     CreatedSession(Box<CreatedSession>),
     Session(SessionProjection),
     Purge(PurgeReport),
@@ -771,7 +780,7 @@ pub enum EngineResult {
     Turn(TurnProjection),
     Attempt(Box<AttemptProjection>),
     Branch(BranchProjection),
-    Configuration(SessionConfigurationRecord),
+    Configuration(Box<SessionConfigurationRecord>),
     EditedCandidate(EditedCandidate),
     DryRun(Box<DryRunResult>),
 }
@@ -784,7 +793,7 @@ pub enum EngineInspection {
     Session(SessionProjection),
     SessionDetails(SessionDetails),
     Branches(Vec<BranchProjection>),
-    BranchHistory(BranchHistory),
+    BranchHistory(Box<BranchHistory>),
     Configuration(SessionConfigurationRecord),
     Turns(Vec<EngineTurn>),
     Artifacts(Vec<ArtifactRecord>),

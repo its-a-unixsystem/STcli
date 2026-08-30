@@ -51,10 +51,53 @@ Clap also generates `-h`/`--help` at each command level. The top-level command p
 
 | Command | Canonical syntax | Argument behavior |
 | --- | --- | --- |
-| `artifact import` | `artifact import <path>` | Imports the path as a new immutable Artifact Revision. |
+| `artifact import` | `artifact import <path>` | Imports the path as a new immutable Artifact Revision. The command reads the format from the file content. It accepts JSON cards (V1, V2, V3), PNG cards, WebP cards (V2 or V3), and CHARX archives. It returns a bundle with the primary revision, any supplementary revisions (such as bundled lorebooks), and the count of stored media assets. See [Import character cards](guide.md#import-character-cards-from-images-and-archives). |
 | `artifact list` | `artifact list` | No command arguments. |
 | `artifact show` | `artifact show <revision>` | Targets one Artifact Revision. |
 | `artifact export` | `artifact export <revision> <destination>` | Targets one Artifact Revision and writes its exact imported bytes to the required destination path. |
+
+## Provider profile commands
+
+Provider connection profiles are stored in `config.toml` under `[providers.<name>]`. They define HTTPS endpoints, model names, and authentication environment variable names.
+
+| Command | Canonical syntax | Argument behavior |
+| --- | --- | --- |
+| `profile list` | `profile list` | Lists all configured provider profiles from `config.toml`. |
+| `profile show` | `profile show <name>` | Displays configuration details for the named provider profile. |
+| `profile add` | `profile add <name> [--file <path>]` | Adds or updates a provider profile named `<name>`. Reads a JSON or TOML definition from `<path>`, or from standard input if `--file` is omitted or `-`. |
+| `profile remove` | `profile remove <name>` | Removes the named provider profile from `config.toml`. |
+
+### Provider profile file format
+
+Provider profiles can be provided in JSON or TOML. Example in JSON:
+
+```json
+{
+  "id": "openrouter",
+  "base_url": "https://openrouter.ai",
+  "chat_completions_path": "/api/v1/chat/completions",
+  "model": "anthropic/claude-3.5-sonnet",
+  "stream": true,
+  "timeout_seconds": 120,
+  "api_key_env": "OPENROUTER_API_KEY"
+}
+```
+
+Example in TOML:
+
+```toml
+id = "openrouter"
+base_url = "https://openrouter.ai"
+chat_completions_path = "/api/v1/chat/completions"
+model = "anthropic/claude-3.5-sonnet"
+stream = true
+timeout_seconds = 120
+api_key_env = "OPENROUTER_API_KEY"
+```
+
+> **Security rule**: Provider profiles must specify `https://` URLs and may not contain literal passwords or secret API keys in `config.toml`. Use `api_key_env` to reference the environment variable storing your key.
+
+A provider profile can also select Text Completion mode. Set `format_mode` to `text-completion` and add the `completions_path`, `instruct_template`, and `context_formatting` fields. For the full field list, see [Text Completion prompts](text-completion.md).
 
 ## Session commands
 
@@ -180,6 +223,8 @@ For resolution details, provenance tracking, and full preset field classificatio
 | `candidate delete` | `candidate delete <candidate>` | Appends a Logical Deletion tombstone for the Candidate. Automatically advances active selection to an adjacent Candidate if available. |
 
 ## Plugin commands
+
+These commands work the same for Wasm plugins and for script plugins. The manifest `runtime` field selects the runtime. For the manifest and the script API, see [Writing plugins](plugins.md).
 
 | Command | Canonical syntax | Argument behavior |
 | --- | --- | --- |

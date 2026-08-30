@@ -78,7 +78,7 @@ impl CompatibilityProfile {
                 }
             }
             CompatibilitySubjectKind::PromptPath => {
-                if self.scope.prompt_path.eq_ignore_ascii_case(&subject.name) {
+                if contains_case_insensitive(&self.scope.prompt_paths, &subject.name) {
                     CompatibilityOutcome::Exact
                 } else {
                     CompatibilityOutcome::HardUnsupported
@@ -106,7 +106,9 @@ impl CompatibilityProfile {
                 .copied()
                 .unwrap_or(CompatibilityOutcome::HardUnsupported),
             CompatibilitySubjectKind::Feature => {
-                if contains(&self.scope.documented_fallback, &subject.name) {
+                if contains(&self.scope.exact_features, &subject.name) {
+                    CompatibilityOutcome::Exact
+                } else if contains(&self.scope.documented_fallback, &subject.name) {
                     CompatibilityOutcome::DocumentedFallback
                 } else {
                     CompatibilityOutcome::HardUnsupported
@@ -166,8 +168,9 @@ pub struct UpstreamRevision {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProfileScope {
     pub formats: Vec<String>,
-    pub prompt_path: String,
+    pub prompt_paths: Vec<String>,
     pub generation_types: Vec<String>,
+    pub exact_features: Vec<String>,
     pub documented_fallback: Vec<String>,
     pub hard_unsupported: Vec<String>,
     pub preserved_metadata: Vec<String>,
@@ -217,8 +220,9 @@ mod tests {
             },
             scope: ProfileScope {
                 formats: vec!["character-card-v2-json".to_owned()],
-                prompt_path: "chat-completion-prompt-manager".to_owned(),
+                prompt_paths: vec!["chat-completion-prompt-manager".to_owned()],
                 generation_types: vec!["normal".to_owned()],
+                exact_features: vec![],
                 documented_fallback: vec!["approximate-tokenizer".to_owned()],
                 hard_unsupported: vec![],
                 preserved_metadata: vec!["unknown-json-member".to_owned()],
@@ -252,6 +256,7 @@ mod tests {
     fn classification_distinguishes_all_outcomes() {
         let mut profile = valid_profile();
         profile.scope.hard_unsupported = vec!["group-chat".to_owned()];
+        profile.scope.exact_features = vec!["text-completion".to_owned()];
         profile.macros.hard_unsupported = vec!["input".to_owned()];
         let classify = |kind, name: &str| {
             profile.classify(&CompatibilitySubject {
@@ -275,6 +280,10 @@ mod tests {
         assert_eq!(
             classify(CompatibilitySubjectKind::Feature, "group-chat"),
             CompatibilityOutcome::HardUnsupported
+        );
+        assert_eq!(
+            classify(CompatibilitySubjectKind::Feature, "text-completion"),
+            CompatibilityOutcome::Exact
         );
     }
 }

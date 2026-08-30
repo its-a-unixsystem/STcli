@@ -1,5 +1,7 @@
+use std::{borrow::Cow, collections::HashSet};
+
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rusqlite::{OptionalExtension, params};
-use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -47,9 +49,37 @@ pub struct CapsuleIdentity {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum CapsuleArtifactSource {
+    Utf8(String),
+    Base64 { base64: String },
+}
+
+impl CapsuleArtifactSource {
+    fn from_bytes(source: Vec<u8>) -> Self {
+        match String::from_utf8(source) {
+            Ok(source) => Self::Utf8(source),
+            Err(error) => Self::Base64 {
+                base64: STANDARD.encode(error.into_bytes()),
+            },
+        }
+    }
+
+    fn bytes(&self) -> Result<Cow<'_, [u8]>, CapsuleError> {
+        match self {
+            Self::Utf8(source) => Ok(Cow::Borrowed(source.as_bytes())),
+            Self::Base64 { base64 } => STANDARD
+                .decode(base64)
+                .map(Cow::Owned)
+                .map_err(CapsuleError::InvalidArtifactSourceBase64),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CapsuleArtifact {
     pub record: ArtifactRecord,
-    pub source: Option<String>,
+    pub source: Option<CapsuleArtifactSource>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -182,10 +212,9 @@ impl Store {
                 .artifact(&revision_hash)?
                 .ok_or_else(|| CapsuleError::ArtifactNotFound(revision_hash.clone()))?;
             let source = match kind {
-                CapsuleKind::Portable => Some(
-                    String::from_utf8(self.export_artifact(&revision_hash)?)
-                        .map_err(|_| CapsuleError::ArtifactSourceNotUtf8(revision_hash.clone()))?,
-                ),
+                CapsuleKind::Portable => Some(CapsuleArtifactSource::from_bytes(
+                    self.export_artifact(&revision_hash)?,
+                )),
                 CapsuleKind::Thin => None,
             };
             references.push(CapsuleReference {
@@ -316,7 +345,8 @@ impl Store {
                 let source = artifact.source.as_ref().ok_or_else(|| {
                     CapsuleError::MissingReferencedBlob(artifact.record.source_blob_hash.clone())
                 })?;
-                let imported = self.import_artifact(source.as_bytes())?;
+                let source = source.bytes()?;
+                let imported = self.import_artifact(&source)?;
                 if imported.revision_hash != artifact.record.revision_hash {
                     return Err(CapsuleError::ArtifactHashMismatch(
                         artifact.record.revision_hash.clone(),
@@ -708,19 +738,21 @@ impl TurnCapsule {
                 ));
             }
             if let Some(source) = &artifact.source {
+                let source = source.bytes()?;
                 let actual = artifact_revision_hash(
                     artifact.record.kind.as_str(),
                     &artifact.record.source_format,
-                    source.as_bytes(),
+                    &source,
                 );
                 if actual != artifact.record.revision_hash
-                    || content_blob_hash(source.as_bytes()) != artifact.record.source_blob_hash
+                    || crate::artifact::artifact_source_blob_hash(&source)?
+                        != artifact.record.source_blob_hash
                 {
                     return Err(CapsuleError::ArtifactHashMismatch(
                         artifact.record.revision_hash.clone(),
                     ));
                 }
-                let decoded = decode_artifact(source.as_bytes())?;
+                let decoded = decode_artifact(&source)?;
                 if decoded.kind != artifact.record.kind
                     || artifact_semantic_hash(&decoded.semantic)? != artifact.record.semantic_hash
                 {
@@ -851,8 +883,8 @@ pub enum CapsuleError {
     ConfigurationNotFound(ContentHash),
     #[error("artifact revision {0} was not found")]
     ArtifactNotFound(ContentHash),
-    #[error("artifact revision {0} source is not UTF-8 JSON")]
-    ArtifactSourceNotUtf8(ContentHash),
+    #[error("capsule artifact source is not valid base64: {0}")]
+    InvalidArtifactSourceBase64(base64::DecodeError),
     #[error("unsupported capsule format {format} version {version}")]
     UnsupportedFormat { format: String, version: String },
     #[error("capsule feature manifest digest does not match this engine")]

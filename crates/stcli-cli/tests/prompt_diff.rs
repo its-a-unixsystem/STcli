@@ -74,7 +74,7 @@ async fn session(home: &TestHome, provider: &MockProviderProcess) -> String {
         home,
         &[&"artifact", &"import", &example("character.json")],
     ));
-    let character_hash = character["revision_hash"].as_str().unwrap();
+    let character_hash = character["primary"]["revision_hash"].as_str().unwrap();
     let base_url = provider.provider_settings().base_url;
     let certificate = home
         .root()

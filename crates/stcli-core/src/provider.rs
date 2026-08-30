@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::{ContentHash, HeaderSetting, ProviderSettings, canonical_json_hash};
+use crate::{
+    ContentHash, FormatMode, HeaderSetting, PromptPlan, ProviderSettings, canonical_json_hash,
+};
 
 const PROVIDER_REQUEST_DOMAIN: &str = "stcli:provider-request:v1";
 
@@ -61,12 +63,33 @@ pub fn validate_provider_settings(settings: &ProviderSettings) -> Result<(), Pro
     if !url.username().is_empty() || url.password().is_some() {
         return Err(ProviderError::UrlUserinfo);
     }
+    validate_text_completion_settings(settings)?;
     for (name, setting) in &settings.static_headers {
         let header_name = HeaderName::try_from(name.as_str())
             .map_err(|error| ProviderError::InvalidHeader(error.to_string()))?;
         if matches!(setting, HeaderSetting::Literal(_)) && is_secret_header(&header_name) {
             return Err(ProviderError::SecretHeaderMustUseEnvironment(name.clone()));
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_text_completion_settings(
+    settings: &ProviderSettings,
+) -> Result<(), ProviderError> {
+    if settings.format_mode != FormatMode::TextCompletion {
+        return Ok(());
+    }
+    match settings.completions_path.as_deref() {
+        None => return Err(ProviderError::MissingCompletionsPath),
+        Some(path) if path.trim().is_empty() => return Err(ProviderError::EmptyCompletionsPath),
+        Some(_) => {}
+    }
+    if settings.instruct_template.is_none() {
+        return Err(ProviderError::MissingInstructTemplate);
+    }
+    if settings.context_formatting.is_none() {
+        return Err(ProviderError::MissingContextFormatting);
     }
     Ok(())
 }
@@ -128,10 +151,18 @@ impl OpenAiProvider {
         mut on_event: impl FnMut(&ProviderEvent),
     ) -> Result<ProviderResult, ProviderError> {
         let request_hash = provider_request_hash(request)?;
+        let path = match self.settings.format_mode {
+            FormatMode::ChatCompletion => &self.settings.chat_completions_path,
+            FormatMode::TextCompletion => self
+                .settings
+                .completions_path
+                .as_deref()
+                .expect("validated Text Completion path"),
+        };
         let endpoint = format!(
             "{}{}",
             self.settings.base_url.trim_end_matches('/'),
-            normalize_path(&self.settings.chat_completions_path)
+            normalize_path(path)
         );
         let started = ProviderEvent::Started;
         on_event(&started);
@@ -181,10 +212,11 @@ impl OpenAiProvider {
                         events.push(provider_event);
                     }
                 }
-                if let Some(delta) = chunk
-                    .pointer("/choices/0/delta/content")
-                    .and_then(Value::as_str)
-                {
+                let text_pointer = match self.settings.format_mode {
+                    FormatMode::ChatCompletion => "/choices/0/delta/content",
+                    FormatMode::TextCompletion => "/choices/0/text",
+                };
+                if let Some(delta) = chunk.pointer(text_pointer).and_then(Value::as_str) {
                     text.push_str(delta);
                     if text.len() > crate::limits::MAX_RESPONSE_TEXT_BYTES {
                         return Err(ProviderError::ResponseTooLarge {
@@ -237,10 +269,11 @@ impl OpenAiProvider {
             ]
             .into_iter()
             .find_map(|pointer| body.pointer(pointer).and_then(Value::as_str));
-            let text = match body
-                .pointer("/choices/0/message/content")
-                .and_then(Value::as_str)
-            {
+            let text_pointer = match self.settings.format_mode {
+                FormatMode::ChatCompletion => "/choices/0/message/content",
+                FormatMode::TextCompletion => "/choices/0/text",
+            };
+            let text = match body.pointer(text_pointer).and_then(Value::as_str) {
                 Some(content) => content.to_owned(),
                 None if reasoning.is_some() => String::new(),
                 None => return Err(ProviderError::MissingContent),
@@ -282,7 +315,7 @@ impl OpenAiProvider {
 
 pub fn provider_request(
     settings: &ProviderSettings,
-    messages: &[ChatMessage],
+    prompt_plan: &PromptPlan,
     generation_settings: &Value,
 ) -> Result<Value, ProviderError> {
     let mut request = match generation_settings {
@@ -290,10 +323,48 @@ pub fn provider_request(
         _ => return Err(ProviderError::InvalidGenerationSettings),
     };
     request.insert("model".to_owned(), Value::String(settings.model.clone()));
-    request.insert(
-        "messages".to_owned(),
-        serde_json::to_value(messages).map_err(ProviderError::Encode)?,
-    );
+    match settings.format_mode {
+        FormatMode::ChatCompletion => {
+            request.insert(
+                "messages".to_owned(),
+                serde_json::to_value(&prompt_plan.messages).map_err(ProviderError::Encode)?,
+            );
+        }
+        FormatMode::TextCompletion => {
+            request.insert(
+                "prompt".to_owned(),
+                Value::String(
+                    prompt_plan
+                        .text_prompt
+                        .clone()
+                        .ok_or(ProviderError::MissingTextPrompt)?,
+                ),
+            );
+            let mut stops = match request.remove("stop") {
+                None => Vec::new(),
+                Some(Value::String(stop)) => vec![stop],
+                Some(Value::Array(stops)) => stops
+                    .into_iter()
+                    .map(|stop| match stop {
+                        Value::String(stop) => Ok(stop),
+                        _ => Err(ProviderError::InvalidStopSequences),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                Some(_) => return Err(ProviderError::InvalidStopSequences),
+            };
+            for stop in &prompt_plan.stop_sequences {
+                if !stop.is_empty() && !stops.contains(stop) {
+                    stops.push(stop.clone());
+                }
+            }
+            if !stops.is_empty() {
+                request.insert(
+                    "stop".to_owned(),
+                    Value::Array(stops.into_iter().map(Value::String).collect()),
+                );
+            }
+        }
+    }
     request.insert("stream".to_owned(), Value::Bool(settings.stream));
     Ok(Value::Object(request))
 }
@@ -357,10 +428,22 @@ pub enum ProviderError {
     Encode(serde_json::Error),
     #[error("provider request canonicalization failed: {0}")]
     Canonicalize(serde_json::Error),
+    #[error("Text Completion provider is missing completions_path")]
+    MissingCompletionsPath,
+    #[error("Text Completion provider completions_path must not be empty")]
+    EmptyCompletionsPath,
+    #[error("Text Completion provider is missing instruct_template")]
+    MissingInstructTemplate,
+    #[error("Text Completion provider is missing context_formatting")]
+    MissingContextFormatting,
     #[error("generation settings must be a JSON object")]
     InvalidGenerationSettings,
-    #[error("provider response did not contain choices[0].message.content")]
+    #[error("provider response did not contain completion text")]
     MissingContent,
+    #[error("Text Completion Prompt Plan is missing text_prompt")]
+    MissingTextPrompt,
+    #[error("Text Completion stop must be a string or an array of strings")]
+    InvalidStopSequences,
     #[error("provider response exceeds {limit} byte limit ({size} bytes)")]
     ResponseTooLarge { size: usize, limit: usize },
 }
@@ -381,23 +464,11 @@ mod tests {
             ca_certificate_pem: None,
             model: "fixture-model".to_owned(),
             stream: true,
+            format_mode: Default::default(),
+            completions_path: None,
+            instruct_template: None,
+            context_formatting: None,
         }
-    }
-
-    #[test]
-    fn request_is_built_from_pinned_settings() {
-        let request = provider_request(
-            &settings(),
-            &[ChatMessage {
-                role: ChatRole::User,
-                content: "hello".to_owned(),
-            }],
-            &json!({"temperature": 0.5}),
-        )
-        .unwrap();
-        assert_eq!(request["model"], "fixture-model");
-        assert_eq!(request["stream"], true);
-        assert_eq!(request["temperature"], 0.5);
     }
 
     #[test]

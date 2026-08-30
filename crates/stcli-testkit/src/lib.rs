@@ -72,6 +72,10 @@ pub fn configuration(character_revision: ContentHash) -> SessionConfiguration {
             ca_certificate_pem: None,
             model: "fixture-model".to_owned(),
             stream: false,
+            format_mode: Default::default(),
+            completions_path: None,
+            instruct_template: None,
+            context_formatting: None,
         },
         tokenizer: "tiktoken:o200k_base".to_owned(),
         generation_settings: json!({}),
@@ -218,6 +222,7 @@ impl MockProvider {
         let app = Router::new()
             .route("/health", get(|| async { "ok" }))
             .route("/v1/chat/completions", post(mock_completion))
+            .route("/v1/completions", post(mock_text_completion))
             .with_state(state);
         let server = tokio::spawn(async move {
             axum_server::from_tcp_rustls(listener, tls)
@@ -260,6 +265,10 @@ impl MockProvider {
             ca_certificate_pem: Some(self.certificate_pem.clone()),
             model: "fixture-model".to_owned(),
             stream: false,
+            format_mode: Default::default(),
+            completions_path: None,
+            instruct_template: None,
+            context_formatting: None,
         }
     }
 
@@ -295,6 +304,41 @@ async fn mock_completion(State(state): State<MockState>, Json(request): Json<Val
         "choices": [{
             "index": 0,
             "message": {"role": "assistant", "content": content},
+            "finish_reason": "stop"
+        }]
+    }))
+    .into_response()
+}
+
+async fn mock_text_completion(
+    State(state): State<MockState>,
+    Json(request): Json<Value>,
+) -> Response {
+    let valid_prompt = request
+        .get("prompt")
+        .and_then(Value::as_str)
+        .is_some_and(|prompt| !prompt.is_empty());
+    let valid_stops = request
+        .get("stop")
+        .and_then(Value::as_array)
+        .is_some_and(|stops| {
+            stops.first().and_then(Value::as_str) == Some("configured-stop")
+                && stops.iter().any(|stop| stop.as_str() == Some("<|im_end|>"))
+        });
+    if !valid_prompt || !valid_stops {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": {"message": "expected flat prompt and stop array"}})),
+        )
+            .into_response();
+    }
+    let content = state.responses.lock().await.pop_front().unwrap_or_default();
+    Json(json!({
+        "id": "mock-text-completion",
+        "object": "text_completion",
+        "choices": [{
+            "index": 0,
+            "text": content,
             "finish_reason": "stop"
         }]
     }))
@@ -369,6 +413,10 @@ impl MockProviderProcess {
             ca_certificate_pem: Some(self.certificate_pem.clone()),
             model: "fixture-model".to_owned(),
             stream: false,
+            format_mode: Default::default(),
+            completions_path: None,
+            instruct_template: None,
+            context_formatting: None,
         }
     }
 
