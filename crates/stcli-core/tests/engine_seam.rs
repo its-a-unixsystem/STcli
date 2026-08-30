@@ -1,4 +1,7 @@
-use stcli_core::{EngineCommand, EngineInspection, EngineQuery, EngineResult, StcliEngine, Store};
+use stcli_core::{
+    ContextFormatting, EngineCommand, EngineInspection, EngineQuery, EngineResult, FormatMode,
+    InstructTemplate, StcliEngine, Store,
+};
 use stcli_testkit::{configuration, fixtures};
 use tempfile::tempdir;
 
@@ -130,4 +133,160 @@ async fn engine_owns_artifact_and_session_storage_operations() {
         panic!("unexpected archive result");
     };
     assert!(archived.archived);
+}
+
+#[tokio::test]
+async fn engine_persona_description_is_pinned_rendered_and_ordered_by_preset() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let preset = store
+        .import_artifact(
+            br#"{
+                "prompts": [
+                    {"identifier": "main", "role": "system", "content": ""},
+                    {"identifier": "personaDescription", "role": "system", "content": ""},
+                    {"identifier": "charDescription", "role": "system", "content": ""},
+                    {"identifier": "chatHistory", "role": "system", "content": ""},
+                    {"identifier": "userInput", "role": "user", "content": ""}
+                ],
+                "prompt_order": [{"order": [
+                    {"identifier": "main", "enabled": true},
+                    {"identifier": "personaDescription", "enabled": true},
+                    {"identifier": "charDescription", "enabled": true},
+                    {"identifier": "chatHistory", "enabled": true},
+                    {"identifier": "userInput", "enabled": true}
+                ]}]
+            }"#,
+        )
+        .unwrap();
+    let mut config = configuration(character.revision_hash);
+    assert_eq!(config.persona_description, None);
+    assert!(
+        serde_json::to_value(&config)
+            .unwrap()
+            .get("persona_description")
+            .is_none()
+    );
+    config.persona_description = Some(" \n".to_owned());
+    assert!(
+        serde_json::to_value(&config)
+            .unwrap()
+            .get("persona_description")
+            .is_none()
+    );
+    config.persona_description = None;
+    let engine = StcliEngine::new(&database);
+    let EngineResult::CreatedSession(created) = engine
+        .execute(
+            EngineCommand::CreateSession {
+                configuration: Box::new(config.clone()),
+                greeting_index: 0,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected create result");
+    };
+    assert_eq!(
+        created.configuration.revision_hash.to_string(),
+        "sha256:ebc64a6bbbacac40d860dc3771c39ca6a1a64cdf2a3dd693c4b8acec9fbe7d99"
+    );
+
+    config.persona_name = "Morgan".to_owned();
+    config.persona_description = Some("{{user}} is searching for {{char}}.".to_owned());
+    config.prompt_preset_revision = Some(preset.revision_hash);
+    engine
+        .execute(
+            EngineCommand::UpdateConfiguration {
+                session_id: created.session.session_id,
+                configuration: Box::new(config.clone()),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let EngineResult::DryRun(dry_run) = engine
+        .execute(
+            EngineCommand::DryRunSend {
+                session_id: created.session.session_id,
+                branch_id: created.branch.branch_id,
+                content: "Hello".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected dry-run result");
+    };
+    let persona_index = dry_run
+        .prompt_plan
+        .segments
+        .iter()
+        .position(|segment| segment.slot == "personaDescription")
+        .unwrap();
+    let persona = &dry_run.prompt_plan.segments[persona_index];
+    assert_eq!(persona.source, "persona-description");
+    assert_eq!(persona.raw_content, "{{user}} is searching for {{char}}.");
+    assert_eq!(persona.content, "Morgan is searching for Alice.");
+    assert_eq!(
+        dry_run.prompt_plan.segments[persona_index + 1].slot,
+        "charDescription"
+    );
+    assert_eq!(persona.macro_evaluations.len(), 2);
+
+    config.prompt_preset_revision = None;
+    config.provider.format_mode = FormatMode::TextCompletion;
+    config.provider.completions_path = Some("/v1/completions".to_owned());
+    config.provider.instruct_template = Some(InstructTemplate {
+        r#macro: true,
+        stop_sequence: "{{personaDescription}}".to_owned(),
+        ..InstructTemplate::default()
+    });
+    config.provider.context_formatting = Some(ContextFormatting {
+        story_string: "{{personaDescription}}|{{persona_description}}".to_owned(),
+        ..ContextFormatting::default()
+    });
+    engine
+        .execute(
+            EngineCommand::UpdateConfiguration {
+                session_id: created.session.session_id,
+                configuration: Box::new(config),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let EngineResult::DryRun(flat) = engine
+        .execute(
+            EngineCommand::DryRunSend {
+                session_id: created.session.session_id,
+                branch_id: created.branch.branch_id,
+                content: "Hello".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected dry-run result");
+    };
+    assert!(
+        flat.prompt_plan
+            .text_prompt
+            .as_deref()
+            .unwrap()
+            .starts_with("Morgan is searching for Alice.|Morgan is searching for Alice.")
+    );
+    assert!(
+        flat.prompt_plan
+            .stop_sequences
+            .contains(&"Morgan is searching for Alice.".to_owned())
+    );
 }

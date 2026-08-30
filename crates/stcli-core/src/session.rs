@@ -25,6 +25,8 @@ pub struct SessionConfiguration {
     pub compatibility_profile: String,
     pub character_revision: ContentHash,
     pub persona_name: String,
+    #[serde(default, skip_serializing_if = "option_string_is_none_or_blank")]
+    pub persona_description: Option<String>,
     pub lorebook_revisions: Vec<ContentHash>,
     pub prompt_preset_revision: Option<ContentHash>,
     pub provider: ProviderSettings,
@@ -40,6 +42,9 @@ pub struct SessionConfiguration {
         alias = "preset_script_grants"
     )]
     pub script_grants: Vec<ContentHash>,
+}
+fn option_string_is_none_or_blank(value: &Option<String>) -> bool {
+    value.as_deref().is_none_or(|value| value.trim().is_empty())
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1977,6 +1982,7 @@ mod tests {
             compatibility_profile: "sillytavern-1.18-core".to_owned(),
             character_revision,
             persona_name: "User".to_owned(),
+            persona_description: None,
             lorebook_revisions: vec![],
             prompt_preset_revision: None,
             provider: ProviderSettings {

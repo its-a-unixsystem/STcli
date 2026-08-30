@@ -1727,6 +1727,27 @@ impl Store {
         let mut engine = MacroEngine::new(context.random_seed);
         let mut evaluations = Vec::new();
         let mut warnings = Vec::new();
+        let persona_description = configuration
+            .configuration
+            .persona_description
+            .as_deref()
+            .filter(|description| !description.trim().is_empty())
+            .map(|raw| {
+                render_segment_macro_text(
+                    &mut engine,
+                    &context,
+                    &mut state,
+                    raw,
+                    &mut evaluations,
+                    &mut warnings,
+                )
+                .map(|rendered| (raw.to_owned(), rendered))
+            })
+            .transpose()?;
+        if let Some((_, rendered)) = &persona_description {
+            context.insert("personaDescription", &rendered.content);
+            context.insert("persona_description", &rendered.content);
+        }
         let plugin_receipts = self.run_runtime_plugins(
             configuration,
             session_id,
@@ -1979,6 +2000,16 @@ impl Store {
             LorePosition::Before,
             "world-info-before",
         );
+        if let Some((raw, rendered)) = persona_description {
+            push_segment(
+                &mut segments,
+                tokenizer,
+                "persona-description",
+                ChatRole::System,
+                raw,
+                rendered,
+            );
+        }
         for (source, source_field, raw, rendered) in definitions {
             if rendered.content.is_empty() {
                 continue;
@@ -3609,6 +3640,8 @@ fn push_segment(
 fn slot_for_source(source: &str) -> &'static str {
     if source == "main-prompt" {
         "main"
+    } else if source == "persona-description" {
+        "personaDescription"
     } else if source.starts_with("character-") {
         "charDescription"
     } else if source == "world-info-before" {

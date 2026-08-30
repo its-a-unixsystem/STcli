@@ -3,6 +3,7 @@
 use serde_json::Value;
 use stcli_core::{CapsuleKind, EntityId, Store};
 use stcli_testkit::{MockProviderProcess, TestHome};
+use std::fs;
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
@@ -405,4 +406,75 @@ async fn complete_binary_session_loop_exercises_send_swipe_regenerate_continue_b
     );
 
     provider.shutdown();
+}
+
+#[test]
+fn session_commands_accept_inline_and_file_persona_descriptions() {
+    let home = TestHome::new().unwrap();
+    let character = envelope_data(&run(
+        &home,
+        &[&"artifact", &"import", &example("character.json")],
+    ));
+    let character_hash = character["primary"]["revision_hash"].as_str().unwrap();
+    let create = run(
+        &home,
+        &[
+            &"session",
+            &"create",
+            &"--character",
+            &character_hash,
+            &"--persona-description",
+            &"Inline persona",
+        ],
+    );
+    let created = envelope_data(&create);
+    let session_id = created["session"]["session_id"].as_str().unwrap();
+    let persona_path = home.root().join("persona.txt");
+    fs::write(&persona_path, "{{user}} knows {{char}}.").unwrap();
+    let persona_argument = format!("@{}", persona_path.display());
+    let update = run(
+        &home,
+        &[
+            &"session",
+            &"update",
+            &session_id,
+            &"--character",
+            &character_hash,
+            &"--persona",
+            &"Morgan",
+            &"--persona-description",
+            &persona_argument,
+        ],
+    );
+    envelope(&update);
+
+    let store = Store::open(home.paths().database()).unwrap();
+    let session = store.session(session_id.parse().unwrap()).unwrap().unwrap();
+    let configuration = store
+        .configuration(&session.current_config_hash)
+        .unwrap()
+        .unwrap()
+        .configuration;
+    assert_eq!(
+        configuration.persona_description.as_deref(),
+        Some("{{user}} knows {{char}}.")
+    );
+
+    let missing = run(
+        &home,
+        &[
+            &"session",
+            &"update",
+            &session_id,
+            &"--character",
+            &character_hash,
+            &"--persona-description",
+            &"@missing-persona.txt",
+        ],
+    );
+    assert!(!missing.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing.stderr)
+            .contains("failed to read persona description file 'missing-persona.txt'")
+    );
 }

@@ -451,6 +451,8 @@ struct CreateSessionArgs {
     #[arg(long, default_value = "User")]
     persona: String,
     #[arg(long)]
+    persona_description: Option<String>,
+    #[arg(long)]
     lorebook: Vec<ContentHash>,
     #[arg(long)]
     preset: Option<ContentHash>,
@@ -748,10 +750,21 @@ fn configuration_from_args(
     };
     let generation_settings = serde_json::from_str::<Value>(&args.generation_settings)
         .context("generation settings must be valid JSON")?;
+    let persona_description = args
+        .persona_description
+        .map(|description| {
+            let Some(path) = description.strip_prefix('@') else {
+                return Ok(description);
+            };
+            fs::read_to_string(path)
+                .with_context(|| format!("failed to read persona description file '{path}'"))
+        })
+        .transpose()?;
     Ok(SessionConfiguration {
         compatibility_profile: args.compatibility_profile,
         character_revision: args.character,
         persona_name: args.persona,
+        persona_description,
         lorebook_revisions: args.lorebook,
         prompt_preset_revision: args.preset,
         provider,

@@ -1230,7 +1230,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
             );
         }
         Popup::NewSession(state) => {
-            let session_area = centered(frame.area(), 72, 17);
+            let session_area = centered(frame.area(), 72, 18);
             frame.render_widget(Clear, session_area);
 
             let char_label = if state.characters.is_empty() {
@@ -1338,24 +1338,36 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 Line::from(vec![
                     Span::styled(
                         if state.focused_field == 4 {
+                            "> Persona Desc: "
+                        } else {
+                            "  Persona Desc: "
+                        },
+                        field_style(4),
+                    ),
+                    Span::styled(&state.persona_description, field_style(4)),
+                    Span::styled(cursor(4), Style::default().fg(app.theme.accent)),
+                ]),
+                Line::from(vec![
+                    Span::styled(
+                        if state.focused_field == 5 {
                             "> Greeting:     "
                         } else {
                             "  Greeting:     "
                         },
-                        field_style(4),
+                        field_style(5),
                     ),
-                    Span::styled(greeting_label, field_style(4)),
+                    Span::styled(greeting_label, field_style(5)),
                 ]),
                 Line::from(""),
                 Line::from(vec![
                     Span::raw("    "),
                     Span::styled(
-                        if state.focused_field == 5 {
+                        if state.focused_field == 6 {
                             "[ Create Session ]"
                         } else {
                             "  Create Session  "
                         },
-                        if state.focused_field == 5 {
+                        if state.focused_field == 6 {
                             Style::default()
                                 .bg(app.theme.accent)
                                 .fg(app.theme.background)
@@ -1366,12 +1378,12 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                     ),
                     Span::raw("     "),
                     Span::styled(
-                        if state.focused_field == 6 {
+                        if state.focused_field == 7 {
                             "[ Cancel ]"
                         } else {
                             "  Cancel  "
                         },
-                        if state.focused_field == 6 {
+                        if state.focused_field == 7 {
                             Style::default()
                                 .bg(app.theme.accent)
                                 .fg(app.theme.background)

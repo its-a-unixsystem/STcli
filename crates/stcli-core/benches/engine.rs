@@ -312,6 +312,7 @@ fn configuration_for_bench(
         compatibility_profile: "sillytavern-1.18-core".to_owned(),
         character_revision,
         persona_name: "User".to_owned(),
+        persona_description: None,
         lorebook_revisions: lorebook_revision.into_iter().collect(),
         prompt_preset_revision: preset_revision,
         provider: stcli_core::ProviderSettings {

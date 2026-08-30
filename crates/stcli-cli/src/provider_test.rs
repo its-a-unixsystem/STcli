@@ -179,6 +179,7 @@ async fn run_parity_dry_run(
         compatibility_profile: "sillytavern-1.18-core".to_owned(),
         character_revision: character.revision_hash,
         persona_name: case.persona_name.clone(),
+        persona_description: None,
         lorebook_revisions: vec![],
         prompt_preset_revision: Some(preset.revision_hash),
         provider: ProviderSettings {
@@ -707,6 +708,7 @@ mod tests {
                     compatibility_profile: "sillytavern-1.18-core".to_owned(),
                     character_revision: card.revision_hash,
                     persona_name: "User".to_owned(),
+                    persona_description: None,
                     lorebook_revisions: vec![],
                     prompt_preset_revision: None,
                     provider: provider_settings.clone(),
@@ -811,6 +813,7 @@ mod tests {
                     compatibility_profile: "sillytavern-1.18-core".to_owned(),
                     character_revision: card.revision_hash,
                     persona_name: "User".to_owned(),
+                    persona_description: None,
                     lorebook_revisions: vec![],
                     prompt_preset_revision: None,
                     provider: ProviderSettings {
@@ -980,6 +983,7 @@ mod tests {
                     compatibility_profile: "sillytavern-1.18-core".to_owned(),
                     character_revision: card.revision_hash,
                     persona_name: "User".to_owned(),
+                    persona_description: None,
                     lorebook_revisions: vec![],
                     prompt_preset_revision: None,
                     provider: ProviderSettings {
@@ -1135,6 +1139,7 @@ mod tests {
                     compatibility_profile: "sillytavern-1.18-core".to_owned(),
                     character_revision: card.revision_hash,
                     persona_name: "User".to_owned(),
+                    persona_description: None,
                     lorebook_revisions: vec![],
                     prompt_preset_revision: None,
                     provider: ProviderSettings {

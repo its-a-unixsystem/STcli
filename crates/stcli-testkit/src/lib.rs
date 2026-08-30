@@ -60,6 +60,7 @@ pub fn configuration(character_revision: ContentHash) -> SessionConfiguration {
         compatibility_profile: "sillytavern-1.18-core".to_owned(),
         character_revision,
         persona_name: "User".to_owned(),
+        persona_description: None,
         lorebook_revisions: vec![],
         prompt_preset_revision: None,
         provider: ProviderSettings {

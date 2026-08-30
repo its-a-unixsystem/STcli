@@ -112,7 +112,7 @@ The percentage counts fully implemented features (✅) against all tracked Silly
 | Feature | Status | Remarks & Implementation Seam |
 | :--- | :---: | :--- |
 | **User persona name** | ✅ | `session create --persona <text>` sets the name used by future turns. |
-| **User persona description** | ⚠️ | The `personaDescription` slot is recognized but not yet populated. Rich persona descriptions, macro expansion, and `--persona-description` planned. |
+| **User persona description** | ✅ | `session create` and `session update` accept inline or `@path` descriptions. The engine expands contextual macros and injects the result through the preset-controlled `personaDescription` slot. |
 | **Author's Note** | ✅ | Author's Note positions (`AuthorNoteTop`, `AuthorNoteBottom`) are honored for insertion. |
 
 ## 7. Providers and connections

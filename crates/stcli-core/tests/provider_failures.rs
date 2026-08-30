@@ -35,6 +35,7 @@ async fn with_failed_provider(
                 compatibility_profile: "sillytavern-1.18-core".to_owned(),
                 character_revision: card.revision_hash,
                 persona_name: "User".to_owned(),
+                persona_description: None,
                 lorebook_revisions: vec![],
                 prompt_preset_revision: None,
                 provider: ProviderSettings {
@@ -163,6 +164,7 @@ async fn provider_connection_refused_records_failed_attempt() {
                 compatibility_profile: "sillytavern-1.18-core".to_owned(),
                 character_revision: card.revision_hash,
                 persona_name: "User".to_owned(),
+                persona_description: None,
                 lorebook_revisions: vec![],
                 prompt_preset_revision: None,
                 provider: ProviderSettings {

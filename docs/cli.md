@@ -123,6 +123,7 @@ A provider profile can also select Text Completion mode. Set `format_mode` to `t
 | --- | --- | --- | --- |
 | `--character <revision>` | Required | None | Character-card Artifact Revision. |
 | `--persona <text>` | Optional | `User` | Persona name used by future Turns. |
+| `--persona-description <text>` | Optional | None | Persona description used by future Turns. Prefix with `@` to read the description from a file relative to the current working directory. |
 | `--lorebook <revision>` | Optional, repeatable | Empty | Adds a lorebook Artifact Revision for each occurrence. |
 | `--preset <revision>` | Optional | None | Chat Completion preset Artifact Revision. |
 | `--provider-profile <name>` | Optional | None | Named provider connection profile from `config.toml`. Explicit CLI flags override profile fields. |

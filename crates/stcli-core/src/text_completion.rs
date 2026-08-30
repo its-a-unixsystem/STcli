@@ -89,6 +89,8 @@ pub(crate) fn project_text_completion(
         "wiAfter",
         "anchorBefore",
         "anchorAfter",
+        "personaDescription",
+        "persona_description",
     ] {
         story.insert(key, String::new());
     }
@@ -103,9 +105,11 @@ pub(crate) fn project_text_completion(
         }
         value.push_str(&segment.content);
     }
+    story.insert("persona_description", story["personaDescription"].clone());
 
     let mut registry = Handlebars::new();
     registry.register_escape_fn(handlebars::no_escape);
+    let persona_description = story["personaDescription"].as_str();
     let story_text = registry
         .render_template(
             &context.story_string,
@@ -117,6 +121,8 @@ pub(crate) fn project_text_completion(
                 "wiBefore": story["wiBefore"],
                 "wiAfter": story["wiAfter"],
                 "persona": story["persona"],
+                "personaDescription": story["personaDescription"],
+                "persona_description": story["persona_description"],
                 "anchorBefore": story["anchorBefore"],
                 "anchorAfter": story["anchorAfter"],
                 "user": persona_name,
@@ -132,6 +138,7 @@ pub(crate) fn project_text_completion(
         instruct.r#macro,
         persona_name,
         character_name,
+        persona_description,
         "System",
     );
     push_sequence(&mut prompt, &story_prefix, instruct.wrap);
@@ -141,6 +148,7 @@ pub(crate) fn project_text_completion(
         instruct.r#macro,
         persona_name,
         character_name,
+        persona_description,
         "System",
     ));
 
@@ -173,6 +181,7 @@ pub(crate) fn project_text_completion(
             instruct.r#macro,
             persona_name,
             character_name,
+            persona_description,
             name,
         );
         push_sequence(&mut prompt, &sequence, instruct.wrap);
@@ -186,6 +195,7 @@ pub(crate) fn project_text_completion(
             instruct.r#macro,
             persona_name,
             character_name,
+            persona_description,
             name,
         );
         if suffix.is_empty() && instruct.wrap {
@@ -208,6 +218,7 @@ pub(crate) fn project_text_completion(
         instruct.r#macro,
         persona_name,
         character_name,
+        persona_description,
         character_name,
     );
     push_sequence(&mut prompt, &assistant_sequence, instruct.wrap);
@@ -224,7 +235,13 @@ pub(crate) fn project_text_completion(
 
     Ok(TextProjection {
         prompt,
-        stop_sequences: resolve_stop_sequences(instruct, context, persona_name, character_name),
+        stop_sequences: resolve_stop_sequences(
+            instruct,
+            context,
+            persona_name,
+            character_name,
+            persona_description,
+        ),
     })
 }
 
@@ -234,6 +251,7 @@ fn story_key(segment: &PromptSegment) -> Option<&'static str> {
         "character-description" => Some("description"),
         "character-personality" => Some("personality"),
         "character-scenario" => Some("scenario"),
+        "persona-description" => Some("personaDescription"),
         "world-info-before" => Some("wiBefore"),
         "world-info-after" => Some("wiAfter"),
         _ if segment.slot == "pluginBeforeCharacterDefinitions" => Some("anchorBefore"),
@@ -341,6 +359,7 @@ fn render_sequence<'a>(
     enabled: bool,
     persona_name: &str,
     character_name: &str,
+    persona_description: &str,
     role_name: &str,
 ) -> Cow<'a, str> {
     if !enabled || !sequence.contains("{{") {
@@ -355,6 +374,10 @@ fn render_sequence<'a>(
             ("{{user}}", persona_name)
         } else if remaining.starts_with("{{char}}") {
             ("{{char}}", character_name)
+        } else if remaining.starts_with("{{personaDescription}}") {
+            ("{{personaDescription}}", persona_description)
+        } else if remaining.starts_with("{{persona_description}}") {
+            ("{{persona_description}}", persona_description)
         } else if remaining.starts_with("{{name}}") {
             ("{{name}}", role_name)
         } else {
@@ -374,6 +397,7 @@ fn resolve_stop_sequences(
     context: &ContextFormatting,
     persona_name: &str,
     character_name: &str,
+    persona_description: &str,
 ) -> Vec<String> {
     let mut stops = Vec::new();
     push_stop(
@@ -383,6 +407,7 @@ fn resolve_stop_sequences(
             instruct.r#macro,
             persona_name,
             character_name,
+            persona_description,
             character_name,
         )
         .into_owned(),
@@ -407,6 +432,7 @@ fn resolve_stop_sequences(
                     instruct.r#macro,
                     persona_name,
                     character_name,
+                    persona_description,
                     role_name,
                 );
                 let mut stop = String::with_capacity(sequence.len() + usize::from(instruct.wrap));

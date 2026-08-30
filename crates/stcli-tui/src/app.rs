@@ -70,6 +70,7 @@ pub struct NewSessionState {
     pub presets: Vec<PresetOption>,
     pub selected_preset: usize,
     pub persona: String,
+    pub persona_description: String,
     pub selected_greeting: usize,
     pub focused_field: usize,
 }
@@ -1009,7 +1010,7 @@ impl App {
                 }
             }
             Popup::NewSession(state) => {
-                if key.code == KeyCode::Char('p') {
+                if key.code == KeyCode::Char('p') && !matches!(state.focused_field, 3 | 4) {
                     self.open_provider_popup(ModalTarget::NewSession(state.clone()));
                     return Effect::None;
                 }
@@ -1028,16 +1029,16 @@ impl App {
                 }
                 match key.code {
                     KeyCode::Tab | KeyCode::Down => {
-                        state.focused_field = (state.focused_field + 1) % 7;
+                        state.focused_field = (state.focused_field + 1) % 8;
                     }
-                    KeyCode::Char('j') if state.focused_field != 3 => {
-                        state.focused_field = (state.focused_field + 1) % 7;
+                    KeyCode::Char('j') if !matches!(state.focused_field, 3 | 4) => {
+                        state.focused_field = (state.focused_field + 1) % 8;
                     }
                     KeyCode::BackTab | KeyCode::Up => {
-                        state.focused_field = (state.focused_field + 6) % 7;
+                        state.focused_field = (state.focused_field + 7) % 8;
                     }
-                    KeyCode::Char('k') if state.focused_field != 3 => {
-                        state.focused_field = (state.focused_field + 6) % 7;
+                    KeyCode::Char('k') if !matches!(state.focused_field, 3 | 4) => {
+                        state.focused_field = (state.focused_field + 7) % 8;
                     }
                     _ => match state.focused_field {
                         0 => match key.code {
@@ -1110,6 +1111,16 @@ impl App {
                             _ => {}
                         },
                         4 => match key.code {
+                            KeyCode::Backspace => {
+                                state.persona_description.pop();
+                            }
+                            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                state.persona_description.push(c);
+                            }
+                            KeyCode::Enter => state.focused_field = 5,
+                            _ => {}
+                        },
+                        5 => match key.code {
                             KeyCode::Left | KeyCode::Char('h') => {
                                 state.selected_greeting = state.selected_greeting.saturating_sub(1);
                             }
@@ -1122,15 +1133,15 @@ impl App {
                                 state.selected_greeting =
                                     (state.selected_greeting + 1).min(max.saturating_sub(1));
                             }
-                            KeyCode::Enter => state.focused_field = 5,
+                            KeyCode::Enter => state.focused_field = 6,
                             _ => {}
                         },
-                        5 => {
+                        6 => {
                             if key.code == KeyCode::Enter {
                                 return self.submit_new_session(state.as_ref().clone());
                             }
                         }
-                        6 => {
+                        7 => {
                             if key.code == KeyCode::Enter {
                                 self.popup = None;
                                 return Effect::None;
@@ -1338,6 +1349,7 @@ impl App {
             presets,
             selected_preset: 0,
             persona: "User".to_owned(),
+            persona_description: String::new(),
             selected_greeting: 0,
             focused_field: 0,
         });
@@ -1618,6 +1630,8 @@ impl App {
             } else {
                 state.persona.clone()
             },
+            persona_description: (!state.persona_description.trim().is_empty())
+                .then(|| state.persona_description.clone()),
             lorebook_revisions: vec![],
             prompt_preset_revision,
             provider: provider_settings.clone(),
@@ -2843,6 +2857,7 @@ mod tests {
         assert_eq!(state.characters.len(), 1);
         assert_eq!(state.characters[0].revision_hash, character.revision_hash);
         assert_eq!(state.persona, "User");
+        assert!(state.persona_description.is_empty());
         assert_eq!(state.selected_greeting, 0);
         assert_eq!(state.focused_field, 0);
     }
@@ -3066,13 +3081,25 @@ timeout_seconds = 45
         app.set_config_dir(config_dir);
 
         app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        let Some(Popup::NewSession(state)) = &mut app.popup else {
+            panic!("expected Popup::NewSession");
+        };
+        state.focused_field = 4;
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        let Some(Popup::NewSession(state)) = &mut app.popup else {
+            panic!("expected Popup::NewSession");
+        };
+        assert_eq!(state.persona_description, "p");
+        state.persona_description = "{{user}} greets {{char}}.".to_owned();
 
         let effect = app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
-        assert!(matches!(
-            effect,
-            Effect::Execute(EngineCommand::CreateSession { .. })
-        ));
-
+        let Effect::Execute(EngineCommand::CreateSession { configuration, .. }) = &effect else {
+            panic!("expected CreateSession effect");
+        };
+        assert_eq!(
+            configuration.persona_description.as_deref(),
+            Some("{{user}} greets {{char}}.")
+        );
         execute_command(&mut app, effect);
 
         assert_eq!(app.screen, Screen::Chat);
