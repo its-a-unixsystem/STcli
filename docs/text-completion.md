@@ -100,7 +100,7 @@ The instruct template wraps each message with a start sequence and a suffix. Eve
 | `last_system_sequence` | string | Overrides `system_sequence` for the last system message. |
 | `stop_sequence` | string | Stop string sent to the provider. |
 | `wrap` | boolean | When `true`, adds a newline after each sequence. |
-| `macro` | boolean | When `true`, evaluates macros inside the sequences. |
+| `macro` | boolean | When `true`, evaluates macros inside the sequences (such as `{{user}}`, `{{char}}`, `{{personaDescription}}`, and `{{name}}`). |
 | `names_behavior` | string | `none`, `force` (default), or `always`. `always` adds a `Name:` prefix to each message. |
 | `skip_examples` | boolean | When `true`, writes example messages as plain `Name: text` lines. |
 | `system_same_as_user` | boolean | When `true`, formats system messages like user messages. |
@@ -123,7 +123,7 @@ Context formatting builds the story block and the separators between conversatio
 
 ## The story string
 
-The story string is a [Handlebars](https://handlebarsjs.com/) template. STcli fills it with the character and world data, then puts the result at the top of the prompt.
+The story string is a [Handlebars](https://handlebarsjs.com/) template. STcli fills it with the character, persona, and world data, then puts the result at the top of the prompt.
 
 You can use these placeholders in `story_string`:
 
@@ -136,6 +136,8 @@ You can use these placeholders in `story_string`:
 - `{{persona}}`: The persona name.
 - `{{user}}`: The persona name.
 - `{{char}}`: The character name.
+- `{{personaDescription}}`: The rendered user persona description.
+- `{{persona_description}}`: Alias for `{{personaDescription}}`.
 
 STcli renders the template with no HTML escaping. The placeholder values keep their exact text.
 

@@ -116,7 +116,7 @@ Greeting swipe uses the same `← 1/3 →` mechanism.
 
 A consistent interaction pattern for secondary actions:
 
-- **New Session Modal:** Keystroke `n` on the home screen opens a single-page modal for configuring a session: Character selection, Provider profile, Prompt preset, Persona name (default `"User"`), and Initial Greeting. Submitting creates the session and immediately transitions to the Chat view.
+- **New Session Modal:** Keystroke `n` on the home screen opens a single-page modal for configuring a session: Character selection, Provider profile, Prompt preset, Persona name (default `"User"`), Persona description (optional), and Initial Greeting. Submitting creates the session and immediately transitions to the Chat view.
 - **Provider Profile Creator:** Form modal for creating and persisting new provider connection profiles into `config.toml`. Includes template selector steered by `provider-templates.toml`, fields for URL, Model, Chat completions path, API key environment variable (with live env detection), and stream toggle.
 - **Character Import Dialog:** Path input dialog supporting `~` expansion to import character card files (`.json` or `.png`) directly and resume session creation.
 - **Provider/Preset Picker:** Keystroke opens a modal overlay listing available providers and presets. Select one, Escape to cancel.

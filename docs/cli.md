@@ -244,7 +244,7 @@ These commands work the same for Wasm plugins and for script plugins. The manife
 
 | Command | Canonical syntax | Argument behavior |
 | --- | --- | --- |
-| `prompt inspect` | `prompt inspect <attempt> [--diff-prev \| --segment <selector>]` | Targets the Generation Attempt whose recorded Prompt Plan is inspected. `--diff-prev` compares it with the preceding Turn's selected Candidate's Generation Attempt (fails on an initial Turn). `--segment <selector>` filters inspection to matching segment(s) by exact slot identifier (e.g. `char_persona`) or 0-based numeric index, reporting raw and rendered content with correlated transformation metadata. `--diff-prev` and `--segment` are mutually exclusive. |
+| `prompt inspect` | `prompt inspect <attempt> [--diff-prev \| --segment <selector>]` | Targets the Generation Attempt whose recorded Prompt Plan is inspected. `--diff-prev` compares it with the preceding Turn's selected Candidate's Generation Attempt (fails on an initial Turn). `--segment <selector>` filters inspection to matching segment(s) by exact slot identifier (e.g. `charDescription`, `personaDescription`, `main`) or 0-based numeric index, reporting raw and rendered content with correlated transformation metadata. `--diff-prev` and `--segment` are mutually exclusive. |
 | `prompt diff` | `prompt diff <baseline-attempt> <target-attempt>` | Compares two Generation Attempts. Human output itemizes structural changes, line and word text changes, and token deltas. `--output json` returns the structured diff envelope. |
 
 ## Compatibility command

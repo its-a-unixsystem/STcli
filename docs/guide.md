@@ -82,6 +82,7 @@ Create a session using individual provider flags:
 cargo run --quiet --bin stcli -- --output json session create \
   --character <character-revision> \
   --persona "User" \
+  --persona-description "A curious scholar traveling the eastern provinces." \
   --provider-base-url "https://api.example.com" \
   --provider-chat-path "/v1/chat/completions" \
   --provider-api-key-env OPENAI_API_KEY \
@@ -89,6 +90,8 @@ cargo run --quiet --bin stcli -- --output json session create \
   --tokenizer "tiktoken:o200k_base" \
   --generation-settings '{"temperature":0.8,"max_tokens":512}'
 ```
+
+Pass `--persona-description` as inline text or prefix with `@` (e.g. `--persona-description @persona.txt`) to load the description from a file relative to the current working directory. Contextual macros such as `{{char}}` and `{{user}}` inside the persona description are dynamically expanded during prompt preparation.
 
 Alternatively, use a named profile defined in `config.toml` (under `[providers.<name>]`):
 
@@ -98,7 +101,7 @@ cargo run --quiet --bin stcli -- --output json session create \
   --provider-profile openrouter
 ```
 
-Any explicit CLI flags provided alongside `--provider-profile` (e.g. `--model "different-model"`) override individual fields of the profile.
+Any explicit CLI flags provided alongside `--provider-profile` (e.g. `--model "different-model"` or `--persona-description @persona.txt`) override individual fields of the profile.
 
 If the imported character card or preset bundles regex transformation scripts, they are discovered during session inspection and turn preparation. Authorize execution by passing `--grant-script <digest>` (repeatable). Ungranted scripts emit non-blocking warnings and remain inert.
 
@@ -138,8 +141,8 @@ cargo run --quiet --bin stcli -- --output json prompt inspect <attempt-id>
 Filter inspection down to a single prompt segment to inspect its raw authored content versus final rendered text alongside correlated macro, regex, and state mutations:
 
 ```bash
-# Filter by exact slot identifier:
-cargo run --quiet --bin stcli -- prompt inspect <attempt-id> --segment char_persona
+# Filter by exact slot identifier (e.g. charDescription, personaDescription, main):
+cargo run --quiet --bin stcli -- prompt inspect <attempt-id> --segment personaDescription
 
 # Filter by 0-based prompt segment index:
 cargo run --quiet --bin stcli -- prompt inspect <attempt-id> --segment 3
@@ -204,6 +207,7 @@ A session update creates a new immutable Session Configuration Revision for futu
 cargo run --quiet --bin stcli -- session update <session-id> \
   --character <character-revision> \
   --persona "Updated persona" \
+  --persona-description "The scholar has acquired a weathered journal and brass spyglass." \
   --provider-base-url "https://api.example.com" \
   --provider-api-key-env OPENAI_API_KEY \
   --model "model-name" \
