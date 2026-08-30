@@ -14,6 +14,17 @@ use crate::{
 };
 use unicode_width::UnicodeWidthStr;
 
+fn cursor_parts(value: &str, focused: bool, position: usize) -> (&str, &str) {
+    if !focused {
+        return (value, "");
+    }
+    let byte_index = value
+        .char_indices()
+        .nth(position)
+        .map_or(value.len(), |(index, _)| index);
+    value.split_at(byte_index)
+}
+
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(
         Block::default().style(
@@ -832,6 +843,25 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 confirm_area,
             );
         }
+        Popup::ConfirmDeleteProvider { name, .. } => {
+            let confirm_area = centered(frame.area(), 70, 5);
+            frame.render_widget(Clear, confirm_area);
+            frame.render_widget(
+                Paragraph::new(format!("Delete provider profile '{name}'? [y/N]"))
+                    .alignment(Alignment::Center)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" Confirm provider deletion "),
+                    )
+                    .style(
+                        Style::default()
+                            .bg(app.theme.background)
+                            .fg(app.theme.foreground),
+                    ),
+                confirm_area,
+            );
+        }
         Popup::Branches { rows, selected } => {
             let current = app.history.as_ref().map(|history| history.branch.branch_id);
             let labels = rows
@@ -865,7 +895,10 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 *selected,
             );
         }
-        Popup::Providers { names, selected } => {
+        Popup::Providers {
+            names, selected, ..
+        } => {
+            let provider_area = centered(frame.area(), 90, 70);
             let current = app
                 .history
                 .as_ref()
@@ -890,8 +923,8 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
             render_list_popup(
                 frame,
                 app,
-                area,
-                " Provider profiles · * current · n/a add ",
+                provider_area,
+                " Provider profiles · * current · Enter switch · e edit · x delete · a add · Esc close ",
                 labels,
                 *selected,
             );
@@ -961,8 +994,8 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 import_area,
             );
         }
-        Popup::NewProviderProfile(state) => {
-            let profile_area = centered(frame.area(), 72, 19);
+        Popup::ProviderProfile(state) => {
+            let profile_area = centered(frame.area(), 72, 20);
             frame.render_widget(Clear, profile_area);
             let template_name = if state.selected_template == 0 {
                 "Custom".to_owned()
@@ -998,6 +1031,32 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                     ""
                 }
             };
+            let name = cursor_parts(&state.name, state.focused_field == 1, state.cursor_position);
+            let base_url = cursor_parts(
+                &state.base_url,
+                state.focused_field == 2,
+                state.cursor_position,
+            );
+            let model = cursor_parts(
+                &state.model,
+                state.focused_field == 3,
+                state.cursor_position,
+            );
+            let chat_path = cursor_parts(
+                &state.chat_path,
+                state.focused_field == 4,
+                state.cursor_position,
+            );
+            let api_key_env = cursor_parts(
+                &state.api_key_env,
+                state.focused_field == 5,
+                state.cursor_position,
+            );
+            let timeout = cursor_parts(
+                &state.timeout_seconds,
+                state.focused_field == 7,
+                state.cursor_position,
+            );
 
             let lines = vec![
                 Line::from(vec![
@@ -1025,8 +1084,9 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                         },
                         field_style(1),
                     ),
-                    Span::styled(&state.name, field_style(1)),
+                    Span::styled(name.0, field_style(1)),
                     Span::styled(cursor(1), Style::default().fg(app.theme.accent)),
+                    Span::styled(name.1, field_style(1)),
                 ]),
                 Line::from(vec![
                     Span::styled(
@@ -1037,8 +1097,9 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                         },
                         field_style(2),
                     ),
-                    Span::styled(&state.base_url, field_style(2)),
+                    Span::styled(base_url.0, field_style(2)),
                     Span::styled(cursor(2), Style::default().fg(app.theme.accent)),
+                    Span::styled(base_url.1, field_style(2)),
                 ]),
                 Line::from(vec![
                     Span::styled(
@@ -1049,8 +1110,9 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                         },
                         field_style(3),
                     ),
-                    Span::styled(&state.model, field_style(3)),
+                    Span::styled(model.0, field_style(3)),
                     Span::styled(cursor(3), Style::default().fg(app.theme.accent)),
+                    Span::styled(model.1, field_style(3)),
                 ]),
                 Line::from(vec![
                     Span::styled(
@@ -1061,8 +1123,9 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                         },
                         field_style(4),
                     ),
-                    Span::styled(&state.chat_path, field_style(4)),
+                    Span::styled(chat_path.0, field_style(4)),
                     Span::styled(cursor(4), Style::default().fg(app.theme.accent)),
+                    Span::styled(chat_path.1, field_style(4)),
                 ]),
                 Line::from(vec![
                     Span::styled(
@@ -1073,8 +1136,9 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                         },
                         field_style(5),
                     ),
-                    Span::styled(&state.api_key_env, field_style(5)),
+                    Span::styled(api_key_env.0, field_style(5)),
                     Span::styled(cursor(5), Style::default().fg(app.theme.accent)),
+                    Span::styled(api_key_env.1, field_style(5)),
                     env_status,
                 ]),
                 Line::from(vec![
@@ -1092,16 +1156,30 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                         Style::default().fg(app.theme.muted),
                     ),
                 ]),
+                Line::from(vec![
+                    Span::styled(
+                        if state.focused_field == 7 {
+                            "> Timeout:     "
+                        } else {
+                            "  Timeout:     "
+                        },
+                        field_style(7),
+                    ),
+                    Span::styled(timeout.0, field_style(7)),
+                    Span::styled(cursor(7), Style::default().fg(app.theme.accent)),
+                    Span::styled(timeout.1, field_style(7)),
+                    Span::styled(" seconds", Style::default().fg(app.theme.muted)),
+                ]),
                 Line::from(""),
                 Line::from(vec![
                     Span::raw("    "),
                     Span::styled(
-                        if state.focused_field == 7 {
+                        if state.focused_field == 8 {
                             "[ Save Profile ]"
                         } else {
                             "  Save Profile  "
                         },
-                        if state.focused_field == 7 {
+                        if state.focused_field == 8 {
                             Style::default()
                                 .bg(app.theme.accent)
                                 .fg(app.theme.background)
@@ -1112,12 +1190,12 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                     ),
                     Span::raw("     "),
                     Span::styled(
-                        if state.focused_field == 8 {
+                        if state.focused_field == 9 {
                             "[ Cancel ]"
                         } else {
                             "  Cancel  "
                         },
-                        if state.focused_field == 8 {
+                        if state.focused_field == 9 {
                             Style::default()
                                 .bg(app.theme.accent)
                                 .fg(app.theme.background)
@@ -1129,18 +1207,20 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 ]),
                 Line::from(""),
                 Line::from(vec![Span::styled(
-                    "Tab/↓ next · Shift+Tab/↑ prev · Space/←/→ cycle · Enter/Ctrl+S save · Esc cancel",
+                    "Tab/↓ next · Shift+Tab/↑ prev · Text ←/→ move · Space cycles · Enter/Ctrl+S save · Esc cancel",
                     Style::default().fg(app.theme.muted),
                 )]),
             ];
 
             frame.render_widget(
                 Paragraph::new(lines)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title(" New Provider Profile "),
-                    )
+                    .block(Block::default().borders(Borders::ALL).title(
+                        if state.original_name.is_some() {
+                            " Edit Provider Profile "
+                        } else {
+                            " New Provider Profile "
+                        },
+                    ))
                     .style(
                         Style::default()
                             .bg(app.theme.background)
@@ -1595,8 +1675,8 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("Import Character Card from File"));
 
-        // 3. Test NewProviderProfile popup render
-        app.open_new_provider_profile_popup(None, false);
+        // 3. Test ProviderProfile popup render
+        app.open_provider_profile_popup(None, crate::app::ModalTarget::Sessions);
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let rendered = terminal
             .backend()

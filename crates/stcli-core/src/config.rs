@@ -60,6 +60,15 @@ impl Config {
         name: &str,
         settings: ProviderSettings,
     ) -> Result<(), ConfigError> {
+        Self::save_provider_profile(directory, None, name, settings)
+    }
+
+    pub fn save_provider_profile(
+        directory: &Path,
+        original_name: Option<&str>,
+        name: &str,
+        settings: ProviderSettings,
+    ) -> Result<(), ConfigError> {
         if name.trim().is_empty() {
             return Err(ConfigError::InvalidProfile {
                 name: name.to_owned(),
@@ -97,6 +106,14 @@ impl Config {
         let providers = document["providers"]
             .as_table_mut()
             .ok_or_else(|| ConfigError::ProvidersNotTable { path: path.clone() })?;
+        if let Some(original_name) = original_name.filter(|original| *original != name) {
+            if providers.contains_key(name) {
+                return Err(ConfigError::ProfileAlreadyExists(name.to_owned()));
+            }
+            if let Some(existing) = providers.remove(original_name) {
+                providers.insert(name, existing);
+            }
+        }
         let toml_str = toml::to_string(&settings).map_err(ConfigError::Serialize)?;
         let item_doc = toml_str
             .parse::<toml_edit::DocumentMut>()
@@ -261,6 +278,8 @@ pub enum ConfigError {
         name: String,
         available: Vec<String>,
     },
+    #[error("provider profile '{0}' already exists")]
+    ProfileAlreadyExists(String),
     #[error("provider profile '{name}' is invalid: {source}")]
     InvalidProfile { name: String, source: ParseError },
     #[error("failed to edit {path}: {source}")]
@@ -567,6 +586,40 @@ value = "Bearer sk-secret"
         assert!(!removed_again);
     }
 
+    #[test]
+    fn rename_provider_profile_preserves_comments_and_removes_old_name() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        fs::write(
+            &path,
+            "# keep\n[providers.old]\n# endpoint\nid = \"old\"\nbase_url = \"https://old.example.com\"\nchat_completions_path = \"/v1/chat/completions\"\ntimeout_seconds = 30\nmodel = \"old-model\"\nstream = true\n",
+        )
+        .unwrap();
+        let settings = ProviderSettings {
+            id: "new".to_owned(),
+            base_url: "https://new.example.com".to_owned(),
+            chat_completions_path: "/v1/chat/completions".to_owned(),
+            api_key_env: None,
+            static_headers: BTreeMap::new(),
+            timeout_seconds: 60,
+            ca_certificate_pem: None,
+            model: "new-model".to_owned(),
+            stream: false,
+            format_mode: Default::default(),
+            completions_path: None,
+            instruct_template: None,
+            context_formatting: None,
+        };
+
+        Config::save_provider_profile(directory.path(), Some("old"), "new", settings).unwrap();
+
+        let source = fs::read_to_string(path).unwrap();
+        assert!(source.contains("# keep"));
+        assert!(source.contains("# endpoint"));
+        let config = Config::load(directory.path()).unwrap();
+        assert!(!config.providers.contains_key("old"));
+        assert_eq!(config.providers["new"].model, "new-model");
+    }
     #[test]
     fn load_provider_templates_parses_file_and_handles_absent() {
         let directory = tempdir().unwrap();

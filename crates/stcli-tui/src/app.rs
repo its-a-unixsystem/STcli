@@ -73,6 +73,17 @@ pub struct NewSessionState {
     pub selected_greeting: usize,
     pub focused_field: usize,
 }
+#[derive(Clone, Debug)]
+pub enum ModalTarget {
+    Sessions,
+    Chat,
+    NewSession(Box<NewSessionState>),
+    Providers {
+        return_to: Box<ModalTarget>,
+        selected_name: Option<String>,
+        selected: usize,
+    },
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct ImportCharacterState {
@@ -81,19 +92,21 @@ pub struct ImportCharacterState {
 }
 
 #[derive(Clone, Debug)]
-pub struct NewProviderProfileState {
+pub struct ProviderProfileState {
     pub templates: Vec<ProviderTemplate>,
     pub selected_template: usize,
+    pub original_name: Option<String>,
+    pub original_settings: Option<ProviderSettings>,
     pub name: String,
     pub base_url: String,
     pub model: String,
     pub chat_path: String,
     pub api_key_env: String,
     pub stream: bool,
-    pub timeout_seconds: u64,
+    pub timeout_seconds: String,
     pub focused_field: usize,
-    pub return_to_new_session: Option<Box<NewSessionState>>,
-    pub return_to_providers: bool,
+    pub cursor_position: usize,
+    pub return_to: ModalTarget,
 }
 
 #[derive(Clone, Debug)]
@@ -106,6 +119,7 @@ pub enum Popup {
     Providers {
         names: Vec<String>,
         selected: usize,
+        return_to: ModalTarget,
     },
     Presets {
         rows: Vec<PresetOption>,
@@ -120,9 +134,13 @@ pub enum Popup {
         session_id: EntityId,
         name: String,
     },
+    ConfirmDeleteProvider {
+        name: String,
+        return_to: ModalTarget,
+    },
     NewSession(Box<NewSessionState>),
     ImportCharacter(ImportCharacterState),
-    NewProviderProfile(Box<NewProviderProfileState>),
+    ProviderProfile(Box<ProviderProfileState>),
 }
 
 #[derive(Clone, Debug)]
@@ -485,6 +503,7 @@ impl App {
             KeyCode::Char('x') => return self.delete_session_list_entry(),
             KeyCode::Char('r') => self.start_rename(),
             KeyCode::Char('n') => self.open_new_session_popup(),
+            KeyCode::Char('p') => self.open_provider_popup(ModalTarget::Sessions),
             KeyCode::Char('?') => self.popup = Some(Popup::Help),
             KeyCode::Enter => {
                 let entries = self.session_list_entries();
@@ -519,6 +538,10 @@ impl App {
     }
 
     fn handle_chat_key(&mut self, key: KeyEvent) -> Effect {
+        if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.open_provider_popup(ModalTarget::Chat);
+            return Effect::None;
+        }
         if self.generation.is_some() {
             return match key.code {
                 KeyCode::Esc => self.running_attempt().map_or(Effect::None, |attempt_id| {
@@ -634,7 +657,7 @@ impl App {
                 }
             }
             KeyCode::Char('b') => self.open_branch_popup(),
-            KeyCode::Char('p') => self.open_provider_popup(),
+            KeyCode::Char('p') => self.open_provider_popup(ModalTarget::Chat),
             KeyCode::Char('P') => self.open_preset_popup(),
             KeyCode::Char('c') => {
                 if let Some(content) = self.focused_content() {
@@ -681,18 +704,11 @@ impl App {
                 Popup::ImportCharacter(mut state) => {
                     if let Some(session_state) = state.return_to_new_session.take() {
                         self.popup = Some(Popup::NewSession(session_state));
-                        return Effect::None;
                     }
                 }
-                Popup::NewProviderProfile(mut state) => {
-                    if let Some(session_state) = state.return_to_new_session.take() {
-                        self.popup = Some(Popup::NewSession(session_state));
-                        return Effect::None;
-                    } else if state.return_to_providers {
-                        self.open_provider_popup();
-                        return Effect::None;
-                    }
-                }
+                Popup::Providers { return_to, .. } => self.restore_modal(return_to),
+                Popup::ProviderProfile(state) => self.restore_modal(state.return_to),
+                Popup::ConfirmDeleteProvider { return_to, .. } => self.restore_modal(return_to),
                 _ => {}
             }
             return Effect::None;
@@ -721,6 +737,43 @@ impl App {
                 }
                 _ => return Effect::None,
             },
+            Popup::ConfirmDeleteProvider { name, return_to } => match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    let config_dir = self.profile_config_dir();
+                    match stcli_core::Config::remove_provider_profile(&config_dir, name) {
+                        Ok(true) => {
+                            if let Err(error) = self.reload_config() {
+                                self.show_error(format!("Failed to reload config: {error}"));
+                            } else {
+                                let deleted = name.clone();
+                                if let ModalTarget::Providers { selected, .. } = return_to {
+                                    *selected = (*selected)
+                                        .min(self.config.core.providers.len().saturating_sub(1));
+                                }
+                                self.restore_modal(return_to.clone());
+                                self.show_info(format!("Deleted provider profile '{deleted}'"));
+                            }
+                        }
+                        Ok(false) => {
+                            self.show_error(format!("Provider profile '{name}' was not found"));
+                            self.restore_modal(return_to.clone());
+                        }
+                        Err(error) => {
+                            self.show_error(format!("Failed to delete profile: {error}"));
+                            self.popup = Some(Popup::ConfirmDeleteProvider {
+                                name: name.clone(),
+                                return_to: return_to.clone(),
+                            });
+                        }
+                    }
+                    return Effect::None;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter => {
+                    self.restore_modal(return_to.clone());
+                    return Effect::None;
+                }
+                _ => return Effect::None,
+            },
             Popup::Branches { rows, selected } => match key.code {
                 KeyCode::Up | KeyCode::Char('k') => *selected = selected.saturating_sub(1),
                 KeyCode::Down | KeyCode::Char('j') => {
@@ -738,20 +791,64 @@ impl App {
                 }
                 _ => {}
             },
-            Popup::Providers { names, selected } => match key.code {
+            Popup::Providers {
+                names,
+                selected,
+                return_to,
+            } => match key.code {
                 KeyCode::Up | KeyCode::Char('k') => *selected = selected.saturating_sub(1),
                 KeyCode::Down | KeyCode::Char('j') => *selected = (*selected + 1).min(names.len()),
                 KeyCode::Char('a') | KeyCode::Char('n') => {
-                    self.open_new_provider_profile_popup(None, true);
+                    let target = Self::provider_modal_target(
+                        return_to.clone(),
+                        names.get(*selected).cloned(),
+                        *selected,
+                    );
+                    self.open_provider_profile_popup(None, target);
+                    return Effect::None;
+                }
+                KeyCode::Char('e') | KeyCode::Char('m') => {
+                    if let Some(name) = names.get(*selected).cloned() {
+                        let target = Self::provider_modal_target(
+                            return_to.clone(),
+                            Some(name.clone()),
+                            *selected,
+                        );
+                        self.open_provider_profile_popup(Some(name), target);
+                    }
+                    return Effect::None;
+                }
+                KeyCode::Char('x') | KeyCode::Char('d') => {
+                    if let Some(name) = names.get(*selected).cloned() {
+                        self.popup = Some(Popup::ConfirmDeleteProvider {
+                            name,
+                            return_to: Self::provider_modal_target(
+                                return_to.clone(),
+                                None,
+                                *selected,
+                            ),
+                        });
+                    }
                     return Effect::None;
                 }
                 KeyCode::Enter => {
                     if *selected == names.len() {
-                        self.open_new_provider_profile_popup(None, true);
+                        let target =
+                            Self::provider_modal_target(return_to.clone(), None, *selected);
+                        self.open_provider_profile_popup(None, target);
                         return Effect::None;
                     }
-                    if let (Some(history), Some(name)) = (&self.history, names.get(*selected))
-                        && let Some(provider) = self.config.core.providers.get(name)
+                    let Some(name) = names.get(*selected) else {
+                        return Effect::None;
+                    };
+                    if let ModalTarget::NewSession(mut state) = return_to.clone() {
+                        state.providers = names.clone();
+                        state.selected_provider = *selected;
+                        self.popup = Some(Popup::NewSession(state));
+                        return Effect::None;
+                    }
+                    if let (Some(history), Some(provider)) =
+                        (&self.history, self.config.core.providers.get(name))
                     {
                         let mut configuration = history.configuration.configuration.clone();
                         configuration.provider = provider.clone();
@@ -760,6 +857,7 @@ impl App {
                             configuration: Box::new(configuration),
                         });
                     }
+                    self.restore_modal(return_to.clone());
                     return Effect::None;
                 }
                 _ => {}
@@ -839,22 +937,26 @@ impl App {
                 }
                 _ => {}
             },
-            Popup::NewProviderProfile(state) => {
+            Popup::ProviderProfile(state) => {
                 if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     return self.submit_provider_profile(state.as_ref().clone());
                 }
                 match key.code {
                     KeyCode::Tab | KeyCode::Down => {
-                        state.focused_field = (state.focused_field + 1) % 9;
+                        Self::focus_profile_field(state, (state.focused_field + 1) % 10);
                     }
-                    KeyCode::Char('j') if !(1..=5).contains(&state.focused_field) => {
-                        state.focused_field = (state.focused_field + 1) % 9;
+                    KeyCode::Char('j')
+                        if !(1..=5).contains(&state.focused_field) && state.focused_field != 7 =>
+                    {
+                        Self::focus_profile_field(state, (state.focused_field + 1) % 10);
                     }
                     KeyCode::BackTab | KeyCode::Up => {
-                        state.focused_field = (state.focused_field + 8) % 9;
+                        Self::focus_profile_field(state, (state.focused_field + 9) % 10);
                     }
-                    KeyCode::Char('k') if !(1..=5).contains(&state.focused_field) => {
-                        state.focused_field = (state.focused_field + 8) % 9;
+                    KeyCode::Char('k')
+                        if !(1..=5).contains(&state.focused_field) && state.focused_field != 7 =>
+                    {
+                        Self::focus_profile_field(state, (state.focused_field + 9) % 10);
                     }
                     _ => match state.focused_field {
                         0 => match key.code {
@@ -867,80 +969,38 @@ impl App {
                                     (state.selected_template + 1).min(state.templates.len());
                                 Self::apply_template_to_profile_state(state);
                             }
-                            KeyCode::Enter => state.focused_field = 1,
+                            KeyCode::Enter => Self::focus_profile_field(state, 1),
                             _ => {}
                         },
-                        1 => match key.code {
-                            KeyCode::Backspace => {
-                                state.name.pop();
+                        1..=5 => {
+                            if key.code == KeyCode::Enter {
+                                Self::focus_profile_field(state, state.focused_field + 1);
+                            } else {
+                                Self::handle_profile_text_input(state, key);
                             }
-                            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                state.name.push(c);
-                            }
-                            KeyCode::Enter => state.focused_field = 2,
-                            _ => {}
-                        },
-                        2 => match key.code {
-                            KeyCode::Backspace => {
-                                state.base_url.pop();
-                            }
-                            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                state.base_url.push(c);
-                            }
-                            KeyCode::Enter => state.focused_field = 3,
-                            _ => {}
-                        },
-                        3 => match key.code {
-                            KeyCode::Backspace => {
-                                state.model.pop();
-                            }
-                            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                state.model.push(c);
-                            }
-                            KeyCode::Enter => state.focused_field = 4,
-                            _ => {}
-                        },
-                        4 => match key.code {
-                            KeyCode::Backspace => {
-                                state.chat_path.pop();
-                            }
-                            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                state.chat_path.push(c);
-                            }
-                            KeyCode::Enter => state.focused_field = 5,
-                            _ => {}
-                        },
-                        5 => match key.code {
-                            KeyCode::Backspace => {
-                                state.api_key_env.pop();
-                            }
-                            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                state.api_key_env.push(c);
-                            }
-                            KeyCode::Enter => state.focused_field = 6,
-                            _ => {}
-                        },
+                        }
                         6 => match key.code {
                             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') => {
                                 state.stream = !state.stream;
                             }
-                            KeyCode::Enter => state.focused_field = 7,
+                            KeyCode::Enter => Self::focus_profile_field(state, 7),
                             _ => {}
                         },
                         7 => {
                             if key.code == KeyCode::Enter {
-                                return self.submit_provider_profile(state.as_ref().clone());
+                                Self::focus_profile_field(state, 8);
+                            } else {
+                                Self::handle_profile_text_input(state, key);
                             }
                         }
                         8 => {
                             if key.code == KeyCode::Enter {
-                                if let Some(session_state) = state.return_to_new_session.take() {
-                                    self.popup = Some(Popup::NewSession(session_state));
-                                } else if state.return_to_providers {
-                                    self.open_provider_popup();
-                                } else {
-                                    self.popup = None;
-                                }
+                                return self.submit_provider_profile(state.as_ref().clone());
+                            }
+                        }
+                        9 => {
+                            if key.code == KeyCode::Enter {
+                                self.restore_modal(state.return_to.clone());
                                 return Effect::None;
                             }
                         }
@@ -949,6 +1009,20 @@ impl App {
                 }
             }
             Popup::NewSession(state) => {
+                if key.code == KeyCode::Char('p') {
+                    self.open_provider_popup(ModalTarget::NewSession(state.clone()));
+                    return Effect::None;
+                }
+                if matches!(key.code, KeyCode::Char('e') | KeyCode::Char('m'))
+                    && state.focused_field == 1
+                    && let Some(name) = state.providers.get(state.selected_provider).cloned()
+                {
+                    self.open_provider_profile_popup(
+                        Some(name),
+                        ModalTarget::NewSession(state.clone()),
+                    );
+                    return Effect::None;
+                }
                 if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     return self.submit_new_session(state.as_ref().clone());
                 }
@@ -1004,9 +1078,9 @@ impl App {
                                 if state.providers.is_empty()
                                     || state.selected_provider == state.providers.len()
                                 {
-                                    self.open_new_provider_profile_popup(
-                                        Some(state.clone()),
-                                        false,
+                                    self.open_provider_profile_popup(
+                                        None,
+                                        ModalTarget::NewSession(state.clone()),
                                     );
                                     return Effect::None;
                                 }
@@ -1087,8 +1161,29 @@ impl App {
             _ => unreachable!(),
         }
     }
+    fn open_provider_popup(&mut self, return_to: ModalTarget) {
+        let selected_name = match &return_to {
+            ModalTarget::NewSession(state) => state.providers.get(state.selected_provider).cloned(),
+            _ => self.history.as_ref().and_then(|history| {
+                self.config
+                    .core
+                    .providers
+                    .iter()
+                    .find_map(|(name, provider)| {
+                        (provider == &history.configuration.configuration.provider)
+                            .then(|| name.clone())
+                    })
+            }),
+        };
+        self.open_provider_popup_selected(return_to, selected_name, 0);
+    }
 
-    fn open_provider_popup(&mut self) {
+    fn open_provider_popup_selected(
+        &mut self,
+        return_to: ModalTarget,
+        selected_name: Option<String>,
+        fallback: usize,
+    ) {
         let names = self
             .config
             .core
@@ -1096,17 +1191,45 @@ impl App {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
-        let selected = self
-            .history
+        let selected = selected_name
             .as_ref()
-            .and_then(|history| {
-                names.iter().position(|name| {
-                    self.config.core.providers.get(name)
-                        == Some(&history.configuration.configuration.provider)
-                })
-            })
-            .unwrap_or(0);
-        self.popup = Some(Popup::Providers { names, selected });
+            .and_then(|name| names.iter().position(|candidate| candidate == name))
+            .unwrap_or_else(|| fallback.min(names.len()));
+        self.popup = Some(Popup::Providers {
+            names,
+            selected,
+            return_to,
+        });
+    }
+
+    fn provider_modal_target(
+        return_to: ModalTarget,
+        selected_name: Option<String>,
+        selected: usize,
+    ) -> ModalTarget {
+        ModalTarget::Providers {
+            return_to: Box::new(return_to),
+            selected_name,
+            selected,
+        }
+    }
+
+    fn restore_modal(&mut self, target: ModalTarget) {
+        match target {
+            ModalTarget::Sessions | ModalTarget::Chat => self.popup = None,
+            ModalTarget::NewSession(state) => self.popup = Some(Popup::NewSession(state)),
+            ModalTarget::Providers {
+                return_to,
+                selected_name,
+                selected,
+            } => self.open_provider_popup_selected(*return_to, selected_name, selected),
+        }
+    }
+
+    fn profile_config_dir(&self) -> PathBuf {
+        self.config_dir
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
     }
 
     pub fn query_character_options(&self) -> Vec<CharacterOption> {
@@ -1228,10 +1351,10 @@ impl App {
         };
     }
 
-    pub fn open_new_provider_profile_popup(
+    pub fn open_provider_profile_popup(
         &mut self,
-        return_to_new_session: Option<Box<NewSessionState>>,
-        return_to_providers: bool,
+        original_name: Option<String>,
+        return_to: ModalTarget,
     ) {
         let templates = match self
             .config_dir
@@ -1245,25 +1368,103 @@ impl App {
             }
             None => Vec::new(),
         };
-        self.popup = Some(Popup::NewProviderProfile(Box::new(
-            NewProviderProfileState {
-                templates,
-                selected_template: 0,
-                name: String::new(),
-                base_url: "https://".to_owned(),
-                model: String::new(),
-                chat_path: "/v1/chat/completions".to_owned(),
-                api_key_env: String::new(),
-                stream: true,
-                timeout_seconds: 120,
-                focused_field: 1,
-                return_to_new_session,
-                return_to_providers,
-            },
-        )));
+        let original_settings = original_name
+            .as_ref()
+            .and_then(|name| self.config.core.providers.get(name))
+            .cloned();
+        let (name, base_url, model, chat_path, api_key_env, stream, timeout_seconds) =
+            if let (Some(name), Some(settings)) = (&original_name, &original_settings) {
+                (
+                    name.clone(),
+                    settings.base_url.clone(),
+                    settings.model.clone(),
+                    settings.chat_completions_path.clone(),
+                    settings.api_key_env.clone().unwrap_or_default(),
+                    settings.stream,
+                    settings.timeout_seconds.to_string(),
+                )
+            } else {
+                (
+                    String::new(),
+                    "https://".to_owned(),
+                    String::new(),
+                    "/v1/chat/completions".to_owned(),
+                    String::new(),
+                    true,
+                    "120".to_owned(),
+                )
+            };
+        self.popup = Some(Popup::ProviderProfile(Box::new(ProviderProfileState {
+            templates,
+            selected_template: 0,
+            original_name,
+            original_settings,
+            name,
+            base_url,
+            model,
+            chat_path,
+            api_key_env,
+            stream,
+            timeout_seconds,
+            focused_field: 1,
+            cursor_position: 0,
+            return_to,
+        })));
     }
 
-    fn apply_template_to_profile_state(state: &mut NewProviderProfileState) {
+    fn focus_profile_field(state: &mut ProviderProfileState, focused_field: usize) {
+        state.focused_field = focused_field;
+        state.cursor_position = match focused_field {
+            1 => state.name.chars().count(),
+            2 => state.base_url.chars().count(),
+            3 => state.model.chars().count(),
+            4 => state.chat_path.chars().count(),
+            5 => state.api_key_env.chars().count(),
+            7 => state.timeout_seconds.chars().count(),
+            _ => 0,
+        };
+    }
+
+    fn handle_profile_text_input(state: &mut ProviderProfileState, key: KeyEvent) {
+        let value = match state.focused_field {
+            1 => &mut state.name,
+            2 => &mut state.base_url,
+            3 => &mut state.model,
+            4 => &mut state.chat_path,
+            5 => &mut state.api_key_env,
+            7 => &mut state.timeout_seconds,
+            _ => return,
+        };
+        let mut cursor = state.cursor_position.min(value.chars().count());
+        match key.code {
+            KeyCode::Left => cursor = cursor.saturating_sub(1),
+            KeyCode::Right => cursor = (cursor + 1).min(value.chars().count()),
+            KeyCode::Backspace if cursor > 0 => {
+                let start = value
+                    .char_indices()
+                    .nth(cursor - 1)
+                    .map_or(value.len(), |(index, _)| index);
+                let end = value
+                    .char_indices()
+                    .nth(cursor)
+                    .map_or(value.len(), |(index, _)| index);
+                value.replace_range(start..end, "");
+                cursor -= 1;
+            }
+            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let index = value
+                    .char_indices()
+                    .nth(cursor)
+                    .map_or(value.len(), |(index, _)| index);
+                value.insert(index, character);
+                cursor += 1;
+            }
+            _ => {}
+        }
+        state.cursor_position = cursor;
+    }
+
+    fn apply_template_to_profile_state(state: &mut ProviderProfileState) {
         if state.selected_template == 0 {
             return;
         }
@@ -1273,83 +1474,109 @@ impl App {
             state.model = template.default_model.clone();
             state.api_key_env = template.api_key_env.clone().unwrap_or_default();
             state.stream = template.stream;
-            state.timeout_seconds = template.timeout_seconds;
+            state.timeout_seconds = template.timeout_seconds.to_string();
             if state.name.is_empty() {
                 state.name = template.id.clone();
             }
         }
     }
 
-    fn submit_provider_profile(&mut self, mut state: NewProviderProfileState) -> Effect {
+    fn submit_provider_profile(&mut self, state: ProviderProfileState) -> Effect {
         if state.name.trim().is_empty() {
             self.show_error("Profile name cannot be empty");
-            self.popup = Some(Popup::NewProviderProfile(Box::new(state)));
+            self.popup = Some(Popup::ProviderProfile(Box::new(state)));
             return Effect::None;
         }
-        let settings = ProviderSettings {
-            id: state.name.clone(),
-            base_url: state.base_url.trim().to_owned(),
-            chat_completions_path: state.chat_path.trim().to_owned(),
-            api_key_env: if state.api_key_env.trim().is_empty() {
-                None
-            } else {
-                Some(state.api_key_env.trim().to_owned())
-            },
+        let timeout_seconds = match state.timeout_seconds.trim().parse::<u64>() {
+            Ok(timeout) => timeout,
+            Err(_) => {
+                self.show_error("Timeout must be a non-negative whole number");
+                self.popup = Some(Popup::ProviderProfile(Box::new(state)));
+                return Effect::None;
+            }
+        };
+        let mut settings = state.original_settings.clone().unwrap_or(ProviderSettings {
+            id: String::new(),
+            base_url: String::new(),
+            chat_completions_path: String::new(),
+            api_key_env: None,
             static_headers: BTreeMap::new(),
-            timeout_seconds: state.timeout_seconds,
+            timeout_seconds,
             ca_certificate_pem: None,
-            model: state.model.trim().to_owned(),
-            stream: state.stream,
+            model: String::new(),
+            stream: true,
             format_mode: Default::default(),
             completions_path: None,
             instruct_template: None,
             context_formatting: None,
-        };
+        });
+        settings.id = state.name.trim().to_owned();
+        settings.base_url = state.base_url.trim().to_owned();
+        settings.chat_completions_path = state.chat_path.trim().to_owned();
+        settings.api_key_env =
+            (!state.api_key_env.trim().is_empty()).then(|| state.api_key_env.trim().to_owned());
+        settings.timeout_seconds = timeout_seconds;
+        settings.model = state.model.trim().to_owned();
+        settings.stream = state.stream;
         if let Err(error) = validate_provider_settings(&settings) {
             self.show_error(format!("Invalid settings: {error}"));
-            self.popup = Some(Popup::NewProviderProfile(Box::new(state)));
+            self.popup = Some(Popup::ProviderProfile(Box::new(state)));
             return Effect::None;
         }
-        let config_dir = match &self.config_dir {
-            Some(dir) => dir.clone(),
-            None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        };
-        if let Err(error) =
-            stcli_core::Config::add_provider_profile(&config_dir, &state.name, settings)
-        {
+        let active_profile = state.original_settings.as_ref().is_some_and(|original| {
+            self.history
+                .as_ref()
+                .is_some_and(|history| &history.configuration.configuration.provider == original)
+        });
+        let config_dir = self.profile_config_dir();
+        if let Err(error) = stcli_core::Config::save_provider_profile(
+            &config_dir,
+            state.original_name.as_deref(),
+            &state.name,
+            settings,
+        ) {
             self.show_error(format!("Failed to save profile: {error}"));
-            self.popup = Some(Popup::NewProviderProfile(Box::new(state)));
+            self.popup = Some(Popup::ProviderProfile(Box::new(state)));
             return Effect::None;
         }
         if let Err(error) = self.reload_config() {
             self.show_error(format!("Failed to reload config: {error}"));
+            self.popup = Some(Popup::ProviderProfile(Box::new(state)));
+            return Effect::None;
         }
         let profile_name = state.name.clone();
-        if let Some(mut session_state) = state.return_to_new_session.take() {
-            session_state.providers = self.config.core.providers.keys().cloned().collect();
-            if let Some(pos) = session_state
-                .providers
-                .iter()
-                .position(|p| p == &profile_name)
-            {
-                session_state.selected_provider = pos;
-            }
-            self.show_info(format!("Created provider profile '{profile_name}'"));
-            self.popup = Some(Popup::NewSession(session_state));
-        } else if state.return_to_providers {
-            let names = self
-                .config
-                .core
-                .providers
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>();
-            let selected = names.iter().position(|p| p == &profile_name).unwrap_or(0);
-            self.show_info(format!("Created provider profile '{profile_name}'"));
-            self.popup = Some(Popup::Providers { names, selected });
+        let action = if state.original_name.is_some() {
+            "Updated"
         } else {
-            self.show_info(format!("Created provider profile '{profile_name}'"));
+            "Created"
+        };
+        self.show_info(format!("{action} provider profile '{profile_name}'"));
+        if active_profile
+            && let (Some(history), Some(provider)) =
+                (&self.history, self.config.core.providers.get(&profile_name))
+        {
+            let mut configuration = history.configuration.configuration.clone();
+            configuration.provider = provider.clone();
             self.popup = None;
+            return Effect::Execute(EngineCommand::UpdateConfiguration {
+                session_id: history.session.session_id,
+                configuration: Box::new(configuration),
+            });
+        }
+        match state.return_to {
+            ModalTarget::NewSession(mut session_state) => {
+                session_state.providers = self.config.core.providers.keys().cloned().collect();
+                session_state.selected_provider = session_state
+                    .providers
+                    .iter()
+                    .position(|name| name == &profile_name)
+                    .unwrap_or(0);
+                self.popup = Some(Popup::NewSession(session_state));
+            }
+            ModalTarget::Providers { return_to, .. } => {
+                self.open_provider_popup_selected(*return_to, Some(profile_name), 0);
+            }
+            target => self.restore_modal(target),
         }
         Effect::None
     }
@@ -1776,10 +2003,10 @@ impl App {
                     .min(rows.len().saturating_sub(1));
                 return;
             }
-            Some(Popup::Providers { names, selected }) => {
-                *selected = selected
-                    .saturating_add_signed(amount)
-                    .min(names.len().saturating_sub(1));
+            Some(Popup::Providers {
+                names, selected, ..
+            }) => {
+                *selected = selected.saturating_add_signed(amount).min(names.len());
                 return;
             }
             Some(Popup::Presets { rows, selected }) => {
@@ -1790,10 +2017,11 @@ impl App {
                 Popup::Help
                 | Popup::ConfirmExit
                 | Popup::ConfirmDelete { .. }
+                | Popup::ConfirmDeleteProvider { .. }
                 | Popup::Rename { .. }
                 | Popup::NewSession(_)
                 | Popup::ImportCharacter(_)
-                | Popup::NewProviderProfile(_),
+                | Popup::ProviderProfile(_),
             ) => return,
             None => {}
         }
@@ -2678,6 +2906,39 @@ mod tests {
     }
 
     #[test]
+    fn provider_profile_text_can_be_edited_at_the_cursor() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+        app.open_provider_profile_popup(None, ModalTarget::Sessions);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        for _ in 0..3 {
+            app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        let Some(Popup::ProviderProfile(state)) = &app.popup else {
+            panic!("expected Popup::ProviderProfile");
+        };
+        // Regression: provider profile fields must support editing existing text.
+        assert_eq!(state.base_url, "httpsx://");
+
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("httpsx█://"));
+    }
+
+    #[test]
     fn new_provider_profile_saves_and_reloads_config_and_resumes_session() {
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("stcli.sqlite3");
@@ -2695,9 +2956,8 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-        let Some(Popup::NewProviderProfile(state)) = &mut app.popup else {
-            panic!("expected Popup::NewProviderProfile");
+        let Some(Popup::ProviderProfile(state)) = &mut app.popup else {
+            panic!("expected Popup::ProviderProfile");
         };
         assert_eq!(state.focused_field, 1);
 
@@ -2752,9 +3012,9 @@ timeout_seconds = 45
         .unwrap();
         let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
         app.set_config_dir(config_dir.clone());
-        app.open_new_provider_profile_popup(None, false);
-        let Some(Popup::NewProviderProfile(state)) = &mut app.popup else {
-            panic!("expected Popup::NewProviderProfile");
+        app.open_provider_profile_popup(None, ModalTarget::Sessions);
+        let Some(Popup::ProviderProfile(state)) = &mut app.popup else {
+            panic!("expected Popup::ProviderProfile");
         };
         state.focused_field = 0;
 
@@ -2818,5 +3078,325 @@ timeout_seconds = 45
         assert_eq!(app.screen, Screen::Chat);
         assert!(app.history.is_some());
         assert!(app.popup.is_none());
+    }
+    #[test]
+    fn provider_management_routes_from_sessions_chat_and_new_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let mut store = stcli_core::Store::open(&database).unwrap();
+        store
+            .import_artifact(stcli_testkit::fixtures::minimal_card().as_bytes())
+            .unwrap();
+        drop(store);
+        let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert!(matches!(
+            app.popup,
+            Some(Popup::Providers {
+                return_to: ModalTarget::Sessions,
+                ..
+            })
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.popup.is_none());
+        assert_eq!(app.screen, Screen::Sessions);
+
+        app.open_new_session_popup();
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert!(matches!(
+            app.popup,
+            Some(Popup::Providers {
+                return_to: ModalTarget::NewSession(_),
+                ..
+            })
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(app.popup, Some(Popup::NewSession(_))));
+
+        let (mut app, _directory) = app_with_session();
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert!(matches!(
+            app.popup,
+            Some(Popup::Providers {
+                return_to: ModalTarget::Chat,
+                ..
+            })
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.popup.is_none());
+        assert_eq!(app.screen, Screen::Chat);
+
+        app.chat_focus = ChatFocus::History;
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert!(matches!(app.popup, Some(Popup::Providers { .. })));
+    }
+
+    #[test]
+    fn switching_provider_in_chat_pins_a_configuration_revision() {
+        let (mut app, _directory) = app_with_session();
+        let mut alternate = app
+            .history
+            .as_ref()
+            .unwrap()
+            .configuration
+            .configuration
+            .provider
+            .clone();
+        alternate.id = "alternate".to_owned();
+        alternate.model = "alternate-model".to_owned();
+        app.config
+            .core
+            .providers
+            .insert("alternate".to_owned(), alternate);
+        let previous_hash = app
+            .history
+            .as_ref()
+            .unwrap()
+            .configuration
+            .revision_hash
+            .clone();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        let Some(Popup::Providers {
+            names, selected, ..
+        }) = &mut app.popup
+        else {
+            panic!("expected Popup::Providers");
+        };
+        *selected = names.iter().position(|name| name == "alternate").unwrap();
+        let effect = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        execute_command(&mut app, effect);
+
+        let history = app.history.as_ref().unwrap();
+        assert_eq!(
+            history.configuration.configuration.provider.model,
+            "alternate-model"
+        );
+        assert_ne!(history.configuration.revision_hash, previous_hash);
+        assert!(app.popup.is_none());
+        assert_eq!(app.screen, Screen::Chat);
+    }
+
+    #[test]
+    fn editing_provider_prefills_fields_and_renames_active_profile() {
+        let (mut app, directory) = app_with_session();
+        let config_dir = directory.path().join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+        let mut active = app
+            .history
+            .as_ref()
+            .unwrap()
+            .configuration
+            .configuration
+            .provider
+            .clone();
+        active.base_url = "https://example.com".to_owned();
+        app.history
+            .as_mut()
+            .unwrap()
+            .configuration
+            .configuration
+            .provider = active.clone();
+        stcli_core::Config::add_provider_profile(&config_dir, "active", active.clone()).unwrap();
+        app.config = Config::load(&config_dir).unwrap();
+        app.set_config_dir(config_dir.clone());
+        let previous_hash = app
+            .history
+            .as_ref()
+            .unwrap()
+            .configuration
+            .revision_hash
+            .clone();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        let Some(Popup::ProviderProfile(state)) = &mut app.popup else {
+            panic!("expected Popup::ProviderProfile");
+        };
+        assert_eq!(state.original_name.as_deref(), Some("active"));
+        let unchanged = fs::read_to_string(config_dir.join("config.toml")).unwrap();
+        state.base_url = "http://example.com".to_owned();
+        let invalid = app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(matches!(invalid, Effect::None));
+        assert!(matches!(app.popup, Some(Popup::ProviderProfile(_))));
+        assert!(app.toast.as_ref().is_some_and(|toast| toast.error));
+        assert_eq!(
+            fs::read_to_string(config_dir.join("config.toml")).unwrap(),
+            unchanged
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(app.popup, Some(Popup::Providers { .. })));
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        let Some(Popup::ProviderProfile(state)) = &mut app.popup else {
+            panic!("expected Popup::ProviderProfile");
+        };
+        assert_eq!(state.base_url, active.base_url);
+        assert_eq!(state.model, active.model);
+        assert_eq!(state.chat_path, active.chat_completions_path);
+        assert_eq!(state.api_key_env, active.api_key_env.unwrap_or_default());
+        assert_eq!(state.stream, active.stream);
+        assert_eq!(state.timeout_seconds, active.timeout_seconds.to_string());
+        state.name = "renamed".to_owned();
+        state.model = "updated-model".to_owned();
+
+        let effect = app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(matches!(
+            effect,
+            Effect::Execute(EngineCommand::UpdateConfiguration { .. })
+        ));
+        let persisted = stcli_core::Config::load(&config_dir).unwrap();
+        assert!(!persisted.providers.contains_key("active"));
+        assert_eq!(persisted.providers["renamed"].model, "updated-model");
+        execute_command(&mut app, effect);
+        assert_ne!(
+            app.history.as_ref().unwrap().configuration.revision_hash,
+            previous_hash
+        );
+        assert_eq!(
+            app.history
+                .as_ref()
+                .unwrap()
+                .configuration
+                .configuration
+                .provider
+                .model,
+            "updated-model"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_provider_requires_confirmation_and_clamps_selection() {
+        let provider = stcli_testkit::MockProvider::spawn(["Persisted response"])
+            .await
+            .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let mut store = stcli_core::Store::open(&database).unwrap();
+        let character = store
+            .import_artifact(stcli_testkit::fixtures::minimal_card().as_bytes())
+            .unwrap();
+        let mut session_configuration = stcli_testkit::configuration(character.revision_hash);
+        session_configuration.provider = provider.provider_settings();
+        let created = store
+            .create_session(session_configuration.clone(), 0)
+            .unwrap();
+        store
+            .send_message(
+                created.session.session_id,
+                created.branch.branch_id,
+                "Keep this turn".to_owned(),
+                |_| {},
+            )
+            .await
+            .unwrap();
+        let turn = store
+            .turns_for_branch(created.branch.branch_id)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let attempt = store
+            .attempts_for_turn(turn.turn_id)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let capsule = store
+            .export_turn_capsule(attempt.attempt_id, stcli_core::CapsuleKind::Portable, false)
+            .unwrap();
+        let mut active = session_configuration.provider.clone();
+        active.base_url = "https://example.com".to_owned();
+        session_configuration.provider = active.clone();
+        store
+            .update_session_configuration(created.session.session_id, session_configuration)
+            .unwrap();
+        drop(store);
+
+        let config_dir = directory.path().join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+        stcli_core::Config::add_provider_profile(&config_dir, "active", active.clone()).unwrap();
+        let mut spare = active;
+        spare.id = "spare".to_owned();
+        stcli_core::Config::add_provider_profile(&config_dir, "spare", spare).unwrap();
+        let mut app = App::load(
+            StcliEngine::new(database.clone()),
+            Config::load(&config_dir).unwrap(),
+            Some(created.session.session_id),
+        )
+        .unwrap();
+        app.set_config_dir(config_dir.clone());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        let Some(Popup::Providers {
+            names, selected, ..
+        }) = &mut app.popup
+        else {
+            panic!("expected Popup::Providers");
+        };
+        *selected = names.iter().position(|name| name == "spare").unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(matches!(
+            app.popup,
+            Some(Popup::ConfirmDeleteProvider { ref name, .. }) if name == "spare"
+        ));
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Delete provider profile 'spare'? [y/N]"));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            stcli_core::Config::load(&config_dir)
+                .unwrap()
+                .providers
+                .contains_key("spare")
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(
+            !stcli_core::Config::load(&config_dir)
+                .unwrap()
+                .providers
+                .contains_key("spare")
+        );
+        let Some(Popup::Providers {
+            names, selected, ..
+        }) = &app.popup
+        else {
+            panic!("expected Popup::Providers");
+        };
+        assert_eq!(names, &vec!["active".to_owned()]);
+        assert_eq!(*selected, 0);
+        app.reload_history().unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(
+            stcli_core::Config::load(&config_dir)
+                .unwrap()
+                .providers
+                .is_empty()
+        );
+        app.reload_history().unwrap();
+        let history = app.history.as_ref().unwrap();
+        assert_eq!(history.turns.len(), 1);
+        assert_eq!(
+            selected_candidate(&history.turns[0]).unwrap().content,
+            "Persisted response"
+        );
+        let store = stcli_core::Store::open(database).unwrap();
+        let replay = store.replay_turn_capsule(&capsule).unwrap();
+        assert_eq!(replay.provider_calls, 0);
+        assert_eq!(
+            app.toast.as_ref().unwrap().message,
+            "Deleted provider profile 'active'"
+        );
     }
 }
