@@ -138,7 +138,7 @@ pub struct PluginInput {
     pub settings: Value,
     #[serde(default)]
     pub context: Value,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Value::is_null")]
     pub state: Value,
     pub session: Value,
 }
@@ -259,6 +259,9 @@ impl PluginHost {
         }
         input.plugin_id = installed.manifest.id.clone();
         input.settings = grant.settings.clone();
+        if installed.manifest.runtime.is_wasm() {
+            input.state = Value::Null;
+        }
         let input_json = serde_json::to_string(&input)?;
         if input_json.len() > self.limits.input_bytes {
             return Err(PluginError::InputLimit);

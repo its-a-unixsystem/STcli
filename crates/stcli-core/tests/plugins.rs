@@ -263,6 +263,29 @@ fn execute_mode(
 }
 
 #[test]
+fn wasm_receipts_keep_the_legacy_input_shape() {
+    // Regression test: ScriptHost state snapshots must not alter Wasm receipt bytes.
+    let directory = tempdir().unwrap();
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&proof_directory())
+        .unwrap();
+    let receipt = execute_mode(
+        &installed,
+        "",
+        PluginLimits::default(),
+        PluginEvent::PrePrompt,
+    )
+    .unwrap();
+
+    assert!(
+        serde_json::to_value(receipt.input)
+            .unwrap()
+            .get("state")
+            .is_none()
+    );
+}
+
+#[test]
 fn engine_state_abort_failure_and_resource_boundaries_are_enforced() {
     let directory = tempdir().unwrap();
     let registry = PluginRegistry::new(directory.path().join("registry"));
