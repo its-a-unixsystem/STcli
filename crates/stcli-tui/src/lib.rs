@@ -9,13 +9,18 @@ mod ui;
 use std::time::Duration;
 
 use anyhow::Result;
-use app::{App, Effect, GenerationState};
+use app::GenerationState;
 use crossterm::event::{self, Event, KeyEventKind};
 use stcli_core::{AppPaths, EngineCommand, EngineResult, EntityId, ProviderEvent, StcliEngine};
 use terminal::TerminalSession;
 use tokio::sync::mpsc;
 
+pub use app::{
+    App, ChatFocus, Effect, ImportArtifactState, ModalTarget, Popup, PresetOption,
+    PresetPickerState, PresetScriptSummary, PresetSummary, Screen,
+};
 pub use config::{Config, ThemeChoice, TuiSettings};
+pub use ui::render;
 
 pub fn run(paths: &AppPaths, direct_session: Option<EntityId>) -> Result<()> {
     paths.ensure_exists()?;

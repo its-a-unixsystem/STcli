@@ -8,9 +8,10 @@ use std::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use stcli_core::{
     ArtifactKind, ArtifactRecord, AttemptStatus, BranchHistory, BranchProjection,
-    CandidateProjection, ContentHash, EngineCommand, EngineInspection, EngineQuery, EngineResult,
-    EntityId, ProviderEvent, ProviderSettings, ProviderTemplate, SessionConfiguration,
-    SessionSummary, StcliEngine, decode_artifact, validate_provider_settings,
+    CHAT_COMPLETION_CHARACTER_ID, CandidateProjection, ContentHash, EngineCommand,
+    EngineInspection, EngineQuery, EngineResult, EntityId, PromptPreset, ProviderEvent,
+    ProviderSettings, ProviderTemplate, RegexPlacement, SessionConfiguration, SessionSummary,
+    StcliEngine, decode_artifact, transform_preset_content, validate_provider_settings,
 };
 
 use crate::{config::Config, theme::Theme};
@@ -52,6 +53,154 @@ impl SortKey {
 pub struct PresetOption {
     pub record: ArtifactRecord,
     pub label: String,
+    pub summary: PresetSummary,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PresetSummary {
+    pub prompt_count: usize,
+    pub order_profile: String,
+    pub system_prompt_enabled: bool,
+    pub prompt_order: Vec<String>,
+    pub temperature: Option<String>,
+    pub top_p: Option<String>,
+    pub max_tokens: Option<String>,
+    pub scripts: Vec<PresetScriptSummary>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PresetScriptSummary {
+    pub name: String,
+    pub placement: String,
+    pub digest: String,
+}
+
+impl PresetSummary {
+    fn from_semantic(value: &serde_json::Value, source_revision: &ContentHash) -> Self {
+        let parsed = PromptPreset::parse(value, CHAT_COMPLETION_CHARACTER_ID).ok();
+        let profiles = value
+            .get("prompt_order")
+            .and_then(serde_json::Value::as_array);
+        let exact_profile = profiles.is_some_and(|profiles| {
+            profiles.iter().any(|profile| {
+                profile
+                    .get("character_id")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(CHAT_COMPLETION_CHARACTER_ID)
+            })
+        });
+        let fallback_profile_id = profiles.and_then(|profiles| {
+            profiles.iter().find_map(|profile| {
+                profile
+                    .get("character_id")
+                    .and_then(serde_json::Value::as_u64)
+            })
+        });
+        let prompt_order = parsed
+            .as_ref()
+            .map(|preset| {
+                preset
+                    .order
+                    .iter()
+                    .map(|entry| {
+                        if entry.enabled {
+                            entry.identifier.clone()
+                        } else {
+                            format!("{} (disabled)", entry.identifier)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let system_prompt_enabled = parsed.as_ref().is_some_and(|preset| {
+            preset
+                .order
+                .iter()
+                .any(|entry| entry.identifier == "main" && entry.enabled)
+        });
+        let scripts = transform_preset_content("", source_revision, value, &[])
+            .scripts
+            .into_iter()
+            .map(|script| {
+                let name = script
+                    .metadata
+                    .get("scriptName")
+                    .or_else(|| script.metadata.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Unnamed script")
+                    .to_owned();
+                let placement = script
+                    .placement
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(serde_json::Value::as_u64)
+                    .map(regex_placement_name)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let digest = script.digest.to_string();
+                let digest = digest
+                    .strip_prefix("sha256:")
+                    .unwrap_or(&digest)
+                    .chars()
+                    .take(12)
+                    .collect();
+                PresetScriptSummary {
+                    name,
+                    placement,
+                    digest,
+                }
+            })
+            .collect();
+        Self {
+            prompt_count: parsed.as_ref().map_or_else(
+                || {
+                    value
+                        .get("prompts")
+                        .and_then(serde_json::Value::as_array)
+                        .map_or(0, Vec::len)
+                },
+                |preset| preset.prompts.len(),
+            ),
+            order_profile: if exact_profile {
+                "Chat Completion (100001)".to_owned()
+            } else {
+                fallback_profile_id.map_or_else(
+                    || "Fallback profile (100001 unavailable)".to_owned(),
+                    |id| format!("Fallback profile ({id}; 100001 unavailable)"),
+                )
+            },
+            system_prompt_enabled,
+            prompt_order,
+            temperature: summary_value(value.get("temperature")),
+            top_p: summary_value(value.get("top_p")),
+            max_tokens: summary_value(
+                value
+                    .get("max_tokens")
+                    .or_else(|| value.get("openai_max_tokens")),
+            ),
+            scripts,
+        }
+    }
+}
+fn regex_placement_name(code: u64) -> String {
+    [
+        (RegexPlacement::UserInput, "UserInput"),
+        (RegexPlacement::AiOutput, "AiOutput"),
+        (RegexPlacement::SlashCommand, "SlashCommand"),
+        (RegexPlacement::WorldInfo, "WorldInfo"),
+        (RegexPlacement::Reasoning, "Reasoning"),
+    ]
+    .into_iter()
+    .find_map(|(placement, name)| (placement.code() == code).then(|| name.to_owned()))
+    .unwrap_or_else(|| code.to_string())
+}
+
+fn summary_value(value: Option<&serde_json::Value>) -> Option<String> {
+    value.map(|value| match value {
+        serde_json::Value::String(value) => value.clone(),
+        value => value.to_string(),
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -74,6 +223,45 @@ pub struct NewSessionState {
     pub selected_greeting: usize,
     pub focused_field: usize,
 }
+
+#[derive(Clone, Debug)]
+pub struct PresetPickerState {
+    pub rows: Vec<PresetOption>,
+    pub selected: usize,
+    pub return_to: ModalTarget,
+    pub filter: String,
+    pub filtering: bool,
+    pub show_details: bool,
+}
+
+impl PresetPickerState {
+    pub fn filtered_rows(&self) -> Vec<&PresetOption> {
+        let filter = self.filter.to_lowercase();
+        self.rows
+            .iter()
+            .filter(|row| filter.is_empty() || row.label.to_lowercase().contains(&filter))
+            .collect()
+    }
+
+    fn selected_revision(&self) -> Option<ContentHash> {
+        self.selected
+            .checked_sub(1)
+            .and_then(|index| self.filtered_rows().get(index).copied())
+            .map(|row| row.record.revision_hash.clone())
+    }
+
+    fn select_filtered_revision(&mut self, revision: Option<&ContentHash>) {
+        let selected = revision.and_then(|revision| {
+            self.filtered_rows()
+                .iter()
+                .position(|row| &row.record.revision_hash == revision)
+        });
+        self.selected = selected.map_or_else(
+            || usize::from(!self.filter.is_empty() && !self.filtered_rows().is_empty()),
+            |index| index + 1,
+        );
+    }
+}
 #[derive(Clone, Debug)]
 pub enum ModalTarget {
     Sessions,
@@ -84,12 +272,14 @@ pub enum ModalTarget {
         selected_name: Option<String>,
         selected: usize,
     },
+    Presets(Box<PresetPickerState>),
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ImportCharacterState {
+#[derive(Clone, Debug)]
+pub struct ImportArtifactState {
+    pub expected_kind: Option<ArtifactKind>,
+    pub return_to: ModalTarget,
     pub input: String,
-    pub return_to_new_session: Option<Box<NewSessionState>>,
 }
 
 #[derive(Clone, Debug)]
@@ -122,10 +312,7 @@ pub enum Popup {
         selected: usize,
         return_to: ModalTarget,
     },
-    Presets {
-        rows: Vec<PresetOption>,
-        selected: usize,
-    },
+    Presets(Box<PresetPickerState>),
     Rename {
         session_id: EntityId,
         input: String,
@@ -140,7 +327,7 @@ pub enum Popup {
         return_to: ModalTarget,
     },
     NewSession(Box<NewSessionState>),
-    ImportCharacter(ImportCharacterState),
+    ImportArtifact(ImportArtifactState),
     ProviderProfile(Box<ProviderProfileState>),
 }
 
@@ -505,6 +692,7 @@ impl App {
             KeyCode::Char('r') => self.start_rename(),
             KeyCode::Char('n') => self.open_new_session_popup(),
             KeyCode::Char('p') => self.open_provider_popup(ModalTarget::Sessions),
+            KeyCode::Char('P') => self.open_preset_popup(ModalTarget::Sessions),
             KeyCode::Char('?') => self.popup = Some(Popup::Help),
             KeyCode::Enter => {
                 let entries = self.session_list_entries();
@@ -659,7 +847,7 @@ impl App {
             }
             KeyCode::Char('b') => self.open_branch_popup(),
             KeyCode::Char('p') => self.open_provider_popup(ModalTarget::Chat),
-            KeyCode::Char('P') => self.open_preset_popup(),
+            KeyCode::Char('P') => self.open_preset_popup(ModalTarget::Chat),
             KeyCode::Char('c') => {
                 if let Some(content) = self.focused_content() {
                     return Effect::Copy(content.to_owned());
@@ -702,11 +890,15 @@ impl App {
     fn handle_popup(&mut self, key: KeyEvent, mut popup: Popup) -> Effect {
         if key.code == KeyCode::Esc {
             match popup {
-                Popup::ImportCharacter(mut state) => {
-                    if let Some(session_state) = state.return_to_new_session.take() {
-                        self.popup = Some(Popup::NewSession(session_state));
-                    }
+                Popup::Presets(mut state) if state.filtering || !state.filter.is_empty() => {
+                    let selected_revision = state.selected_revision();
+                    state.filter.clear();
+                    state.filtering = false;
+                    state.select_filtered_revision(selected_revision.as_ref());
+                    self.popup = Some(Popup::Presets(state));
                 }
+                Popup::Presets(state) => self.restore_modal(state.return_to),
+                Popup::ImportArtifact(state) => self.restore_modal(state.return_to),
                 Popup::Providers { return_to, .. } => self.restore_modal(return_to),
                 Popup::ProviderProfile(state) => self.restore_modal(state.return_to),
                 Popup::ConfirmDeleteProvider { return_to, .. } => self.restore_modal(return_to),
@@ -878,26 +1070,93 @@ impl App {
                 }
                 _ => {}
             },
-            Popup::Presets { rows, selected } => match key.code {
-                KeyCode::Up | KeyCode::Char('k') => *selected = selected.saturating_sub(1),
-                KeyCode::Down | KeyCode::Char('j') => *selected = (*selected + 1).min(rows.len()),
-                KeyCode::Enter => {
-                    if let Some(history) = &self.history {
-                        let mut configuration = history.configuration.configuration.clone();
-                        configuration.prompt_preset_revision = selected
-                            .checked_sub(1)
-                            .and_then(|index| rows.get(index))
-                            .map(|row| row.record.revision_hash.clone());
-                        return Effect::Execute(EngineCommand::UpdateConfiguration {
-                            session_id: history.session.session_id,
-                            configuration: Box::new(configuration),
-                        });
+            Popup::Presets(state) => {
+                if state.filtering {
+                    let selected_revision = state.selected_revision();
+                    match key.code {
+                        KeyCode::Tab => {
+                            state.show_details = !state.show_details;
+                        }
+                        KeyCode::Enter => state.filtering = false,
+                        KeyCode::Backspace => {
+                            state.filter.pop();
+                        }
+                        KeyCode::Char(character)
+                            if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            state.filter.push(character);
+                        }
+                        _ => {}
                     }
-                    return Effect::None;
+                    state.select_filtered_revision(selected_revision.as_ref());
+                } else {
+                    match key.code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            state.selected = state.selected.saturating_sub(1)
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            state.selected = (state.selected + 1).min(state.filtered_rows().len())
+                        }
+                        KeyCode::Char('n') if matches!(state.return_to, ModalTarget::Sessions) => {
+                            let revision = state.selected_revision();
+                            self.open_new_session_popup();
+                            self.preselect_new_session_preset(revision.as_ref());
+                            return Effect::None;
+                        }
+                        KeyCode::Char('/') => state.filtering = true,
+                        KeyCode::Char('i') => {
+                            self.popup = Some(Popup::ImportArtifact(ImportArtifactState {
+                                expected_kind: Some(ArtifactKind::ChatCompletionPreset),
+                                return_to: ModalTarget::Presets(state.clone()),
+                                input: String::new(),
+                            }));
+                            return Effect::None;
+                        }
+                        KeyCode::Char('d') | KeyCode::Tab => {
+                            state.show_details = !state.show_details;
+                        }
+                        KeyCode::Enter => {
+                            let revision = state.selected_revision();
+                            match state.return_to.clone() {
+                                ModalTarget::NewSession(mut session) => {
+                                    session.presets = state.rows.clone();
+                                    session.selected_preset = revision
+                                        .as_ref()
+                                        .and_then(|revision| {
+                                            session.presets.iter().position(|preset| {
+                                                &preset.record.revision_hash == revision
+                                            })
+                                        })
+                                        .map_or(0, |index| index + 1);
+                                    self.popup = Some(Popup::NewSession(session));
+                                    return Effect::None;
+                                }
+                                ModalTarget::Chat => {
+                                    if let Some(history) = &self.history {
+                                        let mut configuration =
+                                            history.configuration.configuration.clone();
+                                        configuration.prompt_preset_revision = revision;
+                                        return Effect::Execute(
+                                            EngineCommand::UpdateConfiguration {
+                                                session_id: history.session.session_id,
+                                                configuration: Box::new(configuration),
+                                            },
+                                        );
+                                    }
+                                }
+                                ModalTarget::Sessions => {
+                                    self.popup = None;
+                                    return Effect::None;
+                                }
+                                ModalTarget::Providers { .. } | ModalTarget::Presets(_) => {}
+                            }
+                            return Effect::None;
+                        }
+                        _ => {}
+                    }
                 }
-                _ => {}
-            },
-            Popup::ImportCharacter(state) => match key.code {
+            }
+            Popup::ImportArtifact(state) => match key.code {
                 KeyCode::Backspace => {
                     state.input.pop();
                 }
@@ -908,32 +1167,72 @@ impl App {
                     let path_str = state.input.trim();
                     if path_str.is_empty() {
                         self.show_error("Path cannot be empty");
-                        self.popup = Some(Popup::ImportCharacter(state.clone()));
+                        self.popup = Some(Popup::ImportArtifact(state.clone()));
                         return Effect::None;
                     }
-                    let expanded = if let Some(stripped) = path_str.strip_prefix("~/") {
-                        if let Ok(home) = std::env::var("HOME") {
-                            Path::new(&home).join(stripped)
-                        } else {
-                            PathBuf::from(path_str)
-                        }
+                    let expanded = if path_str == "~" {
+                        std::env::var("HOME")
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|_| PathBuf::from(path_str))
+                    } else if let Some(stripped) = path_str.strip_prefix("~/") {
+                        std::env::var("HOME")
+                            .map(|home| Path::new(&home).join(stripped))
+                            .unwrap_or_else(|_| PathBuf::from(path_str))
                     } else {
                         PathBuf::from(path_str)
                     };
                     if !expanded.exists() {
                         self.show_error(format!("File does not exist: {}", expanded.display()));
-                        self.popup = Some(Popup::ImportCharacter(state.clone()));
+                        self.popup = Some(Popup::ImportArtifact(state.clone()));
                         return Effect::None;
                     }
                     let source = match fs::read(&expanded) {
                         Ok(bytes) => bytes,
                         Err(error) => {
                             self.show_error(format!("Failed to read file: {error}"));
-                            self.popup = Some(Popup::ImportCharacter(state.clone()));
+                            self.popup = Some(Popup::ImportArtifact(state.clone()));
                             return Effect::None;
                         }
                     };
-                    self.popup = Some(Popup::ImportCharacter(state.clone()));
+                    let charx_candidate = state.expected_kind.is_none()
+                        && matches!(&state.return_to, ModalTarget::NewSession(_))
+                        && source.starts_with(b"PK\x03\x04");
+                    if charx_candidate {
+                        self.popup = Some(Popup::ImportArtifact(state.clone()));
+                        return Effect::Execute(EngineCommand::ImportArtifact { source });
+                    }
+                    let decoded = match decode_artifact(&source) {
+                        Ok(decoded) => decoded,
+                        Err(error) => {
+                            self.show_error(format!("Failed to decode artifact: {error}"));
+                            self.popup = Some(Popup::ImportArtifact(state.clone()));
+                            return Effect::None;
+                        }
+                    };
+                    let invalid_kind = match state.expected_kind {
+                        Some(expected) => decoded.kind != expected,
+                        None if matches!(&state.return_to, ModalTarget::NewSession(_)) => {
+                            !matches!(
+                                decoded.kind,
+                                ArtifactKind::CharacterCardV1
+                                    | ArtifactKind::CharacterCardV2
+                                    | ArtifactKind::CharacterCardV3
+                            )
+                        }
+                        None => false,
+                    };
+                    if invalid_kind {
+                        let expected = state
+                            .expected_kind
+                            .map_or_else(|| "character-card".to_owned(), |kind| kind.to_string());
+                        self.show_error(format!(
+                            "File is a {}, expected a {expected}",
+                            decoded.kind
+                        ));
+                        self.popup = Some(Popup::ImportArtifact(state.clone()));
+                        return Effect::None;
+                    }
+                    self.popup = Some(Popup::ImportArtifact(state.clone()));
                     return Effect::Execute(EngineCommand::ImportArtifact { source });
                 }
                 _ => {}
@@ -1056,11 +1355,11 @@ impl App {
                                 if state.characters.is_empty()
                                     || state.selected_character == state.characters.len()
                                 {
-                                    self.popup =
-                                        Some(Popup::ImportCharacter(ImportCharacterState {
-                                            input: String::new(),
-                                            return_to_new_session: Some(state.clone()),
-                                        }));
+                                    self.popup = Some(Popup::ImportArtifact(ImportArtifactState {
+                                        expected_kind: None,
+                                        return_to: ModalTarget::NewSession(state.clone()),
+                                        input: String::new(),
+                                    }));
                                     return Effect::None;
                                 }
                                 state.focused_field = 1;
@@ -1095,7 +1394,15 @@ impl App {
                             }
                             KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => {
                                 state.selected_preset =
-                                    (state.selected_preset + 1).min(state.presets.len());
+                                    (state.selected_preset + 1).min(state.presets.len() + 1);
+                            }
+                            KeyCode::Enter if state.selected_preset == state.presets.len() + 1 => {
+                                self.popup = Some(Popup::ImportArtifact(ImportArtifactState {
+                                    expected_kind: Some(ArtifactKind::ChatCompletionPreset),
+                                    return_to: ModalTarget::NewSession(state.clone()),
+                                    input: String::new(),
+                                }));
+                                return Effect::None;
                             }
                             KeyCode::Enter => state.focused_field = 3,
                             _ => {}
@@ -1234,6 +1541,7 @@ impl App {
                 selected_name,
                 selected,
             } => self.open_provider_popup_selected(*return_to, selected_name, selected),
+            ModalTarget::Presets(state) => self.popup = Some(Popup::Presets(state)),
         }
     }
 
@@ -1302,7 +1610,7 @@ impl App {
         Ok(records
             .into_iter()
             .map(|record| {
-                let label = self
+                let artifact = self
                     .engine
                     .inspect(EngineQuery::ArtifactSource {
                         revision_hash: record.revision_hash.clone(),
@@ -1311,12 +1619,14 @@ impl App {
                     .and_then(|inspection| match inspection {
                         EngineInspection::ArtifactSource(source) => decode_artifact(&source).ok(),
                         _ => None,
-                    })
+                    });
+                let label = artifact
+                    .as_ref()
                     .and_then(|artifact| {
                         artifact
                             .semantic
                             .get("name")
-                            .and_then(|name| name.as_str())
+                            .and_then(serde_json::Value::as_str)
                             .map(str::to_owned)
                     })
                     .unwrap_or_else(|| {
@@ -1327,7 +1637,17 @@ impl App {
                             &hash[hash.len().saturating_sub(12)..]
                         )
                     });
-                PresetOption { record, label }
+                let summary = artifact
+                    .as_ref()
+                    .map(|artifact| {
+                        PresetSummary::from_semantic(&artifact.semantic, &record.revision_hash)
+                    })
+                    .unwrap_or_default();
+                PresetOption {
+                    record,
+                    label,
+                    summary,
+                }
             })
             .collect())
     }
@@ -1354,13 +1674,36 @@ impl App {
             focused_field: 0,
         });
         self.popup = if state.characters.is_empty() {
-            Some(Popup::ImportCharacter(ImportCharacterState {
+            Some(Popup::ImportArtifact(ImportArtifactState {
+                expected_kind: None,
+                return_to: ModalTarget::NewSession(state),
                 input: String::new(),
-                return_to_new_session: Some(state),
             }))
         } else {
             Some(Popup::NewSession(state))
         };
+    }
+
+    fn preselect_new_session_preset(&mut self, revision: Option<&ContentHash>) {
+        let select = |state: &mut NewSessionState| {
+            state.selected_preset = revision
+                .and_then(|revision| {
+                    state
+                        .presets
+                        .iter()
+                        .position(|preset| &preset.record.revision_hash == revision)
+                })
+                .map_or(0, |index| index + 1);
+        };
+        match &mut self.popup {
+            Some(Popup::NewSession(state)) => select(state),
+            Some(Popup::ImportArtifact(state)) => {
+                if let ModalTarget::NewSession(session) = &mut state.return_to {
+                    select(session);
+                }
+            }
+            _ => {}
+        }
     }
 
     pub fn open_provider_profile_popup(
@@ -1648,7 +1991,7 @@ impl App {
         })
     }
 
-    fn open_preset_popup(&mut self) {
+    fn open_preset_popup(&mut self, return_to: ModalTarget) {
         let rows = match self.query_preset_options() {
             Ok(rows) => rows,
             Err(error) => {
@@ -1671,7 +2014,14 @@ impl App {
                     .position(|row| &row.record.revision_hash == current)
             })
             .map_or(0, |index| index + 1);
-        self.popup = Some(Popup::Presets { rows, selected });
+        self.popup = Some(Popup::Presets(Box::new(PresetPickerState {
+            rows,
+            selected,
+            return_to,
+            filter: String::new(),
+            filtering: false,
+            show_details: false,
+        })));
     }
 
     fn delete_session_list_entry(&mut self) -> Effect {
@@ -1867,26 +2217,97 @@ impl App {
                 supplementary_artifacts,
                 asset_count,
             }) => {
-                let status = format!(
-                    "Imported character card ({} supplementary Artifacts, {asset_count} assets)",
-                    supplementary_artifacts.len()
-                );
-                if let Some(Popup::ImportCharacter(mut state)) = self.popup.take() {
-                    if let Some(mut session_state) = state.return_to_new_session.take() {
-                        session_state.characters = self.query_character_options();
-                        if let Some(pos) = session_state
-                            .characters
-                            .iter()
-                            .position(|character| character.revision_hash == primary.revision_hash)
-                        {
-                            session_state.selected_character = pos;
-                            session_state.selected_greeting = 0;
+                let preset_metadata = (primary.kind == ArtifactKind::ChatCompletionPreset)
+                    .then(|| {
+                        self.engine
+                            .inspect(EngineQuery::ArtifactSource {
+                                revision_hash: primary.revision_hash.clone(),
+                            })
+                            .ok()
+                            .and_then(|inspection| match inspection {
+                                EngineInspection::ArtifactSource(source) => {
+                                    decode_artifact(&source).ok()
+                                }
+                                _ => None,
+                            })
+                    })
+                    .flatten()
+                    .map(|artifact| {
+                        let name = artifact
+                            .semantic
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("Unnamed preset")
+                            .to_owned();
+                        let scripts = artifact
+                            .semantic
+                            .pointer("/extensions/regex_scripts")
+                            .and_then(serde_json::Value::as_array)
+                            .map_or(0, Vec::len);
+                        (name, scripts)
+                    });
+                let status = match preset_metadata {
+                    Some((name, scripts)) if scripts > 0 => {
+                        format!("Imported preset '{name}' (contains {scripts} untrusted scripts)")
+                    }
+                    Some((name, _)) => format!("Imported preset '{name}'"),
+                    None => format!(
+                        "Imported {} ({} supplementary Artifacts, {asset_count} assets)",
+                        primary.kind,
+                        supplementary_artifacts.len()
+                    ),
+                };
+                if let Some(Popup::ImportArtifact(state)) = self.popup.take() {
+                    match state.return_to {
+                        ModalTarget::NewSession(mut session_state) => {
+                            if primary.kind == ArtifactKind::ChatCompletionPreset {
+                                session_state.presets =
+                                    self.query_preset_options().unwrap_or_else(|error| {
+                                        self.show_error(error.to_string());
+                                        Vec::new()
+                                    });
+                                session_state.selected_preset = session_state
+                                    .presets
+                                    .iter()
+                                    .position(|preset| {
+                                        preset.record.revision_hash == primary.revision_hash
+                                    })
+                                    .map_or(0, |index| index + 1);
+                            } else {
+                                session_state.characters = self.query_character_options();
+                                if let Some(pos) =
+                                    session_state.characters.iter().position(|character| {
+                                        character.revision_hash == primary.revision_hash
+                                    })
+                                {
+                                    session_state.selected_character = pos;
+                                    session_state.selected_greeting = 0;
+                                }
+                            }
+                            self.show_info(status);
+                            self.popup = Some(Popup::NewSession(session_state));
                         }
-                        self.show_info(status);
-                        self.popup = Some(Popup::NewSession(session_state));
-                    } else {
-                        self.show_info(status);
-                        self.popup = None;
+                        ModalTarget::Presets(mut picker) => {
+                            picker.filter.clear();
+                            picker.filtering = false;
+                            picker.rows = self.query_preset_options().unwrap_or_else(|error| {
+                                self.show_error(error.to_string());
+                                Vec::new()
+                            });
+                            picker.selected = picker
+                                .rows
+                                .iter()
+                                .position(|preset| {
+                                    preset.record.revision_hash == primary.revision_hash
+                                })
+                                .map_or(0, |index| index + 1);
+                            self.show_info(status);
+                            self.popup = Some(Popup::Presets(picker));
+                        }
+                        target => {
+                            self.show_info(status);
+                            self.restore_modal(target);
+                        }
                     }
                 } else {
                     self.show_info(status);
@@ -2023,8 +2444,11 @@ impl App {
                 *selected = selected.saturating_add_signed(amount).min(names.len());
                 return;
             }
-            Some(Popup::Presets { rows, selected }) => {
-                *selected = selected.saturating_add_signed(amount).min(rows.len());
+            Some(Popup::Presets(state)) => {
+                state.selected = state
+                    .selected
+                    .saturating_add_signed(amount)
+                    .min(state.filtered_rows().len());
                 return;
             }
             Some(
@@ -2034,7 +2458,7 @@ impl App {
                 | Popup::ConfirmDeleteProvider { .. }
                 | Popup::Rename { .. }
                 | Popup::NewSession(_)
-                | Popup::ImportCharacter(_)
+                | Popup::ImportArtifact(_)
                 | Popup::ProviderProfile(_),
             ) => return,
             None => {}
@@ -2093,13 +2517,12 @@ impl App {
                 }
             }
             Some(HitAction::PopupRow(index)) => {
-                if let Some(
-                    Popup::Branches { selected, .. }
-                    | Popup::Providers { selected, .. }
-                    | Popup::Presets { selected, .. },
-                ) = &mut self.popup
-                {
-                    *selected = index;
+                match &mut self.popup {
+                    Some(Popup::Branches { selected, .. } | Popup::Providers { selected, .. }) => {
+                        *selected = index
+                    }
+                    Some(Popup::Presets(state)) => state.selected = index,
+                    _ => {}
                 }
                 self.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             }
@@ -2901,10 +3324,10 @@ mod tests {
 
         let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
         app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
-        let Some(Popup::ImportCharacter(import_state)) = &mut app.popup else {
-            panic!("expected Popup::ImportCharacter");
+        let Some(Popup::ImportArtifact(import_state)) = &mut app.popup else {
+            panic!("expected Popup::ImportArtifact");
         };
-        assert!(import_state.return_to_new_session.is_some());
+        assert!(matches!(import_state.return_to, ModalTarget::NewSession(_)));
 
         for c in card_path.to_str().unwrap().chars() {
             app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));

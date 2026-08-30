@@ -7,6 +7,7 @@ Replace placeholders such as `<character-revision>`, `<session-id>`, and `<branc
 ## Contents
 
 - [Import content](#import-content)
+- [Import and inspect presets in the TUI](#import-and-inspect-presets-in-the-tui)
 - [Configure a provider and create a session](#configure-a-provider-and-create-a-session)
 - [Preview and send a turn](#preview-and-send-a-turn)
 - [Inspect a prompt](#inspect-a-prompt)
@@ -67,6 +68,22 @@ Import returns a bundle with three parts:
 - `asset_count`: The number of media files stored, such as the avatar.
 
 STcli stores media files in a content-addressed asset store, apart from the main database. For the reason, see [ADR 0007](adr/0007-external-content-addressed-asset-storage.md).
+
+## Import and inspect presets in the TUI
+
+Start the TUI, then open the prompt preset picker:
+
+```bash
+cargo run --quiet --bin stcli -- tui
+```
+
+From the Sessions screen, press `P`, then `i`. Enter the path to a SillyTavern Chat Completion preset and press `Enter`. The imported preset remains highlighted so that you can inspect it before using it.
+
+Press `d` or `Tab` to open the detail inspector. It shows the prompt order, system-prompt state, generation parameters, and embedded regex scripts. Press `/` and type part of a preset name to filter the list. Press `Esc` to clear the filter.
+
+From Sessions, press `n` to open New Session with the highlighted preset. You can also import during session creation: select `<Import preset...>` in the Preset field. In Chat, press `P` to open the picker and `Enter` to apply the highlighted preset to future Turns.
+
+Imported regex scripts remain inert. The TUI reports their presence but does not create Preset Script Grants. See the [TUI reference](tui.md) for all picker keys and [Chat Completion presets](presets.md) for script-grant behavior.
 
 ## Configure a provider and create a session
 

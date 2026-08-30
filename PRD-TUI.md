@@ -93,6 +93,7 @@ Interaction:
 - Enter to open the selected session in chat view.
 - Column sort: cycle sort key with a keybinding.
 - Fuzzy text filter: type to narrow the list.
+- `P` opens the Prompt Preset picker. `Enter` or `Esc` closes it; `n` starts a new Session with the highlighted preset.
 
 #### Chat View (Primary View)
 
@@ -116,10 +117,10 @@ Greeting swipe uses the same `← 1/3 →` mechanism.
 
 A consistent interaction pattern for secondary actions:
 
-- **New Session Modal:** Keystroke `n` on the home screen opens a single-page modal for configuring a session: Character selection, Provider profile, Prompt preset, Persona name (default `"User"`), Persona description (optional), and Initial Greeting. Submitting creates the session and immediately transitions to the Chat view.
+- **New Session Modal:** Keystroke `n` on the home screen opens a single-page modal for configuring a session: Character selection, Provider profile, Prompt preset, Persona name (default `"User"`), Persona description (optional), and Initial Greeting. The Prompt preset field includes `<Import preset...>` and resumes with a successfully imported preset selected. Submitting creates the session and immediately transitions to the Chat view.
 - **Provider Profile Creator:** Form modal for creating and persisting new provider connection profiles into `config.toml`. Includes template selector steered by `provider-templates.toml`, fields for URL, Model, Chat completions path, API key environment variable (with live env detection), and stream toggle.
-- **Character Import Dialog:** Path input dialog supporting `~` expansion to import character card files (`.json` or `.png`) directly and resume session creation.
-- **Provider/Preset Picker:** Keystroke opens a modal overlay listing available providers and presets. Select one, Escape to cancel.
+- **Artifact Import Dialog:** Reusable path input dialog with `~` expansion and an expected Artifact kind. A kind mismatch preserves the path, writes nothing, and reports the detected and expected kinds before returning to New Session or the Prompt Preset picker.
+- **Provider/Preset Picker:** The Prompt Preset picker opens with `P` from Sessions or Chat. It supports `i` import, `/` substring filtering, and a `d`/`Tab` side-by-side inspector for prompt order, generation parameters, and inert embedded scripts. `Enter` applies a preset in Chat or closes the picker on Sessions; `n` chains from Sessions into New Session with the highlighted preset.
 - **Branch Picker:** Keystroke opens a modal overlay listing branches in the current session. Select one to switch.
 - **Help Overlay:** `?` opens a modal overlay showing all keybindings for the current context. Escape to dismiss.
 

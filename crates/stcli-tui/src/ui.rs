@@ -893,6 +893,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 " Branches · * current ",
                 labels,
                 *selected,
+                None,
             );
         }
         Popup::Providers {
@@ -928,9 +929,12 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 " Provider profiles · * current · Enter switch · e edit · x delete · a add · Esc close ",
                 labels,
                 *selected,
+                None,
             );
         }
-        Popup::Presets { rows, selected } => {
+        Popup::Presets(state) => {
+            let rows = state.filtered_rows();
+            let selected = state.selected;
             let current = app.history.as_ref().and_then(|history| {
                 history
                     .configuration
@@ -954,21 +958,68 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                     short_hash(&row.record.revision_hash.to_string())
                 )
             }));
-            render_list_popup(
-                frame,
-                app,
-                area,
-                " Prompt preset · * current ",
-                labels,
-                *selected,
-            );
+            let title = if state.filtering {
+                format!(" Filter: {}█ ", state.filter)
+            } else {
+                " Prompt presets ".to_owned()
+            };
+            if state.show_details {
+                let detail = selected
+                    .checked_sub(1)
+                    .and_then(|index| rows.get(index))
+                    .map(|row| (*row).clone());
+                let preset_area =
+                    centered(frame.area(), 94, frame.area().height.saturating_mul(3) / 4);
+                frame.render_widget(Clear, preset_area);
+                let body_and_footer = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Min(1), Constraint::Length(1)])
+                    .split(preset_area);
+                let columns = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+                    .split(body_and_footer[0]);
+                render_list_popup(frame, app, columns[0], &title, labels, selected, None);
+                render_preset_details(frame, app, columns[1], detail.as_ref());
+                frame.render_widget(
+                    Paragraph::new("Enter select · i import · d details · / filter · Esc close")
+                        .style(
+                            Style::default()
+                                .bg(app.theme.background)
+                                .fg(app.theme.muted),
+                        ),
+                    body_and_footer[1],
+                );
+            } else {
+                render_list_popup(
+                    frame,
+                    app,
+                    area,
+                    &title,
+                    labels,
+                    selected,
+                    Some("Enter select · i import · d details · / filter · Esc close"),
+                );
+            }
         }
-        Popup::ImportCharacter(state) => {
+        Popup::ImportArtifact(state) => {
             let import_area = centered(frame.area(), 68, 7);
             frame.render_widget(Clear, import_area);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .title(" Import Character Card from File · Enter import · Esc cancel ");
+            let kind = state
+                .expected_kind
+                .map_or("Character Card", |expected| match expected {
+                    stcli_core::ArtifactKind::ChatCompletionPreset => "Prompt Preset",
+                    _ => "Character Card",
+                });
+            let support =
+                if state.expected_kind == Some(stcli_core::ArtifactKind::ChatCompletionPreset) {
+                    "Supported: .json prompt presets (supports ~/ paths)"
+                } else {
+                    "Supported: .json, .png, .webp, and .charx artifacts (supports ~/ paths)"
+                };
+            let block = Block::default().borders(Borders::ALL).title(format!(
+                " Import {kind} from File · Enter import · Esc cancel "
+            ));
             let content = vec![
                 Line::from(vec![
                     Span::styled(
@@ -982,7 +1033,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 ]),
                 Line::from(""),
                 Line::from(vec![Span::styled(
-                    "Supported: .json, .png character cards (supports ~/ paths)",
+                    support,
                     Style::default().fg(app.theme.muted),
                 )]),
             ];
@@ -1261,7 +1312,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
             } else if let Some(p) = state.presets.get(state.selected_preset - 1) {
                 format!("<{}>", p.label)
             } else {
-                "<None>".to_owned()
+                "<Import preset...>".to_owned()
             };
 
             let greeting_label = {
@@ -1426,6 +1477,7 @@ fn render_list_popup(
     title: &str,
     labels: Vec<String>,
     selected: usize,
+    footer: Option<&str>,
 ) {
     frame.render_widget(Clear, area);
     let visible = area.height.saturating_sub(2) as usize;
@@ -1447,14 +1499,16 @@ fn render_list_popup(
                 Style::default()
             })
         });
+    let mut block = Block::default().borders(Borders::ALL).title(title);
+    if let Some(footer) = footer {
+        block = block.title_bottom(footer);
+    }
     frame.render_widget(
-        List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(title))
-            .style(
-                Style::default()
-                    .bg(app.theme.background)
-                    .fg(app.theme.foreground),
-            ),
+        List::new(items).block(block).style(
+            Style::default()
+                .bg(app.theme.background)
+                .fg(app.theme.foreground),
+        ),
         area,
     );
     for row in 0..labels.len().saturating_sub(window_start).min(visible) {
@@ -1466,6 +1520,106 @@ fn render_list_popup(
             action: HitAction::PopupRow(window_start + row),
         });
     }
+}
+
+fn render_preset_details(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    preset: Option<&crate::app::PresetOption>,
+) {
+    let mut lines = Vec::new();
+    if let Some(preset) = preset {
+        let summary = &preset.summary;
+        lines.extend([
+            Line::from(Span::styled(
+                &preset.label,
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "General Settings",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(format!("Prompts: {}", summary.prompt_count)),
+            Line::from(format!("Order profile: {}", summary.order_profile)),
+            Line::from(format!(
+                "System prompt: {}",
+                if summary.system_prompt_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Prompt Ordering",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+        ]);
+        lines.extend(
+            summary
+                .prompt_order
+                .iter()
+                .enumerate()
+                .map(|(index, prompt)| Line::from(format!("{}. {prompt}", index + 1))),
+        );
+        lines.extend([
+            Line::from(""),
+            Line::from(Span::styled(
+                "Generation Parameters",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(format!(
+                "Temperature: {}",
+                summary.temperature.as_deref().unwrap_or("—")
+            )),
+            Line::from(format!(
+                "top_p: {}",
+                summary.top_p.as_deref().unwrap_or("—")
+            )),
+            Line::from(format!(
+                "max_tokens: {}",
+                summary.max_tokens.as_deref().unwrap_or("—")
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Embedded Scripts",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+        ]);
+        if summary.scripts.is_empty() {
+            lines.push(Line::from("None"));
+        } else {
+            lines.extend(summary.scripts.iter().map(|script| {
+                Line::from(format!(
+                    "{} · {} · {} [inert — requires grant]",
+                    script.name,
+                    if script.placement.is_empty() {
+                        "Unknown"
+                    } else {
+                        &script.placement
+                    },
+                    script.digest
+                ))
+            }));
+        }
+    } else {
+        lines.push(Line::from("No preset selected"));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(" Details "))
+            .wrap(Wrap { trim: false })
+            .style(
+                Style::default()
+                    .bg(app.theme.background)
+                    .fg(app.theme.foreground),
+            ),
+        area,
+    );
 }
 
 fn centered(area: Rect, percent_x: u16, height: u16) -> Rect {
@@ -1698,10 +1852,12 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("Create New Session"));
 
-        // 2. Test ImportCharacter popup render
-        app.popup = Some(Popup::ImportCharacter(
-            crate::app::ImportCharacterState::default(),
-        ));
+        // 2. Test ImportArtifact popup render
+        app.popup = Some(Popup::ImportArtifact(crate::app::ImportArtifactState {
+            expected_kind: None,
+            return_to: crate::app::ModalTarget::Sessions,
+            input: String::new(),
+        }));
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let rendered = terminal
             .backend()
