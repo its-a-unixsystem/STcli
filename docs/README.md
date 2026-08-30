@@ -44,4 +44,4 @@ Each ADR records one design decision and its consequences.
 
 ## Diagrams
 
-The `docs/diagrams/` and `docs/architecture/` directories hold the source and exported images for the diagrams in [`ARCHITECTURE.md`](../ARCHITECTURE.md). Each HTML file is the editable source. Re-export the PNG with headless Chromium after an edit.
+The `docs/diagrams/` and `docs/architecture/` directories hold the source and exported images for the diagrams in [`ARCHITECTURE.md`](../ARCHITECTURE.md) and [`plugins.md`](plugins.md). Each HTML file is the editable source. Re-export the PNG with headless Chromium after an edit.

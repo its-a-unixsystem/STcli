@@ -11,6 +11,7 @@ STcli also runs plugins written in JavaScript through a sandboxed QuickJS runtim
 | Plugin | Identifier | Purpose |
 |---|---|---|
 | [`proof/`](proof/) | `org.stcli.proof` | Reference implementation and test harness proving the pure Wasm plugin architecture. |
+| [`turn-counter/`](turn-counter/) | `org.stcli.turn-counter` | Reference script plugin for the [Writing plugins](../docs/plugins.md#tutorial-a-script-plugin) tutorial. Counts turns and injects one prompt line. |
 
 ## The `proof` plugin
 
@@ -19,6 +20,15 @@ STcli also runs plugins written in JavaScript through a sandboxed QuickJS runtim
 - **Not a production plugin**: It is neither bundled into releases nor enabled by default in user sessions.
 - **Architectural role**: Proves that an out-of-tree plugin builds against the public WIT world, installs without host recompilation, and runs within strict sandbox boundaries.
 - **Test harness**: Implements declarative effects (macros, commands, prompt contributions, namespaced state) and controllable test modes in [`proof/src/lib.rs`](proof/src/lib.rs) to exercise host limits, error handling, timeouts, and unauthorized state rejection in [`crates/stcli-core/tests/plugins.rs`](../crates/stcli-core/tests/plugins.rs) and [`crates/stcli-cli/tests/plugins.rs`](../crates/stcli-cli/tests/plugins.rs).
+
+## The `turn-counter` plugin
+
+[`plugins/turn-counter`](turn-counter/) is the reference **script plugin**. It is the worked example in the [Writing plugins](../docs/plugins.md#tutorial-a-script-plugin) tutorial.
+
+- **Runtime**: QuickJS script (`runtime: "script"`), so it needs no build toolchain.
+- **Behavior**: On each `pre-prompt` event it counts the turn, writes the count to its own state, and injects one line (`[Turn N]`) into the `after-character-definitions` slot.
+- **Settings**: A one-property `settings.schema.json` (`start`) shows how a plugin declares settings.
+- **Validation**: `stcli plugin doctor plugins/turn-counter` passes, and `stcli plugin install plugins/turn-counter` installs it.
 
 ## Further documentation
 

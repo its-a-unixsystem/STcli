@@ -55,7 +55,7 @@
 
     <svg viewBox="0 0 1040 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="plg-title plg-desc">
       <title id="plg-title">Plugin Execution During a Turn</title>
-      <desc id="plg-desc">During a turn the Turn Orchestrator invokes the Plugin Host in topological order, which calls each pure Wasm plugin inside a capability sandbox with a lifecycle event and permitted reads. The plugin returns declarative effects; the host applies own-namespace state writes to the overlay and injects prompt contributions into closed slots, and the orchestrator records the effect receipt in the SQLite trace. The host and plugin runtime are planned, not yet implemented.</desc>
+      <desc id="plg-desc">During a turn the Turn Orchestrator invokes the Plugin Host in topological order, which calls each sandboxed plugin with a lifecycle event and permitted reads. The plugin returns declarative effects; the host applies own-namespace state writes to the overlay and injects prompt contributions into closed slots, and the orchestrator records the effect receipt in the SQLite trace. Replay reads the recorded receipts and does not run the plugin again.</desc>
       <defs>
         <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
         <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
@@ -67,7 +67,7 @@
       <!-- ============ SANDBOX BOUNDARY ============ -->
       <rect x="736" y="160" width="248" height="140" rx="8" fill="rgba(235,108,54,0.05)" stroke="rgba(235,108,54,0.50)" stroke-width="1" stroke-dasharray="5,4"/>
       <rect x="752" y="154" width="192" height="12" rx="2" fill="#f5f5f5"/>
-      <text x="760" y="163" fill="#b0562a" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.12em">WASM SANDBOX · NO NET/FS/SECRETS</text>
+      <text x="760" y="163" fill="#b0562a" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.12em">PLUGIN SANDBOX · NO NET/FS/SECRETS</text>
 
       <!-- ============ ARROWS ============ -->
       <!-- 1 turn -> extHost -->
@@ -118,21 +118,21 @@
       <text x="164" y="234" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Turn Orchestrator</text>
       <text x="164" y="250" fill="#b0562a" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">turn.rs</text>
 
-      <!-- extHost (planned) -->
-      <rect x="392" y="192" width="192" height="72" rx="6" fill="#f5f5f5"/>
-      <rect x="392" y="192" width="192" height="72" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.28)" stroke-width="1" stroke-dasharray="4,3"/>
-      <rect x="400" y="200" width="52" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.30)" stroke-width="0.8"/>
-      <text x="426" y="209" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PLANNED</text>
-      <text x="488" y="234" fill="#4f5d75" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Plugin Host</text>
-      <text x="488" y="250" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">loads Wasm components</text>
+      <!-- extHost -->
+      <rect x="392" y="192" width="192" height="72" rx="6" fill="#ffffff"/>
+      <rect x="392" y="192" width="192" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="400" y="200" width="32" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.45)" stroke-width="0.8"/>
+      <text x="416" y="209" fill="#2d3142" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">HOST</text>
+      <text x="488" y="234" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Plugin Host</text>
+      <text x="488" y="250" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">plugin.rs</text>
 
-      <!-- ext (planned, inside sandbox) -->
-      <rect x="760" y="192" width="200" height="72" rx="6" fill="#f5f5f5"/>
-      <rect x="760" y="192" width="200" height="72" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.28)" stroke-width="1" stroke-dasharray="4,3"/>
-      <rect x="768" y="200" width="52" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.30)" stroke-width="0.8"/>
-      <text x="794" y="209" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PLANNED</text>
-      <text x="860" y="234" fill="#4f5d75" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Wasm Plugin</text>
-      <text x="860" y="250" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">pure declarative effects</text>
+      <!-- ext (inside sandbox) -->
+      <rect x="760" y="192" width="200" height="72" rx="6" fill="#ffffff"/>
+      <rect x="760" y="192" width="200" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="768" y="200" width="56" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.45)" stroke-width="0.8"/>
+      <text x="796" y="209" fill="#2d3142" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">RUNTIME</text>
+      <text x="860" y="234" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Sandboxed Plugin</text>
+      <text x="860" y="250" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">wasm · script</text>
 
       <!-- sqlite (store) -->
       <rect x="72" y="392" width="184" height="76" fill="#f5f5f5"/>
@@ -158,15 +158,15 @@
       <text x="672" y="448" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">closed slots</text>
 
       <!-- editorial aside -->
-      <text x="760" y="344" fill="#7a8399" font-size="13" font-family="'Instrument Serif', serif" font-style="italic">Host specified; Wasm runtime</text>
-      <text x="760" y="362" fill="#7a8399" font-size="13" font-family="'Instrument Serif', serif" font-style="italic">not yet implemented.</text>
+      <text x="760" y="344" fill="#7a8399" font-size="13" font-family="'Instrument Serif', serif" font-style="italic">Every effect is recorded, so</text>
+      <text x="760" y="362" fill="#7a8399" font-size="13" font-family="'Instrument Serif', serif" font-style="italic">replay needs no plugin run.</text>
 
       <!-- ============ LEGEND ============ -->
       <line x1="72" y1="516" x2="968" y2="516" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
       <rect x="72" y="528" width="14" height="14" rx="3" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
       <text x="94" y="539" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">ORCHESTRATOR (FOCAL)</text>
-      <rect x="316" y="528" width="14" height="14" rx="3" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.28)" stroke-width="1" stroke-dasharray="4,3"/>
-      <text x="338" y="539" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">PLANNED COMPONENT</text>
+      <rect x="316" y="528" width="14" height="14" rx="3" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="338" y="539" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">HOST / PLUGIN</text>
       <rect x="556" y="528" width="14" height="14" rx="3" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
       <text x="578" y="539" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">STORE</text>
       <circle cx="659" cy="535" r="8" fill="#f5f5f5" stroke="#4f5d75" stroke-width="1"/>

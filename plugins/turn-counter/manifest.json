@@ -1,0 +1,19 @@
+{
+  "schema": "stcli.plugin-manifest/v1",
+  "id": "org.stcli.turn-counter",
+  "version": "1.0.0",
+  "engine": ">=0.1.0, <0.2.0",
+  "runtime": "script",
+  "component": "script.js",
+  "component_sha256": "sha256:c0b0916196c5dac1636e3005179b422bcaf61ab9a0c5edcecbcb8acf46f53ff8",
+  "dependencies": [],
+  "license": "MIT",
+  "subscriptions": ["pre-prompt"],
+  "prompt_slots": ["after-character-definitions"],
+  "commands": [],
+  "macros": [],
+  "settings_schema": "settings.schema.json",
+  "requested_capabilities": ["contribute-prompt", "write-own-state"],
+  "before": [],
+  "after": []
+}
