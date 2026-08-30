@@ -898,7 +898,8 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
         Popup::Providers {
             names, selected, ..
         } => {
-            let provider_area = centered(frame.area(), 90, 70);
+            let provider_height = frame.area().height.saturating_mul(70).saturating_div(100);
+            let provider_area = centered(frame.area(), 50, provider_height);
             let current = app
                 .history
                 .as_ref()
@@ -1513,6 +1514,7 @@ fn short_hash(hash: &str) -> &str {
 mod tests {
     use super::*;
     use crate::{app::App, config::Config};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{Terminal, backend::TestBackend};
     use stcli_core::StcliEngine;
     #[tokio::test]
@@ -1646,6 +1648,29 @@ mod tests {
 
         assert_eq!(after.symbol(), before.symbol());
         assert_eq!(after.style(), before.style());
+    }
+
+    #[test]
+    fn provider_list_popup_uses_half_width_and_seventy_percent_height() {
+        // Regression test: the provider list must remain distinct from the underlying screen.
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::load(
+            StcliEngine::new(directory.path().join("stcli.sqlite3")),
+            Config::default(),
+            None,
+        )
+        .unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::empty()));
+        let backend = TestBackend::new(100, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(25, 6)].symbol(), "┌");
+        assert_eq!(buffer[(74, 6)].symbol(), "┐");
+        assert_eq!(buffer[(25, 33)].symbol(), "└");
+        assert_eq!(buffer[(74, 33)].symbol(), "┘");
     }
 
     #[test]
