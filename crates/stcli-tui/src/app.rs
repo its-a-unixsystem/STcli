@@ -814,6 +814,7 @@ pub struct App {
     pending_override_message: Option<String>,
     pending_preset_toggle: Option<(String, bool)>,
     pending_directive_warnings: Vec<String>,
+    pending_branch_creation: bool,
 }
 
 impl App {
@@ -854,6 +855,7 @@ impl App {
             pending_directive_warnings: Vec::new(),
             pending_override_message: None,
             pending_preset_toggle: None,
+            pending_branch_creation: false,
         };
         app.reload_sessions()?;
         if let Some(session_id) = direct_session
@@ -1251,7 +1253,8 @@ impl App {
                         .unwrap_or(message_count(history).saturating_sub(1));
                 }
             }
-            KeyCode::Char('b') => self.open_branch_popup(),
+            KeyCode::Char('b') => return self.create_branch_from_focus(),
+            KeyCode::Char('B') => self.open_branch_popup(),
             KeyCode::Char('p') => self.open_provider_popup(ModalTarget::Chat),
             KeyCode::Char('P') => self.open_preset_popup(ModalTarget::Chat),
             KeyCode::Char('c') => {
@@ -3626,6 +3629,38 @@ impl App {
                 }
                 true
             }
+            Ok(EngineResult::Branch(branch)) if self.pending_branch_creation => {
+                self.pending_branch_creation = false;
+                let composer = branch
+                    .forked_from_turn_id
+                    .and_then(|turn_id| {
+                        let parent_branch_id = branch.parent_branch_id?;
+                        match self.engine.inspect(EngineQuery::BranchTurns {
+                            branch_id: parent_branch_id,
+                        }) {
+                            Ok(EngineInspection::Turns(turns)) => turns
+                                .into_iter()
+                                .find(|turn| turn.turn.turn_id == turn_id)
+                                .map(|turn| turn.turn.user_content),
+                            _ => None,
+                        }
+                    })
+                    .unwrap_or_default();
+                if let Err(error) = self.open_branch(branch.session_id, branch.branch_id) {
+                    self.show_error(error.to_string());
+                    return false;
+                }
+                self.composer = composer;
+                self.chat_focus = ChatFocus::Composer;
+                self.show_info("Created Branch");
+                true
+            }
+            Ok(EngineResult::Branch(_)) => {
+                if let Err(error) = self.reload_history() {
+                    self.show_error(error.to_string());
+                }
+                true
+            }
             Ok(EngineResult::ArtifactBundle {
                 primary,
                 supplementary_artifacts,
@@ -3857,6 +3892,7 @@ impl App {
                 true
             }
             Err(error) => {
+                self.pending_branch_creation = false;
                 self.show_error(error);
                 false
             }
@@ -3909,6 +3945,29 @@ impl App {
         let turn = &history.turns[turn_index];
         (turn_index + 1 == history.turns.len() && turn.candidates.is_empty())
             .then_some(turn.turn.turn_id)
+    }
+
+    fn create_branch_from_focus(&mut self) -> Effect {
+        if self.running_attempt().is_some() {
+            return Effect::None;
+        }
+        let Some(history) = &self.history else {
+            return Effect::None;
+        };
+        let session_id = history.session.session_id;
+        let source_branch_id = history.branch.branch_id;
+        let at_turn_id = match resolve_focus(history, self.focused_message) {
+            Some(FocusedSlot::UserMessage(index) | FocusedSlot::AssistantMessage(index)) => {
+                Some(history.turns[index].turn.turn_id)
+            }
+            Some(FocusedSlot::Greeting) | None => None,
+        };
+        self.pending_branch_creation = true;
+        Effect::Execute(EngineCommand::CreateBranch {
+            session_id,
+            source_branch_id: Some(source_branch_id),
+            at_turn_id,
+        })
     }
 
     fn current_turn_id(&self) -> Option<EntityId> {
@@ -4265,6 +4324,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("stcli.sqlite3");
         let mut store = stcli_core::Store::open(&database).unwrap();
+
         let character = store
             .import_artifact(stcli_testkit::fixtures::minimal_card().as_bytes())
             .unwrap();
@@ -4279,6 +4339,82 @@ mod tests {
         )
         .unwrap();
         (app, directory)
+    }
+    #[test]
+    fn chat_b_dispatches_branch_at_focused_user_turn() {
+        // Regression test for 01-chat-b: b branches at the focused Turn.
+        let (mut app, _directory) = app_with_session();
+        let turn_id = append_answered_turn(&mut app);
+        app.chat_focus = ChatFocus::History;
+        app.focused_message = 1;
+
+        let effect = app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        assert!(matches!(
+            effect,
+            Effect::Execute(EngineCommand::CreateBranch {
+                session_id,
+                source_branch_id: Some(_),
+                at_turn_id: Some(actual),
+            }) if session_id == app.history.as_ref().unwrap().session.session_id && actual == turn_id
+        ));
+    }
+
+    #[test]
+    fn chat_b_on_greeting_branches_from_start_and_uppercase_b_opens_popup() {
+        let (mut app, _directory) = app_with_session();
+        app.chat_focus = ChatFocus::History;
+        let effect = app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        assert!(matches!(
+            effect,
+            Effect::Execute(EngineCommand::CreateBranch {
+                at_turn_id: None,
+                ..
+            })
+        ));
+        execute_command(&mut app, effect);
+        assert!(app.history.as_ref().unwrap().turns.is_empty());
+        assert!(app.composer.is_empty());
+
+        app.chat_focus = ChatFocus::History;
+        assert!(matches!(
+            app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::NONE)),
+            Effect::None
+        ));
+        assert!(matches!(app.popup, Some(Popup::Branches { .. })));
+    }
+
+    #[test]
+    fn chat_b_is_a_no_op_while_streaming() {
+        // Regression test for 01-chat-b AC5: streaming blocks Branch creation.
+        let (mut app, _directory) = app_with_session();
+        app.chat_focus = ChatFocus::History;
+        app.generation = Some(GenerationState {
+            partial: String::new(),
+            reasoning: String::new(),
+            streaming: true,
+            pending_input: None,
+            continues: false,
+        });
+
+        assert!(matches!(
+            app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE)),
+            Effect::None
+        ));
+        assert!(app.popup.is_none());
+    }
+
+    #[test]
+    fn greeting_selection_branch_result_keeps_composer_and_focus() {
+        let (mut app, _directory) = app_with_session();
+        let branch = app.history.as_ref().unwrap().branch.clone();
+        app.composer = "draft".to_owned();
+        app.chat_focus = ChatFocus::History;
+
+        assert!(app.finish_command(Ok(EngineResult::Branch(branch))));
+
+        assert_eq!(app.composer, "draft");
+        assert_eq!(app.chat_focus, ChatFocus::History);
+        assert!(app.toast.is_none());
     }
 
     #[test]

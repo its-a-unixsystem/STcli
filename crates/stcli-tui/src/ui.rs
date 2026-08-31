@@ -478,7 +478,7 @@ fn render_chat(frame: &mut Frame<'_>, app: &mut App) {
         "Enter send/respond  Shift+Enter newline  ↑/Esc/Tab history  Ctrl+C quit".to_owned()
     } else {
         let mut hints =
-            "Enter compose/respond  ↑/k ↓/j scroll  ←/→ select  x delete  b branch  p provider  P preset  c copy"
+            "Enter compose/respond  ↑/k ↓/j scroll  ←/→ select  x delete  b branch  B branches  p provider  P preset  c copy"
                 .to_owned();
         if history.turns.last().is_some() {
             hints.push_str("  r regenerate");
@@ -778,7 +778,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
         Popup::Help => {
             frame.render_widget(Clear, area);
             frame.render_widget(
-                Paragraph::new("Sessions\n  n  new session · ↑/↓ or j/k  navigate\n  /  filter · s  sort · Enter  open\n  b  toggle branch tree · c  duplicate · x  delete · r  rename\n  p  providers · P  presets · u  personas\n\nChat composer\n  Enter  send or answer an unanswered user message · Shift+Enter  newline\n  Escape or Tab  focus history\n\nChat history\n  ↑/↓ or j/k  scroll · Tab  focus next message · c  copy\n  ←/→  select Greeting or Candidate\n  x  delete candidate (on user message: delete turn)\n  r  regenerate · e  continue · Enter  compose or answer selected user message\n  b  Branches · p  providers · P  presets\n\nEvery action is available without a mouse. Escape closes this help.")
+                    Paragraph::new("Sessions\n  n  new session · ↑/↓ or j/k  navigate\n  /  filter · s  sort · Enter  open\n  b  toggle branch tree · c  duplicate · x  delete · r  rename\n  p  providers · P  presets · u  personas\n\nChat composer\n  Enter  send or answer an unanswered user message · Shift+Enter  newline\n  Escape or Tab  focus history\n\nChat history\n  ↑/↓ or j/k  scroll · Tab  focus next message · c  copy\n  ←/→  select Greeting or Candidate\n  x  delete candidate (on user message: delete turn)\n  r  regenerate · e  continue · Enter  compose or answer selected user message\n  b  branch at focused Turn · B  open Branch list · p  providers · P  presets\n\nEvery action is available without a mouse. Escape closes this help.")
                     .wrap(Wrap { trim: false })
                     .block(Block::default().borders(Borders::ALL).title(" Help "))
                     .style(Style::default().bg(app.theme.background).fg(app.theme.foreground)),

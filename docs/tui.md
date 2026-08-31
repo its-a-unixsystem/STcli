@@ -6,6 +6,12 @@ Run the terminal user interface with:
 stcli tui
 ```
 
+## Branch from Chat
+
+In Chat history, focus a Turn and press `b` to create a new child Branch at that Turn. The new Branch excludes the focused Turn from its inherited history and pre-fills the composer with that Turn's user content, ready to resend or edit. With the Greeting (or no Turn) focused, `b` branches from the start with an empty composer. Branch creation switches Chat to the new Branch and confirms with a toast; while a Generation Attempt is streaming, `b` is ignored.
+
+Press `B` to open the Branch list popup. The popup includes newly created Branches.
+
 ## Manage sessions
 
 On the Sessions screen, highlight a Session and press `c` to duplicate its root Branch lineage. Archived Sessions remain listed with an `[archived]` marker and can also be duplicated. The name prompt starts with `<name> (copy)` and advances to `<name> (copy 2)`, `<name> (copy 3)`, and so on when needed. Edit the name, then press `Enter` to create the independent, active Duplicated Session or `Esc` to cancel.

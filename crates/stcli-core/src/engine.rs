@@ -611,6 +611,28 @@ impl StcliEngine {
             } => Ok(EngineResult::CreatedSession(Box::new(
                 store.create_session(*configuration, greeting_index)?,
             ))),
+            EngineCommand::CreateBranch {
+                session_id,
+                source_branch_id,
+                at_turn_id,
+            } => {
+                let session = store
+                    .session(session_id)?
+                    .ok_or(SessionError::SessionNotFound(session_id))?;
+                let source_branch_id = source_branch_id.unwrap_or(session.root_branch_id);
+                let source_branch = store
+                    .branch(source_branch_id)?
+                    .ok_or(SessionError::BranchNotFound(source_branch_id))?;
+                if source_branch.session_id != session_id {
+                    return Err(SessionError::BranchSessionMismatch.into());
+                }
+                Ok(EngineResult::Branch(store.create_branch_at(
+                    session_id,
+                    source_branch_id,
+                    at_turn_id,
+                    source_branch.greeting_index,
+                )?))
+            }
             EngineCommand::DuplicateSession {
                 session_id,
                 branch_id,
@@ -965,6 +987,11 @@ pub enum EngineCommand {
     CreateSession {
         configuration: Box<SessionConfiguration>,
         greeting_index: usize,
+    },
+    CreateBranch {
+        session_id: EntityId,
+        source_branch_id: Option<EntityId>,
+        at_turn_id: Option<EntityId>,
     },
     DuplicateSession {
         session_id: EntityId,

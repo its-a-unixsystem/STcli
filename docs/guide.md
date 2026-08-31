@@ -231,6 +231,8 @@ cargo run --quiet --bin stcli -- message swipe <turn-id> --candidate <candidate-
 
 ## Edit history
 
+From the TUI Chat view, focus a Turn and press `b` to create a child Branch at that point. Its history stops before the focused Turn and the composer is pre-filled with the Turn's user content so it can be edited or resent. Press `B` to browse the Branch list.
+
 Editing creates a new branch and leaves the original unchanged:
 
 ```bash

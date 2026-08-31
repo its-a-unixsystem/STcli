@@ -588,6 +588,90 @@ async fn duplicate_session_rejects_a_turn_outside_the_selected_lineage() {
     );
 }
 
+#[tokio::test]
+async fn create_branch_command_records_fork_and_validates_lineage() {
+    // Regression test for 01-chat-b: explicit Branch creation must preserve fork semantics.
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let created = store
+        .create_session(configuration(character.revision_hash), 0)
+        .unwrap();
+    let fork_turn = create_failed_turn(
+        &mut store,
+        created.session.session_id,
+        created.branch.branch_id,
+        "try another path",
+    )
+    .await;
+    let trace_count = store
+        .trace_events(Some(created.session.session_id))
+        .unwrap()
+        .len();
+    drop(store);
+
+    let engine = StcliEngine::new(&database);
+    let EngineResult::Branch(branch) = engine
+        .execute(
+            EngineCommand::CreateBranch {
+                session_id: created.session.session_id,
+                source_branch_id: None,
+                at_turn_id: Some(fork_turn.turn_id),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected engine result");
+    };
+    assert_eq!(branch.parent_branch_id, Some(created.branch.branch_id));
+    assert_eq!(branch.forked_from_turn_id, Some(fork_turn.turn_id));
+    let store = Store::open(&database).unwrap();
+    let events = store
+        .trace_events(Some(created.session.session_id))
+        .unwrap();
+    assert_eq!(events.len(), trace_count + 1);
+    assert_eq!(events.last().unwrap().event_type, "branch.created");
+    drop(store);
+
+    let EngineResult::Branch(from_start) = engine
+        .execute(
+            EngineCommand::CreateBranch {
+                session_id: created.session.session_id,
+                source_branch_id: Some(created.branch.branch_id),
+                at_turn_id: None,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected engine result");
+    };
+    assert_eq!(from_start.forked_from_turn_id, None);
+
+    let error = engine
+        .execute(
+            EngineCommand::CreateBranch {
+                session_id: created.session.session_id,
+                source_branch_id: Some(from_start.branch_id),
+                at_turn_id: Some(fork_turn.turn_id),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        EngineError::Session(SessionError::TurnNotOnBranch { turn_id, branch_id })
+            if turn_id == fork_turn.turn_id && branch_id == from_start.branch_id
+    ));
+}
+
 async fn create_failed_turn(
     store: &mut Store,
     session_id: EntityId,

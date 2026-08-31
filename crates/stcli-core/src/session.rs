@@ -691,6 +691,16 @@ impl Store {
         forked_from_turn_id: Option<EntityId>,
         greeting_index: usize,
     ) -> Result<BranchProjection, SessionError> {
+        if let Some(turn_id) = forked_from_turn_id {
+            let lineage =
+                recorded_lineage(&self.connection, parent_branch_id, &mut BTreeSet::new())?;
+            if !lineage.contains(&turn_id) {
+                return Err(SessionError::TurnNotOnBranch {
+                    turn_id,
+                    branch_id: parent_branch_id,
+                });
+            }
+        }
         let session = self
             .session(session_id)?
             .ok_or(SessionError::SessionNotFound(session_id))?;
