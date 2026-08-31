@@ -1026,7 +1026,18 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 );
             let inner = block.inner(import_area);
             frame.render_widget(block, import_area);
-            let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(inner);
+            let preset_import =
+                state.expected_kind == Some(stcli_core::ArtifactKind::ChatCompletionPreset);
+            let chunks = if preset_import {
+                Layout::vertical([
+                    Constraint::Length(3),
+                    Constraint::Length(3),
+                    Constraint::Min(1),
+                ])
+                .split(inner)
+            } else {
+                Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(inner)
+            };
 
             let input_focused = state.focus == crate::app::ImportFocus::PathInput;
             let input_block = Block::default()
@@ -1054,9 +1065,32 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 Paragraph::new(Line::from(input_spans)).block(input_block),
                 chunks[0],
             );
+            if preset_import {
+                let name_focused = state.focus == crate::app::ImportFocus::NameInput;
+                let name_block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Name (optional) ")
+                    .border_style(if name_focused {
+                        Style::default().fg(app.theme.accent)
+                    } else {
+                        Style::default().fg(app.theme.muted)
+                    });
+                let mut name_spans = vec![Span::styled(
+                    &state.name,
+                    Style::default().fg(app.theme.foreground),
+                )];
+                if name_focused {
+                    name_spans.push(Span::styled("█", Style::default().fg(app.theme.accent)));
+                }
+                frame.render_widget(
+                    Paragraph::new(Line::from(name_spans)).block(name_block),
+                    chunks[1],
+                );
+            }
 
-            let list_focused = !input_focused;
-            let visible = chunks[1].height.saturating_sub(2) as usize;
+            let list_focused = state.focus == crate::app::ImportFocus::DirectoryList;
+            let list_area = chunks[usize::from(preset_import) + 1];
+            let visible = list_area.height.saturating_sub(2) as usize;
             let window_start = state
                 .browser
                 .selected
@@ -1124,7 +1158,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                         .bg(app.theme.background)
                         .fg(app.theme.foreground),
                 ),
-                chunks[1],
+                list_area,
             );
         }
         Popup::Personas(state) => {

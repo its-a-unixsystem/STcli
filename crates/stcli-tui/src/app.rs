@@ -282,6 +282,7 @@ pub enum ModalTarget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImportFocus {
     PathInput,
+    NameInput,
     DirectoryList,
 }
 
@@ -306,6 +307,7 @@ pub struct ImportArtifactState {
     pub expected_kind: Option<ArtifactKind>,
     pub return_to: ModalTarget,
     pub input: String,
+    pub name: String,
     pub focus: ImportFocus,
     pub browser: FileBrowserState,
     pub completion_hint: Option<String>,
@@ -324,6 +326,7 @@ impl ImportArtifactState {
             expected_kind,
             return_to,
             input: String::new(),
+            name: String::new(),
             focus: ImportFocus::PathInput,
             browser: FileBrowserState {
                 directory,
@@ -345,6 +348,10 @@ impl ImportArtifactState {
             }
             None => matches!(&self.return_to, ModalTarget::NewSession(_)),
         }
+    }
+
+    fn expects_preset(&self) -> bool {
+        self.expected_kind == Some(ArtifactKind::ChatCompletionPreset)
     }
 
     fn allowed_extensions(&self) -> Option<&'static [&'static str]> {
@@ -1516,11 +1523,32 @@ impl App {
                             state.completion_hint = None;
                         }
                         KeyCode::Tab => {
-                            if state.input.is_empty() || !state.tab_complete() {
+                            if state.expects_preset() {
+                                state.focus = ImportFocus::NameInput;
+                            } else if state.input.is_empty() || !state.tab_complete() {
                                 state.focus_directory_list();
                             }
                         }
+                        KeyCode::Down if state.expects_preset() => {
+                            state.focus = ImportFocus::NameInput;
+                        }
                         KeyCode::Down => state.focus_directory_list(),
+                        KeyCode::Enter => {
+                            return self.import_artifact_path(state.clone());
+                        }
+                        _ => {}
+                    },
+                    ImportFocus::NameInput => match key.code {
+                        KeyCode::Backspace => {
+                            state.name.pop();
+                        }
+                        KeyCode::Char(character)
+                            if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            state.name.push(character);
+                        }
+                        KeyCode::Up => state.focus = ImportFocus::PathInput,
+                        KeyCode::Tab | KeyCode::Down => state.focus_directory_list(),
                         KeyCode::Enter => {
                             return self.import_artifact_path(state.clone());
                         }
@@ -1529,7 +1557,11 @@ impl App {
                     ImportFocus::DirectoryList => match key.code {
                         KeyCode::Up | KeyCode::Char('k') => {
                             if state.browser.selected == 0 {
-                                state.focus = ImportFocus::PathInput;
+                                state.focus = if state.expects_preset() {
+                                    ImportFocus::NameInput
+                                } else {
+                                    ImportFocus::PathInput
+                                };
                             } else {
                                 state.browser.selected -= 1;
                             }
@@ -2104,7 +2136,7 @@ impl App {
             self.popup = Some(Popup::ImportArtifact(state));
             return Effect::None;
         }
-        let source = match fs::read(&path) {
+        let mut source = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) => {
                 self.show_error(format!("Failed to read file: {error}"));
@@ -2116,6 +2148,33 @@ impl App {
             self.show_error(message);
             self.popup = Some(Popup::ImportArtifact(state));
             return Effect::None;
+        }
+        if state.expects_preset() {
+            let mut preset: serde_json::Value =
+                serde_json::from_slice(&source).expect("validated preset source is JSON");
+            let name = (!state.name.trim().is_empty())
+                .then(|| state.name.trim().to_owned())
+                .or_else(|| {
+                    ["preset_name", "name"].into_iter().find_map(|field| {
+                        preset
+                            .get(field)
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                            .map(str::to_owned)
+                    })
+                })
+                .or_else(|| {
+                    path.file_stem()
+                        .map(|stem| stem.to_string_lossy().trim().to_owned())
+                        .filter(|stem| !stem.is_empty())
+                })
+                .unwrap_or_else(|| "Preset".to_owned());
+            preset
+                .as_object_mut()
+                .expect("validated preset source is a JSON object")
+                .insert("preset_name".to_owned(), serde_json::Value::String(name));
+            source = serde_json::to_vec(&preset).expect("JSON values are serializable");
         }
         self.import_browser_dir = path
             .parent()
@@ -4635,6 +4694,7 @@ mod tests {
 
         assert_eq!(import_entries(&app), ["..", "sub"]);
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
         assert_eq!(
             import_entries(&app),
@@ -4669,7 +4729,13 @@ mod tests {
         let Some(Popup::ImportArtifact(state)) = &app.popup else {
             panic!("expected Popup::ImportArtifact");
         };
+        assert_eq!(state.focus, ImportFocus::NameInput);
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        let Some(Popup::ImportArtifact(state)) = &app.popup else {
+            panic!("expected Popup::ImportArtifact");
+        };
         assert_eq!(state.focus, ImportFocus::PathInput);
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         let Some(Popup::ImportArtifact(state)) = &app.popup else {
             panic!("expected Popup::ImportArtifact");
@@ -4687,7 +4753,7 @@ mod tests {
         fs::write(browse.join("preset-a.json"), b"{}").unwrap();
         fs::write(browse.join("preset-b.json"), b"{}").unwrap();
         let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
-        open_import_at(&mut app, ArtifactKind::ChatCompletionPreset, &browse);
+        open_import_at(&mut app, ArtifactKind::CharacterCardV2, &browse);
 
         for c in "dow".chars() {
             app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
@@ -4710,7 +4776,7 @@ mod tests {
         assert!(state.input.is_empty());
         assert_eq!(state.focus, ImportFocus::DirectoryList);
 
-        open_import_at(&mut app, ArtifactKind::ChatCompletionPreset, &browse);
+        open_import_at(&mut app, ArtifactKind::CharacterCardV2, &browse);
         for c in "dov".chars() {
             app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
@@ -4720,7 +4786,7 @@ mod tests {
         };
         assert_eq!(state.input, "dove.json");
 
-        open_import_at(&mut app, ArtifactKind::ChatCompletionPreset, &browse);
+        open_import_at(&mut app, ArtifactKind::CharacterCardV2, &browse);
         for c in "preset".chars() {
             app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
@@ -4758,6 +4824,7 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         let effect = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(effect, Effect::None));
         assert!(matches!(app.popup, Some(Popup::ImportArtifact(_))));
@@ -4771,7 +4838,8 @@ mod tests {
         let Effect::Execute(EngineCommand::ImportArtifact { source }) = effect else {
             panic!("expected artifact import command");
         };
-        assert_eq!(source, stcli_testkit::fixtures::preset().as_bytes());
+        let source: serde_json::Value = serde_json::from_slice(&source).unwrap();
+        assert_eq!(source["preset_name"], "Default Roleplay");
         assert_eq!(app.import_browser_dir.as_deref(), Some(browse.as_path()));
 
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));

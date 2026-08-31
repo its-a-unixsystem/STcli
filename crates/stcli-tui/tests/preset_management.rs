@@ -53,6 +53,107 @@ fn render(app: &mut App) -> String {
 }
 
 #[tokio::test]
+async fn preset_import_applies_custom_name_from_the_tui_form() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let preset_path = directory.path().join("embedded-name.json");
+    fs::write(&preset_path, scripted_preset("Embedded")).unwrap();
+    let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+    press(&mut app, KeyCode::Char('P'));
+    press(&mut app, KeyCode::Char('i'));
+
+    let Some(Popup::ImportArtifact(state)) = &mut app.popup else {
+        panic!("expected preset import dialog");
+    };
+    state.input = preset_path.display().to_string();
+    assert!(render(&mut app).contains("Name"));
+    press(&mut app, KeyCode::Tab);
+    for character in "Custom".chars() {
+        press(&mut app, KeyCode::Char(character));
+    }
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Up);
+
+    let effect = press(&mut app, KeyCode::Enter);
+    let EngineResult::ArtifactBundle { primary, .. } = execute(&mut app, effect).await else {
+        panic!("expected artifact import result");
+    };
+
+    let EngineInspection::ArtifactSource(source) = app
+        .engine
+        .inspect(EngineQuery::ArtifactSource {
+            revision_hash: primary.revision_hash,
+        })
+        .unwrap()
+    else {
+        panic!("expected imported preset source");
+    };
+    let source: serde_json::Value = serde_json::from_slice(&source).unwrap();
+    assert_eq!(source["preset_name"], "Custom");
+    let Some(Popup::Presets(state)) = &app.popup else {
+        panic!("expected preset picker after import");
+    };
+    assert_eq!(state.rows[state.selected - 1].label, "Custom");
+}
+
+#[tokio::test]
+async fn preset_import_uses_filename_stem_when_name_is_omitted() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let preset_path = directory.path().join("filename-fallback.json");
+    let mut preset: serde_json::Value =
+        serde_json::from_slice(&scripted_preset("Embedded")).unwrap();
+    preset.as_object_mut().unwrap().remove("name");
+    fs::write(&preset_path, serde_json::to_vec(&preset).unwrap()).unwrap();
+    let mut store = Store::open(&database).unwrap();
+    store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    drop(store);
+    let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+    press(&mut app, KeyCode::Char('P'));
+    press(&mut app, KeyCode::Char('i'));
+    let Some(Popup::ImportArtifact(state)) = &mut app.popup else {
+        panic!("expected preset import dialog");
+    };
+    state.input = preset_path.display().to_string();
+
+    let effect = press(&mut app, KeyCode::Enter);
+    let EngineResult::ArtifactBundle { primary, .. } = execute(&mut app, effect).await else {
+        panic!("expected artifact import result");
+    };
+
+    let EngineInspection::ArtifactSource(source) = app
+        .engine
+        .inspect(EngineQuery::ArtifactSource {
+            revision_hash: primary.revision_hash,
+        })
+        .unwrap()
+    else {
+        panic!("expected imported preset source");
+    };
+    let source: serde_json::Value = serde_json::from_slice(&source).unwrap();
+    assert_eq!(source["preset_name"], "filename-fallback");
+    let Some(Popup::Presets(state)) = &app.popup else {
+        panic!("expected preset picker after import");
+    };
+    assert_eq!(state.rows[state.selected - 1].label, "filename-fallback");
+
+    app.open_new_session_popup();
+    let Some(Popup::NewSession(state)) = &app.popup else {
+        panic!("expected new session form");
+    };
+    assert!(
+        state
+            .presets
+            .iter()
+            .any(|preset| preset.label == "filename-fallback")
+    );
+}
+
+#[tokio::test]
 async fn preset_management_covers_import_inspection_filtering_and_navigation() {
     let directory = tempdir().unwrap();
     let database = directory.path().join("stcli.sqlite3");

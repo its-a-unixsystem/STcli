@@ -33,22 +33,24 @@ To duplicate a preset, highlight it and press `c`. Set the new name, temperature
 
 ## Browse and import artifact files
 
-The artifact import dialog combines a path input bar with an interactive directory browser. It opens when importing character cards or presets from the TUI.
+The artifact import dialog combines a path input bar with an interactive directory browser. It opens when importing character cards or presets from the TUI. Preset imports also show an optional Name field.
 
 | Key | Action |
 |---|---|
 | `Up` / `Down`, `k` / `j` | Move the selection in the directory list |
 | `Enter`, `Right`, `l` | Open a directory or import the highlighted file |
 | `Backspace`, `Left`, `h` | Move up to the parent directory (also via the `..` entry) |
-| `Tab` | In the path bar: complete the path segment, or move focus to the list. In the list: return focus to the path bar |
-| `Down` | Move focus from the path bar to the directory list |
-| `Up` on the top row | Return focus from the list to the path bar |
+| `Tab` | For presets: move from Path to Name to the directory list. For character cards: complete the path segment, or move focus to the list. In the list: return focus to Path |
+| `Down` | Move from Path to Name for presets, then to the directory list |
+| `Up` on the top row | Return focus from the list to Name for presets, then to Path |
 | `.` or `Ctrl+H` | Toggle hidden dotfiles in the directory list |
 | `Esc` | Cancel and return to the previous dialog |
 
 The browser lists only files matching the expected artifact format: `.png`, `.apng`, `.webp`, `.charx`, and `.json` for character cards, `.json` for presets. Subdirectories always remain visible and traversable. Hidden dotfiles are hidden by default. Directories that cannot be read show an `[Access Denied]` notice, and the `▲`/`▼` markers in the list title indicate more entries above or below.
 
-Typing in the path bar supports `~/` home expansion and relative paths resolved against the browsed directory. Pressing `Tab` completes the current path segment: a single match completes in place (directories gain a trailing `/`), and ambiguous prefixes extend to the longest common prefix and show a match count. Entering a directory path navigates the browser into it; entering a file path imports the file.
+Typing in the path bar supports `~/` home expansion and relative paths resolved against the browsed directory. For character-card imports, pressing `Tab` completes the current path segment: a single match completes in place (directories gain a trailing `/`), and ambiguous prefixes extend to the longest common prefix and show a match count. Entering a directory path navigates the browser into it; entering a file path imports the file.
+
+When importing a preset, enter a custom Name to set its `preset_name`. If Name is empty, STcli uses the embedded `preset_name`, then the embedded `name`, then the filename stem. This keeps the preset label readable in the preset picker and New Session form.
 
 The browser reopens in the directory visited by the previous import for the duration of the application session.
 
@@ -58,7 +60,7 @@ A preset with embedded regex scripts produces an import warning. Import does not
 
 ## Import while creating a session
 
-In New Session, move to the Preset field and cycle past the imported presets to `<Import preset...>`. Press `Enter`, enter the file path, and import it. New Session reopens with the imported preset selected.
+In New Session, move to the Preset field and cycle past the imported presets to `<Import preset...>`. Press `Enter`, enter the file path and an optional custom name, and import it. New Session reopens with the imported preset selected.
 
 The Character field uses the same artifact import dialog. Each caller resumes at its previous modal after a successful import or cancellation.
 
