@@ -54,6 +54,10 @@ Write them like this:
 Was a new user facing behavior introduced or an existing changed? 
 You must add which documentation is affected and requires update in the acceptance criterias!
 
+#### test update
+
+Are any tests outdated due to the change? If yes, you must add which tests need to get changed or updated.
+
 ### finishing
 
 If the ticket contains acceptance criteria (marked with AC1, AC2, and so on) you *MUST* fulfill those, otherwise your work is NOT done.
