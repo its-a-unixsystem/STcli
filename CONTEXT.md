@@ -115,8 +115,8 @@ A capability-limited, sandboxed Wasm module that contributes declarative behavio
 _Avoid_: Extension, add-on, native extension
 
 **Extension**:
-A SillyTavern JavaScript UI extension or server plugin. Extensions are out of scope for the MVP; the v1.0 compatibility bridge targets a sandboxed subset of documented SillyTavern extension APIs.
-_Avoid_: Plugin, add-on, Runtime Extension
+A SillyTavern JavaScript extension run headless by STcli through a compatibility bridge. It observes a read-only view of session state and influences a turn only through sanctioned surfaces. Distinct from a Plugin. Out of scope for the MVP; targeted by the v1.0 compatibility bridge.
+_Avoid_: Plugin, add-on, native extension, Runtime Extension
 
 **Logical Deletion**:
 A tombstone event appended to the Turn Trace that hides a Turn, Candidate, or Branch from the Session Projection without physically removing it from the database.
