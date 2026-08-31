@@ -986,7 +986,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 render_preset_details(frame, app, columns[1], detail.as_ref(), details_scroll);
                 frame.render_widget(
                     Paragraph::new(
-                        "Enter select · c copy · i import · d details · / filter · PgUp/PgDn scroll details · Esc close",
+                        "Enter select · c copy · i import · d details · / filter · PgUp/PgDn scroll details · Esc close · → focus order · ↑/↓ navigate order · Space toggle",
                     )
                     .style(
                         Style::default()
@@ -1847,12 +1847,37 @@ fn render_preset_details(
                 Style::default().add_modifier(Modifier::BOLD),
             )),
         ]);
+        let focused_order = match &app.popup {
+            Some(crate::app::Popup::Presets(state)) => state.order_focus,
+            _ => None,
+        };
         lines.extend(
             summary
                 .prompt_order
                 .iter()
                 .enumerate()
-                .map(|(index, prompt)| Line::from(format!("{}. {prompt}", index + 1))),
+                .map(|(index, prompt)| {
+                    let marker = if prompt.marker { " [marker]" } else { "" };
+                    let enabled = if prompt.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    };
+                    let style = if focused_order == Some(index) {
+                        Style::default()
+                            .bg(app.theme.selection)
+                            .fg(app.theme.foreground)
+                            .add_modifier(Modifier::BOLD)
+                    } else if prompt.enabled {
+                        Style::default().fg(app.theme.foreground)
+                    } else {
+                        Style::default().fg(app.theme.muted)
+                    };
+                    Line::from(Span::styled(
+                        format!("{}. {} [{enabled}]{marker}", index + 1, prompt.identifier),
+                        style,
+                    ))
+                }),
         );
         lines.extend([
             Line::from(""),
@@ -1902,6 +1927,17 @@ fn render_preset_details(
     }
     let visible = area.height.saturating_sub(2) as usize;
     let max_scroll = lines.len().saturating_sub(visible);
+    let focused_scroll = match &app.popup {
+        Some(Popup::Presets(state)) => state.order_focus.map(|index| {
+            let line = 8 + index;
+            state
+                .details_scroll
+                .max(line.saturating_add(1).saturating_sub(visible))
+                .min(line.min(max_scroll))
+        }),
+        _ => None,
+    };
+    let details_scroll = focused_scroll.unwrap_or(details_scroll);
     let clamped = details_scroll.min(max_scroll);
     if let Some(Popup::Presets(state)) = &mut app.popup {
         state.details_scroll = clamped;

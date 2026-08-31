@@ -17,6 +17,9 @@ This document describes how STcli processes complex presets, resolves generation
 5. **Dry Run / Execution**: Both Dry Run (`--dry-run`) and live Generation Attempts share the exact same preparation output. Dry Run emits the prepared request, effective settings, and diagnostics without performing provider I/O or state mutations; a live attempt submits the prepared request and commits the effect receipt to the authoritative Turn Trace.
 
 Preset duplication patches only `preset_name`, `temperature`, the `max_context`/`openai_max_context` compatibility pair, `openai_max_tokens`, and `use_sysprompt`. Prompt slots, order profiles such as `character_id: 100001`, extension metadata, and embedded regex script values are copied unchanged. Unchanged script content therefore retains the same canonical script digest and does not require a new Preset Script Grant.
+Prompt Order Entry toggles are preset-level edits. From the Chat picker, focusing an order entry and pressing `Space` creates one new immutable, content-addressed Artifact Revision containing the changed `enabled` flag(s), preserving all other preset content. The current session is automatically re-pinned through a new Session Configuration Revision; completed turns and prior Generation Attempts retain their original pinned configuration, and other sessions are unaffected until they explicitly re-select the preset. Reapplying an identical change set deduplicates to the existing revision. Disabled entries are excluded from subsequent prompt assembly and Dry Runs. Structural markers such as `chatHistory` may be disabled permissively, with a non-blocking warning in the TUI.
+
+This intentionally diverges from live SillyTavern, where editing a preset file affects chats using that file immediately: STcli revisions make changes auditable and forward-only. Prompt reordering and prompt content authoring remain out of scope.
 
 ---
 

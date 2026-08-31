@@ -57,12 +57,19 @@ pub struct PresetOption {
     pub summary: PresetSummary,
 }
 
+#[derive(Clone, Debug)]
+pub struct PromptOrderOption {
+    pub identifier: String,
+    pub enabled: bool,
+    pub marker: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct PresetSummary {
     pub prompt_count: usize,
     pub order_profile: String,
     pub system_prompt_enabled: bool,
-    pub prompt_order: Vec<String>,
+    pub prompt_order: Vec<PromptOrderOption>,
     pub temperature: Option<String>,
     pub top_p: Option<String>,
     pub max_tokens: Option<String>,
@@ -103,12 +110,21 @@ impl PresetSummary {
                 preset
                     .order
                     .iter()
-                    .map(|entry| {
-                        if entry.enabled {
-                            entry.identifier.clone()
-                        } else {
-                            format!("{} (disabled)", entry.identifier)
-                        }
+                    .map(|entry| PromptOrderOption {
+                        identifier: entry.identifier.clone(),
+                        enabled: entry.enabled,
+                        marker: value
+                            .get("prompts")
+                            .and_then(serde_json::Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .find(|prompt| {
+                                prompt.get("identifier").and_then(serde_json::Value::as_str)
+                                    == Some(entry.identifier.as_str())
+                            })
+                            .and_then(|prompt| prompt.get("marker"))
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false),
                     })
                     .collect::<Vec<_>>()
             })
@@ -237,6 +253,7 @@ pub struct PresetPickerState {
     pub filtering: bool,
     pub show_details: bool,
     pub details_scroll: usize,
+    pub order_focus: Option<usize>,
 }
 
 impl PresetPickerState {
@@ -259,6 +276,7 @@ impl PresetPickerState {
         if self.selected != index {
             self.selected = index;
             self.details_scroll = 0;
+            self.order_focus = None;
         }
     }
 
@@ -1475,23 +1493,76 @@ impl App {
                     state.select_filtered_revision(selected_revision.as_ref());
                 } else {
                     match key.code {
-                        KeyCode::PageDown if state.show_details => {
+                        KeyCode::PageDown if state.show_details && state.order_focus.is_none() => {
                             state.details_scroll += 10;
                         }
-                        KeyCode::PageUp if state.show_details => {
+                        KeyCode::PageUp if state.show_details && state.order_focus.is_none() => {
                             state.details_scroll = state.details_scroll.saturating_sub(10);
                         }
-                        KeyCode::Down
-                            if state.show_details
-                                && key.modifiers.contains(KeyModifiers::SHIFT) =>
-                        {
-                            state.details_scroll += 1;
+                        KeyCode::Down if state.show_details => {
+                            let order_len = state
+                                .selected
+                                .checked_sub(1)
+                                .and_then(|index| state.filtered_rows().get(index).copied())
+                                .map_or(0, |row| row.summary.prompt_order.len());
+                            if let Some(selected_order) = state.order_focus.as_mut() {
+                                *selected_order =
+                                    (*selected_order + 1).min(order_len.saturating_sub(1));
+                            } else if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                state.details_scroll += 1;
+                            } else {
+                                state.select((state.selected + 1).min(state.filtered_rows().len()));
+                            }
                         }
-                        KeyCode::Up
-                            if state.show_details
-                                && key.modifiers.contains(KeyModifiers::SHIFT) =>
-                        {
-                            state.details_scroll = state.details_scroll.saturating_sub(1);
+                        KeyCode::Up if state.show_details => {
+                            if let Some(selected_order) = state.order_focus.as_mut() {
+                                *selected_order = selected_order.saturating_sub(1);
+                            } else if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                state.details_scroll = state.details_scroll.saturating_sub(1);
+                            } else {
+                                state.select(state.selected.saturating_sub(1));
+                            }
+                        }
+                        KeyCode::Right if state.show_details => {
+                            if state
+                                .selected
+                                .checked_sub(1)
+                                .and_then(|index| state.filtered_rows().get(index).copied())
+                                .is_some_and(|row| !row.summary.prompt_order.is_empty())
+                            {
+                                state.order_focus = Some(0);
+                            }
+                        }
+                        KeyCode::Left if state.order_focus.is_some() => {
+                            state.order_focus = None;
+                        }
+                        KeyCode::Char(' ') if state.show_details && state.order_focus.is_some() => {
+                            let selected_order = state.order_focus.expect("order focus exists");
+                            let Some(row) = state
+                                .selected
+                                .checked_sub(1)
+                                .and_then(|index| state.filtered_rows().get(index).copied())
+                            else {
+                                return Effect::None;
+                            };
+                            let Some(entry) = row.summary.prompt_order.get(selected_order) else {
+                                return Effect::None;
+                            };
+                            let Some(history) = &self.history else {
+                                return Effect::None;
+                            };
+                            if !matches!(state.return_to, ModalTarget::Chat) {
+                                self.show_error("Prompt order can only be changed from Chat");
+                                return Effect::None;
+                            }
+                            let mut changes = BTreeMap::new();
+                            changes.insert(entry.identifier.clone(), !entry.enabled);
+                            return Effect::Execute(EngineCommand::UpdatePromptOrder {
+                                session_id: Some(history.session.session_id),
+                                revision_hash: row.record.revision_hash.clone(),
+                                character_id: Some(CHAT_COMPLETION_CHARACTER_ID),
+                                changes,
+                            });
                         }
                         KeyCode::Up | KeyCode::Char('k') => {
                             state.select(state.selected.saturating_sub(1))
@@ -1519,6 +1590,7 @@ impl App {
                         }
                         KeyCode::Char('d') | KeyCode::Tab => {
                             state.show_details = !state.show_details;
+                            state.order_focus = None;
                         }
                         KeyCode::Enter => {
                             let revision = state.selected_revision();
@@ -3122,6 +3194,7 @@ impl App {
             filtering: false,
             show_details: false,
             details_scroll: 0,
+            order_focus: None,
         })));
     }
 
@@ -3468,6 +3541,53 @@ impl App {
                     self.show_info(status);
                     self.popup = None;
                 }
+                true
+            }
+            Ok(EngineResult::PromptOrderUpdated {
+                artifact,
+                configuration,
+            }) => {
+                let Some(Popup::Presets(mut picker)) = self.popup.take() else {
+                    if let Err(error) = self.reload_history() {
+                        self.show_error(error.to_string());
+                    }
+                    self.show_info("Updated prompt order");
+                    return true;
+                };
+                picker.filter.clear();
+                picker.filtering = false;
+                picker.rows = self.query_preset_options().unwrap_or_else(|error| {
+                    self.show_error(error.to_string());
+                    Vec::new()
+                });
+                picker.selected = picker
+                    .rows
+                    .iter()
+                    .position(|row| row.record.revision_hash == artifact.revision_hash)
+                    .map_or(0, |index| index + 1);
+                picker.details_scroll = 0;
+                picker.order_focus = None;
+                if configuration.is_some()
+                    && let Err(error) = self.reload_history()
+                {
+                    self.show_error(error.to_string());
+                }
+                let marker_warning = picker
+                    .rows
+                    .get(picker.selected.saturating_sub(1))
+                    .is_some_and(|row| {
+                        row.summary
+                            .prompt_order
+                            .iter()
+                            .any(|entry| entry.marker && !entry.enabled)
+                    });
+                let message = if marker_warning {
+                    "Updated prompt order (warning: a structural marker is disabled)"
+                } else {
+                    "Updated prompt order"
+                };
+                self.show_info(message);
+                self.popup = Some(Popup::Presets(picker));
                 true
             }
             Ok(_) => {

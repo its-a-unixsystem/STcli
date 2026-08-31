@@ -117,6 +117,10 @@ impl PromptPreset {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_owned(),
+                    marker: prompt
+                        .get("marker")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                     in_chat_depth: match prompt.get("injection_position").and_then(Value::as_i64) {
                         Some(1) => Some(
                             prompt
@@ -146,6 +150,8 @@ pub struct PresetPrompt {
     pub identifier: String,
     pub role: ChatRole,
     pub content: String,
+    #[serde(default)]
+    pub marker: bool,
     pub in_chat_depth: Option<usize>,
     pub in_chat_order: usize,
 }

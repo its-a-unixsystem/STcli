@@ -360,6 +360,77 @@ impl Store {
         let source = self.export_artifact(revision_hash)?;
         decode_artifact(&source)
     }
+    /// Create an immutable preset revision with Prompt Order Entry enabled flags changed.
+    pub fn patch_prompt_order(
+        &mut self,
+        revision_hash: &ContentHash,
+        character_id: Option<u64>,
+        changes: &std::collections::BTreeMap<String, bool>,
+    ) -> Result<ArtifactRecord, ArtifactError> {
+        let original = self
+            .artifact(revision_hash)?
+            .ok_or_else(|| ArtifactError::NotFound(revision_hash.clone()))?;
+        let source = self.export_artifact(revision_hash)?;
+        let mut decoded = decode_artifact(&source)?;
+        if decoded.kind != ArtifactKind::ChatCompletionPreset {
+            return Err(ArtifactError::ChatCompletionPresetRequired(decoded.kind));
+        }
+        let object = decoded
+            .semantic
+            .as_object_mut()
+            .ok_or(ArtifactError::ExpectedObject)?;
+        let prompt_order = object
+            .get_mut("prompt_order")
+            .ok_or(ArtifactError::MissingField("prompt_order"))?;
+        let order = if let Some(profiles) = prompt_order.as_array_mut() {
+            let target = character_id.unwrap_or(crate::CHAT_COMPLETION_CHARACTER_ID);
+            let profile_index = profiles
+                .iter()
+                .position(|profile| {
+                    profile
+                        .get("character_id")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|id| id == target)
+                })
+                .or_else(|| {
+                    profiles
+                        .iter()
+                        .position(|profile| profile.get("order").is_some())
+                });
+            if let Some(index) = profile_index {
+                profiles
+                    .get_mut(index)
+                    .and_then(|profile| profile.get_mut("order"))
+            } else {
+                Some(prompt_order)
+            }
+        } else {
+            prompt_order.get_mut("order")
+        };
+        let Some(Value::Array(order)) = order else {
+            return Err(ArtifactError::InvalidField("prompt_order"));
+        };
+        let mut changed = false;
+        for entry in order {
+            let Some(identifier) = entry.get("identifier").and_then(Value::as_str) else {
+                continue;
+            };
+            if let Some(enabled) = changes.get(identifier) {
+                if entry.get("enabled").and_then(Value::as_bool) != Some(*enabled) {
+                    changed = true;
+                }
+                if let Some(entry) = entry.as_object_mut() {
+                    entry.insert("enabled".to_owned(), Value::Bool(*enabled));
+                }
+            }
+        }
+        if !changed {
+            return Ok(original);
+        }
+        let patched =
+            serde_json::to_vec_pretty(&decoded.semantic).map_err(ArtifactError::Canonicalize)?;
+        self.import_artifact(&patched)
+    }
 }
 
 fn insert_artifact_revision(

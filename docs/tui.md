@@ -24,7 +24,11 @@ Press `P` from the Sessions screen or Chat view to open the prompt preset picker
 
 | Key | Action |
 |---|---|
-| `Up` / `Down`, `k` / `j` | Move the selection |
+| `Up` / `Down`, `k` / `j` | Move the preset selection |
+| `Right` | Enter the prompt-order details list |
+| `Left` | Return focus to the preset list |
+| `Up` / `Down` (in details) | Move through prompt-order entries |
+| `Space` (in details) | Toggle the focused Prompt Order Entry immediately |
 | `Enter` | Select the highlighted preset in Chat; close the picker on Sessions |
 | `i` | Import a preset from a file |
 | `c` | Copy the highlighted preset and open the tuning form |
@@ -35,9 +39,11 @@ Press `P` from the Sessions screen or Chat view to open the prompt preset picker
 | `Esc` | Clear an active filter, or close the picker |
 | `n` | From Sessions, open New Session with the highlighted preset selected |
 
-The detail inspector shows the prompt count, selected order profile, system-prompt state, prompt order, `temperature`, `top_p`, `max_tokens`, and embedded regex scripts. Script entries are marked `[inert — requires grant]`. When the metadata exceeds the pane, scroll it with `PgDn`/`PgUp` or `Shift+Down`/`Shift+Up`; the scroll position resets whenever you move to another preset. The mouse wheel scrolls the inspector while it is open.
+The detail inspector shows the prompt count, selected order profile, system-prompt state, prompt order, `temperature`, `top_p`, `max_tokens`, and embedded regex scripts. Prompt Order Entries show their current enabled state; toggling applies immediately, shows a status toast, and in Chat re-pins only the current session to the new immutable preset revision. Script entries are marked `[inert — requires grant]`. When the metadata exceeds the pane, scroll it with `PgDn`/`PgUp` or `Shift+Down`/`Shift+Up`; the scroll position resets whenever you move to another preset. The mouse wheel scrolls the inspector while it is open.
 
-To duplicate a preset, highlight it and press `c`. Set the new name, temperature, maximum context tokens, maximum response tokens, and system-prompt state. Press `Ctrl+S` to import the clone as a new immutable Artifact Revision. The picker reopens with the clone highlighted.
+Disabling a structural marker such as `chatHistory`, `worldInfoBefore`, or `worldInfoAfter` is permitted for compatibility, but the picker warns that it may be accidental.
+
+To duplicate a preset, highlight it and press `c`. Set the new name, temperature, maximum context tokens, maximum response tokens, and `use_sysprompt`. Press `Ctrl+S` to import the clone as a new immutable Artifact Revision. The picker reopens with the clone highlighted.
 
 ## Browse and import artifact files
 

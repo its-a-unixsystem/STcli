@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -536,6 +536,44 @@ impl StcliEngine {
             } => Ok(EngineResult::Configuration(Box::new(
                 store.update_session_configuration(session_id, *configuration)?,
             ))),
+            EngineCommand::UpdatePromptOrder {
+                session_id,
+                revision_hash,
+                character_id,
+                changes,
+            } => {
+                let mut current = if let Some(session_id) = session_id {
+                    let session = store
+                        .session(session_id)?
+                        .ok_or(SessionError::SessionNotFound(session_id))?;
+                    let configuration = store.configuration(&session.current_config_hash)?.ok_or(
+                        SessionError::ConfigurationNotFound(session.current_config_hash.clone()),
+                    )?;
+                    if configuration.configuration.prompt_preset_revision.as_ref()
+                        != Some(&revision_hash)
+                    {
+                        return Err(EngineError::PromptPresetNotPinned(session_id));
+                    }
+                    Some((session_id, configuration.configuration))
+                } else {
+                    None
+                };
+                let artifact = store.patch_prompt_order(&revision_hash, character_id, &changes)?;
+                let configuration = if let Some((session_id, mut configuration)) = current.take() {
+                    if artifact.revision_hash == revision_hash {
+                        None
+                    } else {
+                        configuration.prompt_preset_revision = Some(artifact.revision_hash.clone());
+                        Some(store.update_session_configuration(session_id, configuration)?)
+                    }
+                } else {
+                    None
+                };
+                Ok(EngineResult::PromptOrderUpdated {
+                    artifact,
+                    configuration,
+                })
+            }
             EngineCommand::DryRunSend {
                 session_id,
                 branch_id,
@@ -762,6 +800,12 @@ pub enum EngineCommand {
         branch_id: EntityId,
         greeting_index: usize,
     },
+    UpdatePromptOrder {
+        session_id: Option<EntityId>,
+        revision_hash: ContentHash,
+        character_id: Option<u64>,
+        changes: BTreeMap<String, bool>,
+    },
     UpdateConfiguration {
         session_id: EntityId,
         configuration: Box<SessionConfiguration>,
@@ -786,6 +830,7 @@ pub enum EngineCommand {
     },
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "result", content = "data", rename_all = "kebab-case")]
 pub enum EngineResult {
@@ -815,6 +860,10 @@ pub enum EngineResult {
     Attempt(Box<AttemptProjection>),
     Branch(BranchProjection),
     Configuration(Box<SessionConfigurationRecord>),
+    PromptOrderUpdated {
+        artifact: ArtifactRecord,
+        configuration: Option<SessionConfigurationRecord>,
+    },
     EditedCandidate(EditedCandidate),
     DryRun(Box<DryRunResult>),
 }
@@ -1178,10 +1227,12 @@ pub enum EngineError {
     },
     #[error("grants exceed the Plugin manifest request")]
     PluginGrantExceeded,
-    #[error("existing grants exceed the upgraded Plugin manifest request")]
-    PluginUpgradeGrantExceeded,
     #[error("Plugin '{0}' is not pinned by the Session")]
     PluginNotPinned(String),
+    #[error("prompt preset revision is not pinned by Session {0}")]
+    PromptPresetNotPinned(EntityId),
+    #[error("existing grants exceed the upgraded Plugin manifest request")]
+    PluginUpgradeGrantExceeded,
     #[error("current Session Configuration Revision was not found")]
     SelectedSessionConfigurationMissing,
     #[error("Branch does not belong to the requested Session")]
