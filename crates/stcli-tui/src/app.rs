@@ -279,11 +279,285 @@ pub enum ModalTarget {
     Presets(Box<PresetPickerState>),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImportFocus {
+    PathInput,
+    DirectoryList,
+}
+
+#[derive(Clone, Debug)]
+pub struct DirectoryEntry {
+    pub name: String,
+    pub path: PathBuf,
+    pub is_dir: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct FileBrowserState {
+    pub directory: PathBuf,
+    pub entries: Vec<DirectoryEntry>,
+    pub selected: usize,
+    pub show_hidden: bool,
+    pub access_denied: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct ImportArtifactState {
     pub expected_kind: Option<ArtifactKind>,
     pub return_to: ModalTarget,
     pub input: String,
+    pub focus: ImportFocus,
+    pub browser: FileBrowserState,
+    pub completion_hint: Option<String>,
+}
+
+const CHARACTER_EXTENSIONS: &[&str] = &["png", "apng", "webp", "charx", "json"];
+const PRESET_EXTENSIONS: &[&str] = &["json"];
+
+impl ImportArtifactState {
+    pub fn new(
+        expected_kind: Option<ArtifactKind>,
+        return_to: ModalTarget,
+        directory: PathBuf,
+    ) -> Self {
+        let mut state = Self {
+            expected_kind,
+            return_to,
+            input: String::new(),
+            focus: ImportFocus::PathInput,
+            browser: FileBrowserState {
+                directory,
+                entries: Vec::new(),
+                selected: 0,
+                show_hidden: false,
+                access_denied: false,
+            },
+            completion_hint: None,
+        };
+        state.rescan();
+        state
+    }
+
+    fn expects_character(&self) -> bool {
+        match self.expected_kind {
+            Some(kind) => {
+                kind != ArtifactKind::ChatCompletionPreset && kind != ArtifactKind::Lorebook
+            }
+            None => matches!(&self.return_to, ModalTarget::NewSession(_)),
+        }
+    }
+
+    fn allowed_extensions(&self) -> Option<&'static [&'static str]> {
+        match self.expected_kind {
+            Some(ArtifactKind::ChatCompletionPreset) | Some(ArtifactKind::Lorebook) => {
+                Some(PRESET_EXTENSIONS)
+            }
+            Some(_) => Some(CHARACTER_EXTENSIONS),
+            None if self.expects_character() => Some(CHARACTER_EXTENSIONS),
+            None => None,
+        }
+    }
+
+    fn rescan(&mut self) {
+        self.browser.entries = scan_directory(
+            &self.browser.directory,
+            self.browser.show_hidden,
+            self.allowed_extensions(),
+            &mut self.browser.access_denied,
+        );
+        self.browser.selected = 0;
+        self.completion_hint = None;
+    }
+
+    fn navigate(&mut self, directory: PathBuf) {
+        self.browser.directory = fs::canonicalize(&directory).unwrap_or(directory);
+        self.rescan();
+    }
+
+    fn navigate_parent(&mut self) {
+        if let Some(parent) = self.browser.directory.parent().map(Path::to_path_buf) {
+            self.navigate(parent);
+        }
+    }
+
+    fn resolve_input(&self) -> PathBuf {
+        let expanded = expand_home_path(self.input.trim());
+        if expanded.is_absolute() {
+            expanded
+        } else {
+            self.browser.directory.join(expanded)
+        }
+    }
+
+    fn focus_directory_list(&mut self) {
+        if !self.input.trim().is_empty() {
+            let expanded = self.resolve_input();
+            if expanded.is_dir() {
+                self.navigate(expanded);
+                self.input.clear();
+            }
+        }
+        self.focus = ImportFocus::DirectoryList;
+        self.completion_hint = None;
+    }
+
+    /// Attempts shell-style segment completion. Returns `false` when no
+    /// progress or new hint is possible, letting `Tab` shift focus instead.
+    fn tab_complete(&mut self) -> bool {
+        let input = self.input.clone();
+        let (dir_part, prefix) = match input.rfind('/') {
+            Some(index) => (&input[..=index], &input[index + 1..]),
+            None => ("", input.as_str()),
+        };
+        let base = if dir_part.is_empty() {
+            self.browser.directory.clone()
+        } else {
+            let expanded = expand_home_path(dir_part);
+            if expanded.is_absolute() {
+                expanded
+            } else {
+                self.browser.directory.join(expanded)
+            }
+        };
+        let Ok(read) = fs::read_dir(&base) else {
+            return false;
+        };
+        let mut matches: Vec<(String, bool)> = read
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !name.starts_with(prefix) || (name.starts_with('.') && !prefix.starts_with('.'))
+                {
+                    return None;
+                }
+                let is_dir = entry
+                    .file_type()
+                    .map(|file_type| {
+                        file_type.is_dir()
+                            || (file_type.is_symlink()
+                                && entry.metadata().map(|meta| meta.is_dir()).unwrap_or(false))
+                    })
+                    .unwrap_or(false);
+                Some((name, is_dir))
+            })
+            .collect();
+        if matches.is_empty() {
+            return false;
+        }
+        matches.sort();
+        if matches.len() == 1 {
+            let (name, is_dir) = &matches[0];
+            let mut completed = format!("{dir_part}{name}");
+            if *is_dir {
+                completed.push('/');
+            }
+            if completed == self.input {
+                return false;
+            }
+            self.input = completed;
+            self.completion_hint = None;
+            return true;
+        }
+        let common = longest_common_prefix(matches.iter().map(|(name, _)| name.as_str()));
+        let progressed = common.len() > prefix.len();
+        if progressed {
+            self.input = format!("{dir_part}{common}");
+        }
+        let hint = format!("{} matches", matches.len());
+        let new_hint = self.completion_hint.as_deref() != Some(hint.as_str());
+        self.completion_hint = Some(hint);
+        progressed || new_hint
+    }
+}
+
+fn scan_directory(
+    directory: &Path,
+    show_hidden: bool,
+    extensions: Option<&[&str]>,
+    access_denied: &mut bool,
+) -> Vec<DirectoryEntry> {
+    let mut entries = Vec::new();
+    if directory.parent().is_some() {
+        entries.push(DirectoryEntry {
+            name: "..".to_owned(),
+            path: directory.join(".."),
+            is_dir: true,
+        });
+    }
+    let read = match fs::read_dir(directory) {
+        Ok(read) => read,
+        Err(_) => {
+            *access_denied = true;
+            return entries;
+        }
+    };
+    *access_denied = false;
+    let mut directories = Vec::new();
+    let mut files = Vec::new();
+    for entry in read.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !show_hidden && name.starts_with('.') {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let is_dir = file_type.is_dir()
+            || (file_type.is_symlink()
+                && entry.metadata().map(|meta| meta.is_dir()).unwrap_or(false));
+        let path = entry.path();
+        if is_dir {
+            directories.push(DirectoryEntry {
+                name,
+                path,
+                is_dir: true,
+            });
+        } else if extension_allowed(&name, extensions) {
+            files.push(DirectoryEntry {
+                name,
+                path,
+                is_dir: false,
+            });
+        }
+    }
+    let by_name = |left: &DirectoryEntry, right: &DirectoryEntry| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.name.cmp(&right.name))
+    };
+    directories.sort_by(by_name);
+    files.sort_by(by_name);
+    entries.extend(directories);
+    entries.extend(files);
+    entries
+}
+
+fn extension_allowed(name: &str, extensions: Option<&[&str]>) -> bool {
+    match extensions {
+        None => true,
+        Some(extensions) => Path::new(name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                extensions
+                    .iter()
+                    .any(|allowed| extension.eq_ignore_ascii_case(allowed))
+            }),
+    }
+}
+
+fn longest_common_prefix<'a>(mut names: impl Iterator<Item = &'a str>) -> String {
+    let Some(first) = names.next() else {
+        return String::new();
+    };
+    let mut prefix = first.to_owned();
+    for name in names {
+        while !name.starts_with(&prefix) {
+            prefix.pop();
+        }
+    }
+    prefix
 }
 
 #[derive(Clone, Debug)]
@@ -460,6 +734,7 @@ pub struct App {
     pub hit_targets: Vec<HitTarget>,
     toast_timeout: Duration,
     pub config_dir: Option<PathBuf>,
+    import_browser_dir: Option<PathBuf>,
 }
 
 impl App {
@@ -495,6 +770,7 @@ impl App {
             hit_targets: Vec::new(),
             toast_timeout,
             config_dir: None,
+            import_browser_dir: None,
         };
         app.reload_sessions()?;
         if let Some(session_id) = direct_session
@@ -1176,11 +1452,10 @@ impl App {
                             return Effect::None;
                         }
                         KeyCode::Char('i') => {
-                            self.popup = Some(Popup::ImportArtifact(ImportArtifactState {
-                                expected_kind: Some(ArtifactKind::ChatCompletionPreset),
-                                return_to: ModalTarget::Presets(state.clone()),
-                                input: String::new(),
-                            }));
+                            self.open_import_artifact(
+                                Some(ArtifactKind::ChatCompletionPreset),
+                                ModalTarget::Presets(state.clone()),
+                            );
                             return Effect::None;
                         }
                         KeyCode::Char('d') | KeyCode::Tab => {
@@ -1227,87 +1502,71 @@ impl App {
                     }
                 }
             }
-            Popup::ImportArtifact(state) => match key.code {
-                KeyCode::Backspace => {
-                    state.input.pop();
-                }
-                KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    state.input.push(character);
-                }
-                KeyCode::Enter => {
-                    let path_str = state.input.trim();
-                    if path_str.is_empty() {
-                        self.show_error("Path cannot be empty");
-                        self.popup = Some(Popup::ImportArtifact(state.clone()));
-                        return Effect::None;
-                    }
-                    let expanded = if path_str == "~" {
-                        std::env::var("HOME")
-                            .map(PathBuf::from)
-                            .unwrap_or_else(|_| PathBuf::from(path_str))
-                    } else if let Some(stripped) = path_str.strip_prefix("~/") {
-                        std::env::var("HOME")
-                            .map(|home| Path::new(&home).join(stripped))
-                            .unwrap_or_else(|_| PathBuf::from(path_str))
-                    } else {
-                        PathBuf::from(path_str)
-                    };
-                    if !expanded.exists() {
-                        self.show_error(format!("File does not exist: {}", expanded.display()));
-                        self.popup = Some(Popup::ImportArtifact(state.clone()));
-                        return Effect::None;
-                    }
-                    let source = match fs::read(&expanded) {
-                        Ok(bytes) => bytes,
-                        Err(error) => {
-                            self.show_error(format!("Failed to read file: {error}"));
-                            self.popup = Some(Popup::ImportArtifact(state.clone()));
-                            return Effect::None;
+            Popup::ImportArtifact(state) => {
+                match state.focus {
+                    ImportFocus::PathInput => match key.code {
+                        KeyCode::Backspace => {
+                            state.input.pop();
+                            state.completion_hint = None;
                         }
-                    };
-                    let charx_candidate = state.expected_kind.is_none()
-                        && matches!(&state.return_to, ModalTarget::NewSession(_))
-                        && source.starts_with(b"PK\x03\x04");
-                    if charx_candidate {
-                        self.popup = Some(Popup::ImportArtifact(state.clone()));
-                        return Effect::Execute(EngineCommand::ImportArtifact { source });
-                    }
-                    let decoded = match decode_artifact(&source) {
-                        Ok(decoded) => decoded,
-                        Err(error) => {
-                            self.show_error(format!("Failed to decode artifact: {error}"));
-                            self.popup = Some(Popup::ImportArtifact(state.clone()));
-                            return Effect::None;
+                        KeyCode::Char(character)
+                            if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            state.input.push(character);
+                            state.completion_hint = None;
                         }
-                    };
-                    let invalid_kind = match state.expected_kind {
-                        Some(expected) => decoded.kind != expected,
-                        None if matches!(&state.return_to, ModalTarget::NewSession(_)) => {
-                            !matches!(
-                                decoded.kind,
-                                ArtifactKind::CharacterCardV1
-                                    | ArtifactKind::CharacterCardV2
-                                    | ArtifactKind::CharacterCardV3
-                            )
+                        KeyCode::Tab => {
+                            if state.input.is_empty() || !state.tab_complete() {
+                                state.focus_directory_list();
+                            }
                         }
-                        None => false,
-                    };
-                    if invalid_kind {
-                        let expected = state
-                            .expected_kind
-                            .map_or_else(|| "character-card".to_owned(), |kind| kind.to_string());
-                        self.show_error(format!(
-                            "File is a {}, expected a {expected}",
-                            decoded.kind
-                        ));
-                        self.popup = Some(Popup::ImportArtifact(state.clone()));
-                        return Effect::None;
-                    }
-                    self.popup = Some(Popup::ImportArtifact(state.clone()));
-                    return Effect::Execute(EngineCommand::ImportArtifact { source });
+                        KeyCode::Down => state.focus_directory_list(),
+                        KeyCode::Enter => {
+                            return self.import_artifact_path(state.clone());
+                        }
+                        _ => {}
+                    },
+                    ImportFocus::DirectoryList => match key.code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            if state.browser.selected == 0 {
+                                state.focus = ImportFocus::PathInput;
+                            } else {
+                                state.browser.selected -= 1;
+                            }
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            state.browser.selected = (state.browser.selected + 1)
+                                .min(state.browser.entries.len().saturating_sub(1));
+                        }
+                        KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                            if let Some(entry) =
+                                state.browser.entries.get(state.browser.selected).cloned()
+                            {
+                                if entry.is_dir {
+                                    state.navigate(entry.path);
+                                } else {
+                                    return self.import_artifact_file(state.clone(), entry.path);
+                                }
+                            }
+                        }
+                        KeyCode::Backspace | KeyCode::Char('h')
+                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            state.browser.show_hidden = !state.browser.show_hidden;
+                            state.rescan();
+                        }
+                        KeyCode::Backspace | KeyCode::Left => state.navigate_parent(),
+                        KeyCode::Char('h') => state.navigate_parent(),
+                        KeyCode::Char('.') => {
+                            state.browser.show_hidden = !state.browser.show_hidden;
+                            state.rescan();
+                        }
+                        KeyCode::Tab => state.focus = ImportFocus::PathInput,
+                        _ => {}
+                    },
                 }
-                _ => {}
-            },
+                self.import_browser_dir = Some(state.browser.directory.clone());
+            }
             Popup::Personas(state) => match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
                     state.selected = state.selected.saturating_sub(1);
@@ -1594,11 +1853,10 @@ impl App {
                                 if state.characters.is_empty()
                                     || state.selected_character == state.characters.len()
                                 {
-                                    self.popup = Some(Popup::ImportArtifact(ImportArtifactState {
-                                        expected_kind: None,
-                                        return_to: ModalTarget::NewSession(state.clone()),
-                                        input: String::new(),
-                                    }));
+                                    self.open_import_artifact(
+                                        None,
+                                        ModalTarget::NewSession(state.clone()),
+                                    );
                                     return Effect::None;
                                 }
                                 state.focused_field = 1;
@@ -1636,11 +1894,10 @@ impl App {
                                     (state.selected_preset + 1).min(state.presets.len() + 1);
                             }
                             KeyCode::Enter if state.selected_preset == state.presets.len() + 1 => {
-                                self.popup = Some(Popup::ImportArtifact(ImportArtifactState {
-                                    expected_kind: Some(ArtifactKind::ChatCompletionPreset),
-                                    return_to: ModalTarget::NewSession(state.clone()),
-                                    input: String::new(),
-                                }));
+                                self.open_import_artifact(
+                                    Some(ArtifactKind::ChatCompletionPreset),
+                                    ModalTarget::NewSession(state.clone()),
+                                );
                                 return Effect::None;
                             }
                             KeyCode::Enter => state.focused_field = 3,
@@ -1802,6 +2059,70 @@ impl App {
             } => self.open_provider_popup_selected(*return_to, selected_name, selected),
             ModalTarget::Presets(state) => self.popup = Some(Popup::Presets(state)),
         }
+    }
+
+    fn open_import_artifact(
+        &mut self,
+        expected_kind: Option<ArtifactKind>,
+        return_to: ModalTarget,
+    ) {
+        let directory = self
+            .import_browser_dir
+            .clone()
+            .filter(|directory| directory.is_dir())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        self.popup = Some(Popup::ImportArtifact(ImportArtifactState::new(
+            expected_kind,
+            return_to,
+            directory,
+        )));
+    }
+
+    fn import_artifact_path(&mut self, mut state: ImportArtifactState) -> Effect {
+        let path_str = state.input.trim();
+        if path_str.is_empty() {
+            self.show_error("Path cannot be empty");
+            self.popup = Some(Popup::ImportArtifact(state));
+            return Effect::None;
+        }
+        let expanded = state.resolve_input();
+        if expanded.is_dir() {
+            state.navigate(expanded);
+            state.input.clear();
+            state.focus = ImportFocus::DirectoryList;
+            self.import_browser_dir = Some(state.browser.directory.clone());
+            self.popup = Some(Popup::ImportArtifact(state));
+            return Effect::None;
+        }
+        self.import_artifact_file(state, expanded)
+    }
+
+    fn import_artifact_file(&mut self, state: ImportArtifactState, path: PathBuf) -> Effect {
+        if !path.exists() {
+            self.show_error(format!("File does not exist: {}", path.display()));
+            self.popup = Some(Popup::ImportArtifact(state));
+            return Effect::None;
+        }
+        let source = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.show_error(format!("Failed to read file: {error}"));
+                self.popup = Some(Popup::ImportArtifact(state));
+                return Effect::None;
+            }
+        };
+        if let Err(message) = check_artifact_source(&state, &source) {
+            self.show_error(message);
+            self.popup = Some(Popup::ImportArtifact(state));
+            return Effect::None;
+        }
+        self.import_browser_dir = path
+            .parent()
+            .map(Path::to_path_buf)
+            .or(Some(state.browser.directory.clone()));
+        self.popup = Some(Popup::ImportArtifact(state));
+        Effect::Execute(EngineCommand::ImportArtifact { source })
     }
 
     fn profile_config_dir(&self) -> PathBuf {
@@ -2176,15 +2497,11 @@ impl App {
             selected_greeting: 0,
             focused_field: 0,
         });
-        self.popup = if state.characters.is_empty() {
-            Some(Popup::ImportArtifact(ImportArtifactState {
-                expected_kind: None,
-                return_to: ModalTarget::NewSession(state),
-                input: String::new(),
-            }))
+        if state.characters.is_empty() {
+            self.open_import_artifact(None, ModalTarget::NewSession(state));
         } else {
-            Some(Popup::NewSession(state))
-        };
+            self.popup = Some(Popup::NewSession(state));
+        }
     }
 
     fn preselect_new_session_preset(&mut self, revision: Option<&ContentHash>) {
@@ -3287,6 +3604,34 @@ fn sort_sessions(sessions: &mut [SessionSummary], sort: SortKey) {
     });
 }
 
+fn check_artifact_source(state: &ImportArtifactState, source: &[u8]) -> Result<(), String> {
+    let charx_candidate = state.expected_kind.is_none()
+        && matches!(&state.return_to, ModalTarget::NewSession(_))
+        && source.starts_with(b"PK\x03\x04");
+    if charx_candidate {
+        return Ok(());
+    }
+    let decoded =
+        decode_artifact(source).map_err(|error| format!("Failed to decode artifact: {error}"))?;
+    let invalid_kind = match state.expected_kind {
+        Some(expected) => decoded.kind != expected,
+        None if matches!(&state.return_to, ModalTarget::NewSession(_)) => !matches!(
+            decoded.kind,
+            ArtifactKind::CharacterCardV1
+                | ArtifactKind::CharacterCardV2
+                | ArtifactKind::CharacterCardV3
+        ),
+        None => false,
+    };
+    if invalid_kind {
+        let expected = state
+            .expected_kind
+            .map_or_else(|| "character-card".to_owned(), |kind| kind.to_string());
+        return Err(format!("File is a {}, expected a {expected}", decoded.kind));
+    }
+    Ok(())
+}
+
 fn expand_home_path(path: &str) -> PathBuf {
     if path == "~" {
         std::env::var("HOME")
@@ -4215,6 +4560,231 @@ mod tests {
         };
         assert_eq!(session_state.characters.len(), 1);
         assert_eq!(session_state.selected_character, 0);
+    }
+
+    fn open_import_at(app: &mut App, kind: ArtifactKind, directory: &Path) {
+        app.popup = Some(Popup::ImportArtifact(ImportArtifactState::new(
+            Some(kind),
+            ModalTarget::Sessions,
+            directory.to_path_buf(),
+        )));
+    }
+
+    fn import_entries(app: &App) -> Vec<String> {
+        let Some(Popup::ImportArtifact(state)) = &app.popup else {
+            panic!("expected Popup::ImportArtifact");
+        };
+        state
+            .browser
+            .entries
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn import_browser_scans_filters_and_orders_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let browse = directory.path().join("browse");
+        fs::create_dir_all(browse.join("cards")).unwrap();
+        fs::create_dir_all(browse.join("alpha")).unwrap();
+        fs::create_dir_all(browse.join(".hidden")).unwrap();
+        fs::write(
+            browse.join("card.json"),
+            stcli_testkit::fixtures::minimal_card(),
+        )
+        .unwrap();
+        fs::write(browse.join("image.png"), b"png").unwrap();
+        fs::write(browse.join("notes.txt"), b"notes").unwrap();
+        fs::write(browse.join(".secret.json"), b"{}").unwrap();
+        let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+
+        open_import_at(&mut app, ArtifactKind::ChatCompletionPreset, &browse);
+        assert_eq!(import_entries(&app), ["..", "alpha", "cards", "card.json"]);
+        let Some(Popup::ImportArtifact(state)) = &app.popup else {
+            panic!("expected Popup::ImportArtifact");
+        };
+        assert!(!state.browser.access_denied);
+        assert!(state.browser.entries[1].is_dir);
+        assert!(!state.browser.entries[3].is_dir);
+
+        open_import_at(&mut app, ArtifactKind::CharacterCardV2, &browse);
+        assert_eq!(
+            import_entries(&app),
+            ["..", "alpha", "cards", "card.json", "image.png"]
+        );
+    }
+
+    #[test]
+    fn import_browser_navigates_directories_and_toggles_dotfiles() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let browse = directory.path().join("browse");
+        fs::create_dir_all(browse.join("sub")).unwrap();
+        fs::create_dir_all(browse.join(".config")).unwrap();
+        fs::write(
+            browse.join("sub").join("inner.json"),
+            stcli_testkit::fixtures::minimal_card(),
+        )
+        .unwrap();
+        fs::write(browse.join(".secret.json"), b"{}").unwrap();
+        let canonical_browse = fs::canonicalize(&browse).unwrap();
+        let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+        open_import_at(&mut app, ArtifactKind::ChatCompletionPreset, &browse);
+
+        assert_eq!(import_entries(&app), ["..", "sub"]);
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+        assert_eq!(
+            import_entries(&app),
+            ["..", ".config", "sub", ".secret.json"]
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+        assert_eq!(import_entries(&app), ["..", "sub"]);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        let Some(Popup::ImportArtifact(state)) = &app.popup else {
+            panic!("expected Popup::ImportArtifact");
+        };
+        assert_eq!(state.browser.directory, canonical_browse.join("sub"));
+        assert_eq!(import_entries(&app), ["..", "inner.json"]);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        let Some(Popup::ImportArtifact(state)) = &app.popup else {
+            panic!("expected Popup::ImportArtifact");
+        };
+        assert_eq!(state.browser.directory, canonical_browse);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let Some(Popup::ImportArtifact(state)) = &app.popup else {
+            panic!("expected Popup::ImportArtifact");
+        };
+        assert_eq!(state.browser.directory, canonical_browse);
+
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        let Some(Popup::ImportArtifact(state)) = &app.popup else {
+            panic!("expected Popup::ImportArtifact");
+        };
+        assert_eq!(state.focus, ImportFocus::PathInput);
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let Some(Popup::ImportArtifact(state)) = &app.popup else {
+            panic!("expected Popup::ImportArtifact");
+        };
+        assert_eq!(state.focus, ImportFocus::DirectoryList);
+    }
+
+    #[test]
+    fn import_browser_tab_completes_path_segments() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let browse = directory.path().join("browse");
+        fs::create_dir_all(browse.join("downloads")).unwrap();
+        fs::write(browse.join("dove.json"), b"{}").unwrap();
+        fs::write(browse.join("preset-a.json"), b"{}").unwrap();
+        fs::write(browse.join("preset-b.json"), b"{}").unwrap();
+        let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+        open_import_at(&mut app, ArtifactKind::ChatCompletionPreset, &browse);
+
+        for c in "dow".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        let Some(Popup::ImportArtifact(state)) = &app.popup else {
+            panic!("expected Popup::ImportArtifact");
+        };
+        assert_eq!(state.input, "downloads/");
+        assert_eq!(state.focus, ImportFocus::PathInput);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        let Some(Popup::ImportArtifact(state)) = &app.popup else {
+            panic!("expected Popup::ImportArtifact");
+        };
+        assert_eq!(
+            state.browser.directory,
+            fs::canonicalize(browse.join("downloads")).unwrap()
+        );
+        assert!(state.input.is_empty());
+        assert_eq!(state.focus, ImportFocus::DirectoryList);
+
+        open_import_at(&mut app, ArtifactKind::ChatCompletionPreset, &browse);
+        for c in "dov".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        let Some(Popup::ImportArtifact(state)) = &app.popup else {
+            panic!("expected Popup::ImportArtifact");
+        };
+        assert_eq!(state.input, "dove.json");
+
+        open_import_at(&mut app, ArtifactKind::ChatCompletionPreset, &browse);
+        for c in "preset".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        let Some(Popup::ImportArtifact(state)) = &app.popup else {
+            panic!("expected Popup::ImportArtifact");
+        };
+        assert_eq!(state.input, "preset-");
+        assert_eq!(state.completion_hint.as_deref(), Some("2 matches"));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        let Some(Popup::ImportArtifact(state)) = &app.popup else {
+            panic!("expected Popup::ImportArtifact");
+        };
+        assert_eq!(state.focus, ImportFocus::DirectoryList);
+    }
+
+    #[test]
+    fn import_browser_selection_validates_dispatches_and_remembers_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let browse = directory.path().join("browse");
+        fs::create_dir_all(&browse).unwrap();
+        fs::write(
+            browse.join("card.json"),
+            stcli_testkit::fixtures::minimal_card(),
+        )
+        .unwrap();
+        fs::write(
+            browse.join("preset.json"),
+            stcli_testkit::fixtures::preset(),
+        )
+        .unwrap();
+        let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+        open_import_at(&mut app, ArtifactKind::ChatCompletionPreset, &browse);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let effect = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(effect, Effect::None));
+        assert!(matches!(app.popup, Some(Popup::ImportArtifact(_))));
+        assert_eq!(
+            app.toast.as_ref().map(|toast| toast.message.as_str()),
+            Some("File is a character-card-v2, expected a chat-completion-preset")
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let effect = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let Effect::Execute(EngineCommand::ImportArtifact { source }) = effect else {
+            panic!("expected artifact import command");
+        };
+        assert_eq!(source, stcli_testkit::fixtures::preset().as_bytes());
+        assert_eq!(app.import_browser_dir.as_deref(), Some(browse.as_path()));
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.popup.is_none());
+
+        app.open_import_artifact(
+            Some(ArtifactKind::ChatCompletionPreset),
+            ModalTarget::Sessions,
+        );
+        let Some(Popup::ImportArtifact(state)) = &app.popup else {
+            panic!("expected Popup::ImportArtifact");
+        };
+        assert_eq!(state.browser.directory, browse);
     }
 
     #[test]

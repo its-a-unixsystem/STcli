@@ -31,12 +31,26 @@ The detail inspector shows the prompt count, selected order profile, system-prom
 
 To duplicate a preset, highlight it and press `c`. Set the new name, temperature, maximum context tokens, maximum response tokens, and system-prompt state. Press `Ctrl+S` to import the clone as a new immutable Artifact Revision. The picker reopens with the clone highlighted.
 
-## Import a preset
+## Browse and import artifact files
 
-1. Open the prompt preset picker with `P`, then press `i`.
-2. Enter the path to a SillyTavern Chat Completion preset. Paths beginning with `~/` use the current home directory.
-3. Press `Enter` to import.
-4. Review the highlighted preset, then press `Enter` to apply it when working in Chat.
+The artifact import dialog combines a path input bar with an interactive directory browser. It opens when importing character cards or presets from the TUI.
+
+| Key | Action |
+|---|---|
+| `Up` / `Down`, `k` / `j` | Move the selection in the directory list |
+| `Enter`, `Right`, `l` | Open a directory or import the highlighted file |
+| `Backspace`, `Left`, `h` | Move up to the parent directory (also via the `..` entry) |
+| `Tab` | In the path bar: complete the path segment, or move focus to the list. In the list: return focus to the path bar |
+| `Down` | Move focus from the path bar to the directory list |
+| `Up` on the top row | Return focus from the list to the path bar |
+| `.` or `Ctrl+H` | Toggle hidden dotfiles in the directory list |
+| `Esc` | Cancel and return to the previous dialog |
+
+The browser lists only files matching the expected artifact format: `.png`, `.apng`, `.webp`, `.charx`, and `.json` for character cards, `.json` for presets. Subdirectories always remain visible and traversable. Hidden dotfiles are hidden by default. Directories that cannot be read show an `[Access Denied]` notice, and the `▲`/`▼` markers in the list title indicate more entries above or below.
+
+Typing in the path bar supports `~/` home expansion and relative paths resolved against the browsed directory. Pressing `Tab` completes the current path segment: a single match completes in place (directories gain a trailing `/`), and ambiguous prefixes extend to the longest common prefix and show a match count. Entering a directory path navigates the browser into it; entering a file path imports the file.
+
+The browser reopens in the directory visited by the previous import for the duration of the application session.
 
 STcli validates the artifact type before it writes to the database. If the file is another artifact type, the import dialog stays open, preserves the path, and reports the detected and expected types.
 

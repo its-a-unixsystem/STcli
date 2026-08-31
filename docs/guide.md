@@ -77,7 +77,7 @@ Start the TUI, then open the prompt preset picker:
 cargo run --quiet --bin stcli -- tui
 ```
 
-From the Sessions screen, press `P`, then `i`. Enter the path to a SillyTavern Chat Completion preset and press `Enter`. The imported preset remains highlighted so that you can inspect it before using it.
+From the Sessions screen, press `P`, then `i`. The import dialog pairs a path input bar with an interactive directory browser: type a path directly (with `~/` expansion and `Tab` completion), or browse folders with the arrow keys and press `Enter` on a `.json` preset file. The imported preset remains highlighted so that you can inspect it before using it. See the [TUI reference](tui.md) for the full browser key map.
 
 Press `d` or `Tab` to open the detail inspector. It shows the prompt order, system-prompt state, generation parameters, and embedded regex scripts. Press `/` and type part of a preset name to filter the list. Press `Esc` to clear the filter.
 

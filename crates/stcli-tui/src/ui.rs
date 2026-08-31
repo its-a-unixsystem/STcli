@@ -1005,7 +1005,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
             }
         }
         Popup::ImportArtifact(state) => {
-            let import_area = centered(frame.area(), 68, 7);
+            let import_area = centered(frame.area(), 70, 22);
             frame.render_widget(Clear, import_area);
             let kind = state
                 .expected_kind
@@ -1013,39 +1013,118 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                     stcli_core::ArtifactKind::ChatCompletionPreset => "Prompt Preset",
                     _ => "Character Card",
                 });
-            let support =
-                if state.expected_kind == Some(stcli_core::ArtifactKind::ChatCompletionPreset) {
-                    "Supported: .json prompt presets (supports ~/ paths)"
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Import {kind} "))
+                .title_bottom(
+                    " · . dotfiles · Tab focus/complete · Enter select/open · Esc cancel ",
+                )
+                .style(
+                    Style::default()
+                        .bg(app.theme.background)
+                        .fg(app.theme.foreground),
+                );
+            let inner = block.inner(import_area);
+            frame.render_widget(block, import_area);
+            let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(inner);
+
+            let input_focused = state.focus == crate::app::ImportFocus::PathInput;
+            let input_block = Block::default()
+                .borders(Borders::ALL)
+                .title(" Path ")
+                .border_style(if input_focused {
+                    Style::default().fg(app.theme.accent)
                 } else {
-                    "Supported: .json, .png, .webp, and .charx artifacts (supports ~/ paths)"
-                };
-            let block = Block::default().borders(Borders::ALL).title(format!(
-                " Import {kind} from File · Enter import · Esc cancel "
-            ));
-            let content = vec![
-                Line::from(vec![
-                    Span::styled(
-                        "Path: ",
-                        Style::default()
-                            .fg(app.theme.accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(&state.input, Style::default().fg(app.theme.foreground)),
-                    Span::styled("█", Style::default().fg(app.theme.accent)),
-                ]),
-                Line::from(""),
-                Line::from(vec![Span::styled(
-                    support,
+                    Style::default().fg(app.theme.muted)
+                });
+            let mut input_spans = vec![Span::styled(
+                &state.input,
+                Style::default().fg(app.theme.foreground),
+            )];
+            if input_focused {
+                input_spans.push(Span::styled("█", Style::default().fg(app.theme.accent)));
+            }
+            if let Some(hint) = &state.completion_hint {
+                input_spans.push(Span::styled(
+                    format!("  {hint}"),
                     Style::default().fg(app.theme.muted),
-                )]),
-            ];
+                ));
+            }
             frame.render_widget(
-                Paragraph::new(content).block(block).style(
+                Paragraph::new(Line::from(input_spans)).block(input_block),
+                chunks[0],
+            );
+
+            let list_focused = !input_focused;
+            let visible = chunks[1].height.saturating_sub(2) as usize;
+            let window_start = state
+                .browser
+                .selected
+                .saturating_add(1)
+                .saturating_sub(visible)
+                .min(state.browser.entries.len().saturating_sub(visible));
+            let more_above = window_start > 0;
+            let more_below = window_start + visible < state.browser.entries.len();
+            let mut list_title = String::from(" ");
+            if more_above {
+                list_title.push_str("▲ ");
+            }
+            list_title.push_str(&state.browser.directory.display().to_string());
+            if more_below {
+                list_title.push_str(" ▼");
+            }
+            list_title.push(' ');
+            let items: Vec<ListItem<'_>> = if state.browser.access_denied
+                && state.browser.entries.len() <= 1
+            {
+                vec![ListItem::new("[Access Denied]").style(Style::default().fg(app.theme.error))]
+            } else {
+                state
+                    .browser
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .skip(window_start)
+                    .take(visible)
+                    .map(|(index, entry)| {
+                        let label = if entry.is_dir {
+                            format!("{}/", entry.name)
+                        } else {
+                            entry.name.clone()
+                        };
+                        let selected = index == state.browser.selected;
+                        let style = if selected && list_focused {
+                            Style::default()
+                                .bg(app.theme.selection)
+                                .add_modifier(Modifier::BOLD)
+                        } else if selected {
+                            Style::default()
+                                .fg(app.theme.accent)
+                                .add_modifier(Modifier::BOLD)
+                        } else if entry.is_dir {
+                            Style::default().fg(app.theme.accent)
+                        } else {
+                            Style::default()
+                        };
+                        ListItem::new(label).style(style)
+                    })
+                    .collect()
+            };
+            let list_block = Block::default()
+                .borders(Borders::ALL)
+                .title(list_title)
+                .border_style(if list_focused {
+                    Style::default().fg(app.theme.accent)
+                } else {
+                    Style::default().fg(app.theme.muted)
+                });
+            frame.render_widget(
+                List::new(items).block(list_block).style(
                     Style::default()
                         .bg(app.theme.background)
                         .fg(app.theme.foreground),
                 ),
-                import_area,
+                chunks[1],
             );
         }
         Popup::Personas(state) => {
@@ -2024,11 +2103,11 @@ mod tests {
         assert!(rendered.contains("Create New Session"));
 
         // 2. Test ImportArtifact popup render
-        app.popup = Some(Popup::ImportArtifact(crate::app::ImportArtifactState {
-            expected_kind: None,
-            return_to: crate::app::ModalTarget::Sessions,
-            input: String::new(),
-        }));
+        app.popup = Some(Popup::ImportArtifact(crate::app::ImportArtifactState::new(
+            None,
+            crate::app::ModalTarget::Sessions,
+            directory.path().to_path_buf(),
+        )));
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let rendered = terminal
             .backend()
@@ -2037,7 +2116,8 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect::<String>();
-        assert!(rendered.contains("Import Character Card from File"));
+        assert!(rendered.contains("Import Character Card"));
+        assert!(rendered.contains("dotfiles"));
 
         // 3. Test ProviderProfile popup render
         app.open_provider_profile_popup(None, crate::app::ModalTarget::Sessions);

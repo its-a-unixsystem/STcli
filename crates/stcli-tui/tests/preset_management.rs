@@ -258,11 +258,13 @@ fn artifact_import_rejects_wrong_kinds_without_writing() {
     let card_path = directory.path().join("character.json");
     fs::write(&card_path, fixtures::minimal_card()).unwrap();
     let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
-    app.popup = Some(Popup::ImportArtifact(ImportArtifactState {
-        expected_kind: Some(ArtifactKind::ChatCompletionPreset),
-        return_to: ModalTarget::Sessions,
-        input: card_path.display().to_string(),
-    }));
+    let mut import_state = ImportArtifactState::new(
+        Some(ArtifactKind::ChatCompletionPreset),
+        ModalTarget::Sessions,
+        directory.path().to_path_buf(),
+    );
+    import_state.input = card_path.display().to_string();
+    app.popup = Some(Popup::ImportArtifact(import_state));
 
     let effect = press(&mut app, KeyCode::Enter);
 
