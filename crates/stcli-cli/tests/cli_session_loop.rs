@@ -409,6 +409,60 @@ async fn complete_binary_session_loop_exercises_send_swipe_regenerate_continue_b
 }
 
 #[test]
+fn session_duplicate_returns_new_session_metadata() {
+    let home = TestHome::new().unwrap();
+    let character = envelope_data(&run(
+        &home,
+        &[&"artifact", &"import", &example("character.json")],
+    ));
+    let character_hash = character["primary"]["revision_hash"].as_str().unwrap();
+    let source = envelope_data(&run(
+        &home,
+        &[&"session", &"create", &"--character", &character_hash],
+    ));
+    let source_session_id = source["session"]["session_id"].as_str().unwrap();
+
+    let duplicate = envelope(&run(
+        &home,
+        &[
+            &"session",
+            &"duplicate",
+            &source_session_id,
+            &"--name",
+            &"Test duplicate",
+        ],
+    ));
+
+    assert_eq!(duplicate["command"], "session.duplicate");
+    assert_ne!(
+        duplicate["data"]["session"]["session_id"],
+        source["session"]["session_id"]
+    );
+    assert_eq!(
+        duplicate["data"]["session"]["custom_name"],
+        "Test duplicate"
+    );
+}
+
+#[test]
+fn session_duplicate_returns_error_envelope_for_missing_session() {
+    let home = TestHome::new().unwrap();
+    let missing_session_id = EntityId::new().to_string();
+
+    let output = run(&home, &[&"session", &"duplicate", &missing_session_id]);
+
+    assert!(!output.status.success());
+    let error = json_lines(&output.stderr).pop().unwrap();
+    assert_eq!(error["ok"], false);
+    assert_eq!(error["command"], "session.duplicate");
+    assert_eq!(error["error"]["code"], "command_failed");
+    assert_eq!(
+        error["error"]["message"],
+        format!("session {missing_session_id} was not found")
+    );
+}
+
+#[test]
 fn session_commands_accept_inline_and_file_persona_descriptions() {
     let home = TestHome::new().unwrap();
     let character = envelope_data(&run(

@@ -149,6 +149,15 @@ enum SessionCommand {
         #[command(flatten)]
         configuration: Box<CreateSessionArgs>,
     },
+    Duplicate {
+        session: EntityId,
+        #[arg(long)]
+        branch: Option<EntityId>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        up_to: Option<EntityId>,
+    },
     Greeting {
         #[arg(long)]
         session: EntityId,
@@ -184,6 +193,7 @@ impl SessionCommand {
             Self::Compact { .. } => "session.compact",
             Self::Create(_) => "session.create",
             Self::Update { .. } => "session.update",
+            Self::Duplicate { .. } => "session.duplicate",
             Self::Greeting { .. } => "session.greeting",
             Self::List => "session.list",
             Self::Show { .. } => "session.show",
@@ -866,6 +876,25 @@ async fn session(output: OutputFormat, command: SessionCommand) -> Result<()> {
                     EngineCommand::UpdateConfiguration {
                         session_id: session,
                         configuration: Box::new(configuration),
+                    },
+                    |_| {},
+                )
+                .await?;
+            emit_engine_result(output, command_name, &result)
+        }
+        SessionCommand::Duplicate {
+            session,
+            branch,
+            name,
+            up_to,
+        } => {
+            let result = engine
+                .execute(
+                    EngineCommand::DuplicateSession {
+                        session_id: session,
+                        branch_id: branch,
+                        up_to_turn_id: up_to,
+                        new_name: name,
                     },
                     |_| {},
                 )

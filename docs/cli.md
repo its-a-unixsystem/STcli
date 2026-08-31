@@ -105,6 +105,7 @@ A provider profile can also select Text Completion mode. Set `format_mode` to `t
 | --- | --- | --- |
 | `session create` | `session create <configuration-options>` | Creates a Session from the required `--character` revision and the configuration options below. |
 | `session update` | `session update <session> <configuration-options>` | Targets the Session positionally. The supplied configuration creates a new Session Configuration Revision. |
+| `session duplicate` | `session duplicate <session> [--branch <branch>] [--name <name>] [--up-to <turn>]` | Creates an independent Duplicated Session from one Branch lineage. `--up-to` is inclusive. |
 | `session greeting` | `session greeting --session <session> <branch> <greeting>` | Targets the Branch positionally, uses the Session as validation context, and selects the zero-based Greeting index. |
 | `session list` | `session list` | No command arguments. |
 | `session archive` | `session archive <session>` | Targets one Session. |
@@ -114,6 +115,38 @@ A provider profile can also select Text Completion mode. Set `format_mode` to `t
 | `session show` | `session show <session>` | Targets one Session. |
 | `session branches` | `session branches <session>` | Targets one Session. |
 | `session rebuild` | `session rebuild` | No command arguments. |
+
+### Duplicate a session
+
+Duplicate the root Branch lineage with an automatically generated name:
+
+```bash
+stcli --output json session duplicate <session-id>
+```
+
+Use `--branch <branch-id>` to select another lineage, `--up-to <turn-id>` to stop after that Turn, and `--name <name>` to set the new Session name:
+
+```bash
+stcli --output json session duplicate <session-id> \
+  --branch <branch-id> \
+  --up-to <turn-id> \
+  --name "Alternate route"
+```
+
+The JSON response uses the standard envelope and returns the new Session, root Branch, and reused Session Configuration Revision. This example abbreviates each record to its identifying fields:
+
+```json
+{
+  "schema": "stcli.cli/v1",
+  "command": "session.duplicate",
+  "ok": true,
+  "data": {
+    "session": { "session_id": "<new-session-id>", "custom_name": "Alternate route" },
+    "branch": { "branch_id": "<new-root-branch-id>", "session_id": "<new-session-id>" },
+    "configuration": { "revision_hash": "<configuration-revision-hash>" }
+  }
+}
+```
 
 ### Session configuration options
 
