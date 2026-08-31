@@ -1,0 +1,19 @@
+{
+  "schema": "stcli.plugin-manifest/v1",
+  "id": "org.stcli.nemo-directives",
+  "version": "1.0.0",
+  "engine": ">=0.1.0, <0.2.0",
+  "runtime": "script",
+  "component": "script.js",
+  "component_sha256": "sha256:cf769dcf14ca21502b0de1641aa951ee428416a924825c9cf804a0f154145bfc",
+  "dependencies": [],
+  "license": "MIT",
+  "subscriptions": ["inspect-artifact"],
+  "prompt_slots": [],
+  "commands": [],
+  "macros": [],
+  "settings_schema": null,
+  "requested_capabilities": ["inspect-artifact"],
+  "before": [],
+  "after": []
+}

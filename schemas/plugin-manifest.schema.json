@@ -46,7 +46,7 @@
     "subscriptions": {
       "type": "array",
       "uniqueItems": true,
-      "items": { "enum": ["pre-lore", "pre-prompt", "pre-request", "post-commit"] }
+      "items": { "enum": ["pre-lore", "pre-prompt", "pre-request", "post-commit", "inspect-artifact"] }
     },
     "prompt_slots": {
       "type": "array",
@@ -79,7 +79,8 @@
           "contribute-prompt",
           "read-session",
           "write-own-state",
-          "abort-pre-request"
+          "abort-pre-request",
+          "inspect-artifact"
         ]
       }
     },

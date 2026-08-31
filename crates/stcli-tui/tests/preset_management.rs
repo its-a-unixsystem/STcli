@@ -3,7 +3,7 @@ use std::fs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend};
 use stcli_core::{ArtifactKind, EngineInspection, EngineQuery, EngineResult, StcliEngine, Store};
-use stcli_testkit::fixtures;
+use stcli_testkit::{configuration, fixtures};
 use stcli_tui::{
     App, ChatFocus, Config, Effect, ImportArtifactState, ModalTarget, Popup, PresetPickerState,
     render as render_ui,
@@ -37,6 +37,21 @@ fn scripted_preset(name: &str) -> Vec<u8> {
             {"id": "one", "scriptName": "One", "placement": [1]},
             {"id": "two", "scriptName": "Two", "placement": [2]}
         ]}
+    }))
+    .unwrap()
+}
+
+fn nemo_preset() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "name": "Nemo preset",
+        "prompts": [
+            {"identifier": "concise", "name": "Concise", "role": "system", "content": "{{// @mutual-exclusive-group style\n@warning Concise mode changes response length. }}"},
+            {"identifier": "detailed", "name": "Detailed", "role": "system", "content": "{{// @exclusive-with-category style }}"}
+        ],
+        "prompt_order": [{"character_id": 100001, "order": [
+            {"identifier": "concise", "enabled": false},
+            {"identifier": "detailed", "enabled": true}
+        ]}]
     }))
     .unwrap()
 }
@@ -344,10 +359,80 @@ async fn prompt_order_toggle_works_from_sessions_and_new_session() {
     assert_eq!(state.selected_preset, 2);
     assert_eq!(
         app.toast.as_ref().map(|toast| toast.message.as_str()),
-        Some("Updated preset prompt order")
+        Some("Updated preset prompt order; main disabled")
     );
 }
 
+#[tokio::test]
+async fn nemo_toggle_auto_disables_sibling_and_surfaces_warning() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    Store::open(&database)
+        .unwrap()
+        .import_artifact(&nemo_preset())
+        .unwrap();
+    let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+    press(&mut app, KeyCode::Char('P'));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Right);
+
+    let effect = press(&mut app, KeyCode::Char(' '));
+    let Effect::Execute(stcli_core::EngineCommand::UpdatePromptOrder { changes, .. }) = &effect
+    else {
+        panic!("expected prompt order update");
+    };
+    assert_eq!(changes.get("concise"), Some(&true));
+    assert_eq!(changes.get("detailed"), Some(&false));
+
+    execute(&mut app, effect).await;
+    let toast = app.toast.as_ref().unwrap().message.as_str();
+    assert!(toast.contains("auto-disabled detailed"));
+    assert!(toast.contains("Concise mode changes response length."));
+    let rendered = render(&mut app);
+    assert!(rendered.contains("Compatibility Warnings"));
+    assert!(rendered.contains("Concise mode changes response length."));
+}
+
+#[tokio::test]
+async fn session_override_renders_effective_source_and_resets_to_preset_default() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let preset = store
+        .import_artifact(&scripted_preset("Override preset"))
+        .unwrap();
+    let mut config = configuration(character.revision_hash);
+    config.prompt_preset_revision = Some(preset.revision_hash);
+    let created = store.create_session(config, 0).unwrap();
+    drop(store);
+    let mut app = App::load(
+        StcliEngine::new(database),
+        Config::default(),
+        Some(created.session.session_id),
+    )
+    .unwrap();
+    app.chat_focus = ChatFocus::History;
+    press(&mut app, KeyCode::Char('P'));
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Right);
+    assert!(render(&mut app).contains("main [enabled; preset]"));
+
+    let effect = app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+    execute(&mut app, effect).await;
+    assert!(render(&mut app).contains("main [disabled; override]"));
+
+    let effect = press(&mut app, KeyCode::Char('r'));
+    execute(&mut app, effect).await;
+    assert!(render(&mut app).contains("main [enabled; preset]"));
+    assert_eq!(
+        app.toast.as_ref().map(|toast| toast.message.as_str()),
+        Some("Reset Prompt Order Override to preset default")
+    );
+}
 #[tokio::test]
 async fn preset_copy_opens_patch_form_and_selects_imported_clone() {
     let directory = tempdir().unwrap();

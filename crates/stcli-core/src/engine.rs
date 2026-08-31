@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -8,16 +9,21 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    ArtifactError, ArtifactKind, ArtifactRecord, AttemptProjection, BranchProjection,
-    CandidateProjection, CapsuleError, CapsuleKind, CompactionReport, CompletedTurn, ContentHash,
-    CreatedSession, DryRunResult, EcmaRegexWorker, EditedCandidate, EntityId, ImportedCapsule,
-    InstalledPlugin, PluginCapability, PluginCommandResult, PluginError, PluginPin, PluginRegistry,
-    PromptDiff, PromptPlan, PromptSegmentInspection, ProviderEvent, RecoveryReport, ReplayReport,
-    SessionConfiguration, SessionConfigurationRecord, SessionError, SessionProjection,
-    StorageError, Store, StscriptError, StscriptLimits, StscriptResult, TokenizerError,
-    TokenizerId, TurnCapsule, TurnError, TurnProjection, apply_display_scripts, diff_prompt_plans,
-    extract_character_scripts, transform_preset_content,
+    ArtifactError, ArtifactInspectorRegistration, ArtifactKind, ArtifactRecord, AttemptProjection,
+    BranchProjection, CandidateProjection, CapsuleError, CapsuleKind, CompactionReport,
+    CompletedTurn, ContentHash, CreatedSession, DryRunResult, EcmaRegexWorker, EditedCandidate,
+    EntityId, ImportedCapsule, InstalledPlugin, PluginCapability, PluginCommandResult,
+    PluginEffect, PluginError, PluginEvent, PluginGrant, PluginHost, PluginInput, PluginPin,
+    PluginRegistry, PromptDiff, PromptPlan, PromptSegmentInspection, ProviderEvent, RecoveryReport,
+    ReplayReport, SessionConfiguration, SessionConfigurationRecord, SessionError,
+    SessionProjection, StorageError, Store, StscriptError, StscriptLimits, StscriptResult,
+    TokenizerError, TokenizerId, TurnCapsule, TurnError, TurnProjection, apply_display_scripts,
+    diff_prompt_plans, extract_character_scripts, transform_preset_content,
 };
+
+pub const DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID: &str = "org.stcli.nemo-directives";
+const NEMO_PLUGIN_MANIFEST: &str = include_str!("../../../plugins/nemo-directives/manifest.json");
+const NEMO_PLUGIN_SCRIPT: &str = include_str!("../../../plugins/nemo-directives/script.js");
 
 #[derive(Clone, Debug)]
 pub struct StcliEngine {
@@ -44,6 +50,74 @@ impl StcliEngine {
         )
     }
 
+    fn default_plugin_state(&self) -> PathBuf {
+        self.database
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(".default-plugins")
+    }
+
+    fn default_opt_out(&self, id: &str) -> PathBuf {
+        self.default_plugin_state().join("opt-outs").join(id)
+    }
+
+    fn clear_default_opt_out(&self, id: &str) -> Result<(), PluginError> {
+        let path = self.default_opt_out(id);
+        if path.exists() {
+            fs::remove_file(&path).map_err(|source| PluginError::Remove { path, source })?;
+        }
+        Ok(())
+    }
+
+    fn ensure_default_plugins(&self) -> Result<(), EngineError> {
+        if self
+            .default_opt_out(DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID)
+            .exists()
+        {
+            return Ok(());
+        }
+        let manifest: crate::PluginManifest =
+            serde_json::from_str(NEMO_PLUGIN_MANIFEST).map_err(PluginError::Json)?;
+        let registration = ArtifactInspectorRegistration {
+            id: manifest.id.clone(),
+            version: manifest.version.clone(),
+            component_sha256: manifest.component_sha256.clone(),
+            capabilities: [PluginCapability::InspectArtifact].into_iter().collect(),
+        };
+        let store = Store::open(&self.database)?;
+        if store
+            .artifact_inspector(DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID)?
+            .as_ref()
+            == Some(&registration)
+            && self
+                .plugin_registry()
+                .find(
+                    DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID,
+                    &manifest.component_sha256,
+                )?
+                .is_some()
+        {
+            return Ok(());
+        }
+        let root = self
+            .default_plugin_state()
+            .join("packages")
+            .join(DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID);
+        fs::create_dir_all(&root).map_err(|source| PluginError::Create {
+            path: root.clone(),
+            source,
+        })?;
+        for (path, content) in [
+            (root.join("manifest.json"), NEMO_PLUGIN_MANIFEST),
+            (root.join("script.js"), NEMO_PLUGIN_SCRIPT),
+        ] {
+            fs::write(&path, content).map_err(|source| PluginError::Write { path, source })?;
+        }
+        self.plugin_registry().install(&root)?;
+        store.register_artifact_inspector(&registration)?;
+        Ok(())
+    }
+
     fn installed_plugin(
         &self,
         id: &str,
@@ -66,12 +140,15 @@ impl StcliEngine {
     }
 
     pub fn inspect(&self, query: EngineQuery) -> Result<EngineInspection, EngineError> {
+        self.ensure_default_plugins()?;
         if let EngineQuery::DoctorPlugin { directory } = &query {
             return Ok(EngineInspection::InstalledPlugin(
                 self.plugin_registry().doctor(directory)?,
             ));
         }
         if let EngineQuery::Plugins { plugin_id } = &query {
+            let store = Store::open(&self.database)?;
+            let registered = store.artifact_inspectors()?;
             let plugins = self
                 .plugin_registry()
                 .list()?
@@ -80,6 +157,14 @@ impl StcliEngine {
                     plugin_id
                         .as_ref()
                         .is_none_or(|expected| plugin.manifest.id == *expected)
+                })
+                .map(|mut plugin| {
+                    plugin.inspection_enabled = registered.iter().any(|registration| {
+                        registration.id == plugin.manifest.id
+                            && registration.version == plugin.manifest.version
+                            && registration.component_sha256 == plugin.manifest.component_sha256
+                    });
+                    plugin
                 })
                 .collect();
             return Ok(EngineInspection::Plugins(plugins));
@@ -286,6 +371,72 @@ impl StcliEngine {
                 }
                 Ok(EngineInspection::DryRun(Box::new(preview)))
             }
+            EngineQuery::ArtifactInspectors => Ok(EngineInspection::ArtifactInspectors(
+                store.artifact_inspectors()?,
+            )),
+            EngineQuery::InspectArtifactWithPlugin {
+                plugin_id,
+                revision_hash,
+            } => {
+                let registration = store.artifact_inspector(&plugin_id)?.ok_or_else(|| {
+                    EngineError::ArtifactInspectorNotRegistered(plugin_id.clone())
+                })?;
+                if !registration
+                    .capabilities
+                    .contains(&PluginCapability::InspectArtifact)
+                {
+                    return Err(
+                        PluginError::CapabilityDenied(PluginCapability::InspectArtifact).into(),
+                    );
+                }
+                let installed = self.installed_plugin(
+                    &registration.id,
+                    &registration.version.to_string(),
+                    &registration.component_sha256,
+                )?;
+                let artifact = store.decoded_artifact(&revision_hash)?;
+                let grant = PluginGrant {
+                    id: registration.id.clone(),
+                    version: registration.version,
+                    component_sha256: registration.component_sha256,
+                    capabilities: registration.capabilities,
+                    settings: serde_json::Value::Null,
+                    enabled: true,
+                };
+                let receipt = PluginHost::new(Default::default()).execute(
+                    &installed,
+                    &grant,
+                    PluginInput {
+                        event: PluginEvent::InspectArtifact,
+                        plugin_id: plugin_id.clone(),
+                        settings: serde_json::Value::Null,
+                        context: serde_json::Value::Null,
+                        state: serde_json::json!({}),
+                        artifact: artifact.semantic,
+                        session: serde_json::Value::Null,
+                    },
+                )?;
+                let mut outputs = receipt
+                    .effects
+                    .into_iter()
+                    .filter_map(|effect| match effect {
+                        PluginEffect::Output { value } => Some(value),
+                        _ => None,
+                    });
+                let value = outputs
+                    .next()
+                    .ok_or(PluginError::ArtifactInspectionOutputCount(0))?;
+                if outputs.next().is_some() {
+                    return Err(PluginError::ArtifactInspectionOutputCount(2).into());
+                }
+                Ok(EngineInspection::PluginArtifactOutput(
+                    PluginArtifactOutput {
+                        plugin_id,
+                        revision_hash,
+                        value,
+                    },
+                ))
+            }
             EngineQuery::DoctorPlugin { .. } | EngineQuery::Plugins { .. } => unreachable!(),
         }
     }
@@ -295,22 +446,78 @@ impl StcliEngine {
         command: EngineCommand,
         mut on_event: impl FnMut(&ProviderEvent),
     ) -> Result<EngineResult, EngineError> {
-        if let EngineCommand::InstallPlugin { directory } = &command {
-            return Ok(EngineResult::InstalledPlugin(
-                self.plugin_registry().install(directory)?,
-            ));
-        }
+        self.ensure_default_plugins()?;
         let mut store = Store::open(&self.database)?;
         match command {
-            EngineCommand::InstallPlugin { .. } => unreachable!(),
+            EngineCommand::InstallPlugin { directory } => {
+                let installed = self.plugin_registry().install(&directory)?;
+                if installed.manifest.id == DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID {
+                    self.clear_default_opt_out(DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID)?;
+                    store.register_artifact_inspector(&ArtifactInspectorRegistration {
+                        id: installed.manifest.id.clone(),
+                        version: installed.manifest.version.clone(),
+                        component_sha256: installed.manifest.component_sha256.clone(),
+                        capabilities: [PluginCapability::InspectArtifact].into_iter().collect(),
+                    })?;
+                }
+                Ok(EngineResult::InstalledPlugin(installed))
+            }
+            EngineCommand::RestoreDefaultPlugins => {
+                self.clear_default_opt_out(DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID)?;
+                self.ensure_default_plugins()?;
+                let mut installed = self
+                    .plugin_registry()
+                    .list()?
+                    .into_iter()
+                    .find(|plugin| plugin.manifest.id == DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID)
+                    .ok_or_else(|| {
+                        EngineError::ArtifactInspectorNotRegistered(
+                            DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID.to_owned(),
+                        )
+                    })?;
+                installed.inspection_enabled = true;
+                Ok(EngineResult::InstalledPlugin(installed))
+            }
             EngineCommand::RemovePlugin { plugin_id } => {
                 if store.plugin_in_use(&plugin_id)? {
                     return Err(EngineError::PluginInUse(plugin_id));
+                }
+                store.unregister_artifact_inspector(&plugin_id)?;
+                if plugin_id == DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID {
+                    let opt_out = self.default_opt_out(&plugin_id);
+                    let parent = opt_out.parent().expect("opt-out marker has a parent");
+                    fs::create_dir_all(parent).map_err(|source| PluginError::Create {
+                        path: parent.to_owned(),
+                        source,
+                    })?;
+                    fs::write(&opt_out, []).map_err(|source| PluginError::Write {
+                        path: opt_out,
+                        source,
+                    })?;
                 }
                 Ok(EngineResult::PluginRemoval(PluginRemovalReceipt {
                     removed: self.plugin_registry().remove(&plugin_id)?,
                     id: plugin_id,
                 }))
+            }
+            EngineCommand::RegisterArtifactInspector {
+                id,
+                version,
+                digest,
+                capabilities,
+            } => {
+                let installed = self.installed_plugin(&id, &version, &digest)?;
+                if !capabilities.is_subset(&installed.manifest.requested_capabilities) {
+                    return Err(EngineError::PluginGrantExceeded);
+                }
+                let registration = ArtifactInspectorRegistration {
+                    id,
+                    version: installed.manifest.version,
+                    component_sha256: installed.manifest.component_sha256,
+                    capabilities,
+                };
+                store.register_artifact_inspector(&registration)?;
+                Ok(EngineResult::ArtifactInspectorRegistration(registration))
             }
             EngineCommand::AdoptPlugin {
                 session_id,
@@ -564,7 +771,9 @@ impl StcliEngine {
                         None
                     } else {
                         configuration.prompt_preset_revision = Some(artifact.revision_hash.clone());
-                        Some(store.update_session_configuration(session_id, configuration)?)
+                        Some(Box::new(
+                            store.update_session_configuration(session_id, configuration)?,
+                        ))
                     }
                 } else {
                     None
@@ -703,6 +912,11 @@ pub enum EngineQuery {
     Plugins {
         plugin_id: Option<String>,
     },
+    ArtifactInspectors,
+    InspectArtifactWithPlugin {
+        plugin_id: String,
+        revision_hash: ContentHash,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -710,6 +924,7 @@ pub enum EngineCommand {
     InstallPlugin {
         directory: PathBuf,
     },
+    RestoreDefaultPlugins,
     RemovePlugin {
         plugin_id: String,
     },
@@ -720,6 +935,12 @@ pub enum EngineCommand {
         digest: ContentHash,
         capabilities: BTreeSet<PluginCapability>,
         settings: serde_json::Value,
+    },
+    RegisterArtifactInspector {
+        id: String,
+        version: String,
+        digest: ContentHash,
+        capabilities: BTreeSet<PluginCapability>,
     },
     UpgradePlugin {
         session_id: EntityId,
@@ -863,11 +1084,11 @@ pub enum EngineCommand {
     },
 }
 
-#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "result", content = "data", rename_all = "kebab-case")]
 pub enum EngineResult {
     InstalledPlugin(InstalledPlugin),
+    ArtifactInspectorRegistration(ArtifactInspectorRegistration),
     PluginRemoval(PluginRemovalReceipt),
     ArtifactBundle {
         primary: ArtifactRecord,
@@ -895,7 +1116,7 @@ pub enum EngineResult {
     Configuration(Box<SessionConfigurationRecord>),
     PromptOrderUpdated {
         artifact: ArtifactRecord,
-        configuration: Option<SessionConfigurationRecord>,
+        configuration: Option<Box<SessionConfigurationRecord>>,
     },
     EditedCandidate(EditedCandidate),
     DryRun(Box<DryRunResult>),
@@ -925,6 +1146,8 @@ pub enum EngineInspection {
     DryRun(Box<DryRunResult>),
     InstalledPlugin(InstalledPlugin),
     Plugins(Vec<InstalledPlugin>),
+    ArtifactInspectors(Vec<ArtifactInspectorRegistration>),
+    PluginArtifactOutput(PluginArtifactOutput),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -941,6 +1164,13 @@ pub struct TurnDetails {
     pub turn: TurnProjection,
     pub attempt: AttemptProjection,
     pub candidate: Option<CandidateProjection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PluginArtifactOutput {
+    pub plugin_id: String,
+    pub revision_hash: ContentHash,
+    pub value: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1262,6 +1492,8 @@ pub enum EngineError {
     PluginGrantExceeded,
     #[error("Plugin '{0}' is not pinned by the Session")]
     PluginNotPinned(String),
+    #[error("Plugin '{0}' is not registered for Artifact inspection")]
+    ArtifactInspectorNotRegistered(String),
     #[error("prompt preset revision is not pinned by Session {0}")]
     PromptPresetNotPinned(EntityId),
     #[error("existing grants exceed the upgraded Plugin manifest request")]

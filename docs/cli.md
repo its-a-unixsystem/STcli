@@ -265,13 +265,14 @@ These commands work the same for Wasm plugins and for script plugins. The manife
 | `plugin doctor` | `plugin doctor <directory>` | Validates a Plugin package directory without installing it. |
 | `plugin install` | `plugin install <directory>` | Installs a Plugin package directory. |
 | `plugin list` | `plugin list` | No command arguments. |
+| `plugin restore-defaults` | `plugin restore-defaults` | Clears default-Plugin opt-outs and restores the embedded offline defaults. |
 | `plugin inspect` | `plugin inspect <id>` | Targets a Plugin ID. |
 | `plugin adopt` | `plugin adopt --session <session> <id> --version <version> --digest <digest> [--capability <name>]... [--settings <json>]` | Targets a Plugin ID, uses the Session as context, pins version and digest, and grants each repeated capability. Settings default to `{}`. |
 | `plugin upgrade` | `plugin upgrade --session <session> <id> --version <version> --digest <digest>` | Targets a Plugin ID and pins its replacement version and digest for the Session. |
 | `plugin invoke` | `plugin invoke --session <session> <id> <command> [--arguments <json>]` | Targets a Plugin ID, invokes its positional command name, and passes JSON arguments. Arguments default to `null`. |
 | `plugin enable` | `plugin enable --session <session> <id>` | Targets a Plugin ID in the Session context. |
 | `plugin disable` | `plugin disable --session <session> <id>` | Targets a Plugin ID in the Session context. |
-| `plugin remove` | `plugin remove <id>` | Targets an installed Plugin ID. |
+| `plugin remove` | `plugin remove <id>` | Removes an installed Plugin ID. Removing a default Plugin persists an opt-out until `plugin restore-defaults`. |
 
 ## Prompt command
 

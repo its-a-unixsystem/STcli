@@ -986,7 +986,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 render_preset_details(frame, app, columns[1], detail.as_ref(), details_scroll);
                 frame.render_widget(
                     Paragraph::new(
-                        "Enter select · c copy · i import · d details · / filter · PgUp/PgDn scroll details · Esc close · → focus order · ↑/↓ navigate order · Space toggle (preset only)",
+                        "Enter select · c copy · i import · d details · / filter · PgUp/PgDn scroll details · Esc close · → focus order · ↑/↓ navigate · Space preset toggle · Ctrl+Space Session override · r reset override",
                     )
                     .style(
                         Style::default()
@@ -1817,6 +1817,7 @@ fn render_preset_details(
     details_scroll: usize,
 ) {
     let mut lines = Vec::new();
+    let mut prompt_order_start = None;
     if let Some(preset) = preset {
         let summary = &preset.summary;
         lines.extend([
@@ -1851,6 +1852,7 @@ fn render_preset_details(
             Some(crate::app::Popup::Presets(state)) => state.order_focus,
             _ => None,
         };
+        prompt_order_start = Some(lines.len());
         lines.extend(
             summary
                 .prompt_order
@@ -1863,6 +1865,11 @@ fn render_preset_details(
                     } else {
                         "disabled"
                     };
+                    let source = if prompt.override_enabled.is_some() {
+                        "override"
+                    } else {
+                        "preset"
+                    };
                     let style = if focused_order == Some(index) {
                         Style::default()
                             .bg(app.theme.selection)
@@ -1874,11 +1881,36 @@ fn render_preset_details(
                         Style::default().fg(app.theme.muted)
                     };
                     Line::from(Span::styled(
-                        format!("{}. {} [{enabled}]{marker}", index + 1, prompt.identifier),
+                        format!(
+                            "{}. {} [{enabled}; {source}]{marker}",
+                            index + 1,
+                            prompt.identifier
+                        ),
                         style,
                     ))
                 }),
         );
+        if !summary.diagnostics.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Compatibility Warnings",
+                Style::default()
+                    .fg(app.theme.character)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.extend(summary.diagnostics.iter().map(|diagnostic| {
+                Line::from(Span::styled(
+                    format!(
+                        "{} [{} / {}]: {}",
+                        diagnostic.identifier,
+                        diagnostic.severity,
+                        diagnostic.kind,
+                        diagnostic.message
+                    ),
+                    Style::default().fg(app.theme.character),
+                ))
+            }));
+        }
         lines.extend([
             Line::from(""),
             Line::from(Span::styled(
@@ -1929,7 +1961,7 @@ fn render_preset_details(
     let max_scroll = lines.len().saturating_sub(visible);
     let focused_scroll = match &app.popup {
         Some(Popup::Presets(state)) => state.order_focus.map(|index| {
-            let line = 8 + index;
+            let line = prompt_order_start.unwrap_or_default() + index;
             state
                 .details_scroll
                 .max(line.saturating_add(1).saturating_sub(visible))

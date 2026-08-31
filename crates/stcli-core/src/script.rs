@@ -229,6 +229,27 @@ fn install<'js>(ctx: &Ctx<'js>, sink: Rc<RefCell<Sink>>) -> rquickjs::Result<()>
             },
         )?,
     )?;
+    let output_sink = Rc::clone(&sink);
+    stcli.set(
+        "output",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, value: Value<'js>| -> rquickjs::Result<()> {
+                let text = ctx.json_stringify(value)?.ok_or_else(|| {
+                    Exception::throw_type(&ctx, "output value must be JSON-serializable")
+                })?;
+                let value =
+                    serde_json::from_str::<JsonValue>(&text.to_string()?).map_err(|_| {
+                        Exception::throw_type(&ctx, "output value must be JSON-serializable")
+                    })?;
+                output_sink
+                    .borrow_mut()
+                    .effects
+                    .push(PluginEffect::Output { value });
+                Ok(())
+            },
+        )?,
+    )?;
 
     stcli.set("state", state)?;
     stcli.set("prompt", prompt)?;
@@ -243,6 +264,7 @@ fn hook_name(event: PluginEvent) -> &'static str {
         PluginEvent::PreRequest => "preRequest",
         PluginEvent::PostCommit => "postCommit",
         PluginEvent::Command => "command",
+        PluginEvent::InspectArtifact => "inspectArtifact",
     }
 }
 

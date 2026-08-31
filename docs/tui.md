@@ -39,9 +39,13 @@ Press `P` from the Sessions screen or Chat view to open the prompt preset picker
 | `Esc` | Clear an active filter, or close the picker |
 | `n` | From Sessions, open New Session with the highlighted preset selected |
 
-The detail inspector shows the prompt count, selected order profile, system-prompt state, prompt order, `temperature`, `top_p`, `max_tokens`, and embedded regex scripts. Prompt Order Entries show their current enabled state; toggling applies immediately, shows a status toast, and in Chat re-pins only the current session to the new immutable preset revision. Script entries are marked `[inert — requires grant]`. When the metadata exceeds the pane, scroll it with `PgDn`/`PgUp` or `Shift+Down`/`Shift+Up`; the scroll position resets whenever you move to another preset. The mouse wheel scrolls the inspector while it is open.
+The detail inspector shows the prompt count, selected order profile, system-prompt state, prompt order, Compatibility Warnings, `temperature`, `top_p`, `max_tokens`, and embedded regex scripts. Prompt Order Entries show their current enabled state; toggling applies immediately, shows a status toast, and in Chat re-pins only the current session to the new immutable preset revision. Script entries are marked `[inert — requires grant]`. When the metadata exceeds the pane, scroll it with `PgDn`/`PgUp` or `Shift+Down`/`Shift+Up`; the scroll position resets whenever you move to another preset. The mouse wheel scrolls the inspector while it is open.
 
-Disabling a structural marker such as `chatHistory`, `worldInfoBefore`, or `worldInfoAfter` is permitted for compatibility, but the picker warns that it may be accidental.
+For presets using the supported NemoPresetExt directives, enabling an exclusive entry auto-disables every enabled sibling in the same atomic update. The toast names the auto-disabled entries. `@conflicts-with`, `@warning`, `@deprecated`, and unresolved references appear as non-blocking Compatibility Warnings in the details and at flip time.
+
+Disabling a structural marker such as `chatHistory`, `worldInfoBefore`, or `worldInfoAfter` is permitted for compatibility. The picker warns at flip time, and subsequent turn preparation and Dry Runs carry a non-blocking warning that names the disabled marker.
+
+In Chat, `Ctrl+Space` sets a Prompt Order Override for the focused entry without editing the preset Artifact Revision. The list labels effective values as `preset` or `override`. Press `r` on an overridden entry to remove the override and inherit the preset default again.
 
 To duplicate a preset, highlight it and press `c`. Set the new name, temperature, maximum context tokens, maximum response tokens, and `use_sysprompt`. Press `Ctrl+S` to import the clone as a new immutable Artifact Revision. The picker reopens with the clone highlighted.
 

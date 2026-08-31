@@ -695,7 +695,7 @@ fn dry_run_reports_unexecuted_preset_transformations() {
                 "prompts": [{
                     "identifier": "directive",
                     "role": "system",
-                    "content": "<!-- NEMO:activate alpha -->\n<!-- NEMO:activate beta -->\nUnchanged"
+                    "content": "<!-- NEMO:activate alpha -->\n{{// @mutual-exclusive-group style }}\nUnchanged"
                 }],
                 "prompt_order": [{"character_id": 100001, "order": [
                     {"identifier": "directive", "enabled": true}
@@ -722,7 +722,8 @@ fn dry_run_reports_unexecuted_preset_transformations() {
 
     assert!(codes.contains(&"preset-scripts-not-authorized"));
     assert!(!codes.contains(&"preset-scripts-placement-unsupported"));
-    assert!(codes.contains(&"prompt-directives-not-evaluated"));
+    // Regression test for issue 06: vendor directives are preserved, never evaluated by core.
+    assert!(!codes.contains(&"prompt-directives-not-evaluated"));
     assert_eq!(dry_run.preset_transformations.len(), 1);
     assert!(dry_run.preset_transformations[0].enabled);
     assert!(!dry_run.preset_transformations[0].granted);
@@ -751,11 +752,90 @@ fn dry_run_reports_unexecuted_preset_transformations() {
             .iter()
             .any(|warning| warning.code == "preset-scripts-not-authorized")
     );
+    let content = dry_run.provider_request["messages"][0]["content"]
+        .as_str()
+        .unwrap();
+    assert!(content.contains("NEMO:activate"));
+}
+
+#[test]
+fn disabled_structural_marker_warns_without_blocking_prompt_assembly() {
+    // Regression test for issue 08: marker risk is diagnosed from effective pinned state.
+    let directory = tempdir().unwrap();
+    let mut store = Store::open(directory.path().join("stcli.sqlite3")).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let preset = store
+        .import_artifact(
+            br#"{
+                "prompts": [{
+                    "identifier": "structural",
+                    "role": "system",
+                    "content": "STRUCTURAL CONTENT",
+                    "marker": true
+                }],
+                "prompt_order": [{"character_id": 100001, "order": [
+                    {"identifier": "structural", "enabled": false}
+                ]}]
+            }"#,
+        )
+        .unwrap();
+    let mut config = configuration(character.revision_hash);
+    config.prompt_preset_revision = Some(preset.revision_hash);
+    let created = store.create_session(config, 0).unwrap();
+
+    let disabled = store
+        .dry_run_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "Hello",
+        )
+        .unwrap();
+    let warning = disabled
+        .compatibility_warnings
+        .iter()
+        .find(|warning| warning.code == "structural-prompt-marker-disabled")
+        .unwrap();
+    assert_eq!(warning.affected_identifiers, vec!["structural"]);
+    assert!(warning.non_blocking);
     assert!(
-        dry_run.provider_request["messages"][0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("NEMO:activate")
+        !disabled
+            .provider_request
+            .to_string()
+            .contains("STRUCTURAL CONTENT")
+    );
+
+    let session = store.session(created.session.session_id).unwrap().unwrap();
+    let mut config = store
+        .configuration(&session.current_config_hash)
+        .unwrap()
+        .unwrap()
+        .configuration;
+    config
+        .prompt_order_overrides
+        .insert("structural".to_owned(), true);
+    store
+        .update_session_configuration(created.session.session_id, config)
+        .unwrap();
+    let enabled = store
+        .dry_run_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "Hello",
+        )
+        .unwrap();
+    assert!(
+        enabled
+            .compatibility_warnings
+            .iter()
+            .all(|warning| warning.code != "structural-prompt-marker-disabled")
+    );
+    assert!(
+        enabled
+            .provider_request
+            .to_string()
+            .contains("STRUCTURAL CONTENT")
     );
 }
 

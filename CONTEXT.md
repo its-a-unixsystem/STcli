@@ -114,6 +114,10 @@ _Avoid_: Validation error, automatic repair, blocked configuration
 An entry in a prompt preset's prompt order that binds a prompt identifier to an enabled flag. Turn preparation assembles the prompt from enabled entries in order; disabled entries are excluded.
 _Avoid_: Prompt slot, toggle, checkbox
 
+**Prompt Order Override**:
+A Session Configuration Revision entry that replaces one Prompt Order Entry's preset-level enabled flag for that Session. An absent override inherits the pinned preset value.
+_Avoid_: Preset edit, global toggle, Branch override
+
 **Preset Script Grant**:
 Explicit authorization for the exact digest of transformation scripts embedded in a prompt preset. Importing or selecting the preset does not grant execution.
 _Avoid_: Plugin grant, trusted preset, implicit authorization

@@ -365,6 +365,7 @@ enum PluginCommand {
         directory: PathBuf,
     },
     List,
+    RestoreDefaults,
     Inspect {
         id: String,
     },
@@ -419,6 +420,7 @@ impl PluginCommand {
             Self::Doctor { .. } => "plugin.doctor",
             Self::Install { .. } => "plugin.install",
             Self::List => "plugin.list",
+            Self::RestoreDefaults => "plugin.restore-defaults",
             Self::Inspect { .. } => "plugin.inspect",
             Self::Adopt { .. } => "plugin.adopt",
             Self::Upgrade { .. } => "plugin.upgrade",
@@ -1337,6 +1339,12 @@ async fn plugin(output: OutputFormat, command: PluginCommand) -> Result<()> {
             emit_engine_result(output, command_name, &result)
         }
         PluginCommand::List => emit(output, command_name, &installed_plugins(&engine, None)?),
+        PluginCommand::RestoreDefaults => {
+            let result = engine
+                .execute(EngineCommand::RestoreDefaultPlugins, |_| {})
+                .await?;
+            emit_engine_result(output, command_name, &result)
+        }
         PluginCommand::Inspect { id } => {
             let plugins = installed_plugins(&engine, Some(&id))?;
             anyhow::ensure!(!plugins.is_empty(), "Plugin '{id}' was not found");
@@ -1728,6 +1736,7 @@ fn open_engine() -> Result<StcliEngine> {
 fn emit_engine_result(output: OutputFormat, command: &str, result: &EngineResult) -> Result<()> {
     match result {
         EngineResult::InstalledPlugin(data) => emit(output, command, data),
+        EngineResult::ArtifactInspectorRegistration(data) => emit(output, command, data),
         EngineResult::PluginRemoval(data) => emit(output, command, data),
         EngineResult::ArtifactBundle {
             primary,

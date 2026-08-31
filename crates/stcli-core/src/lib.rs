@@ -45,9 +45,10 @@ pub use ecma_regex::{
     RegexRequest, RegexResponse, run_replace_worker, run_worker,
 };
 pub use engine::{
-    BranchHistory, DeletionReceipt, EngineCommand, EngineError, EngineInspection, EngineQuery,
-    EngineResult, EngineTurn, GreetingProjection, PluginRemovalReceipt, PurgeReport, RebuildReport,
-    SessionDetails, SessionSummary, StcliEngine, TurnDetails,
+    BranchHistory, DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID, DeletionReceipt, EngineCommand, EngineError,
+    EngineInspection, EngineQuery, EngineResult, EngineTurn, GreetingProjection,
+    PluginArtifactOutput, PluginRemovalReceipt, PurgeReport, RebuildReport, SessionDetails,
+    SessionSummary, StcliEngine, TurnDetails,
 };
 pub use fixture::{
     ExternalFixtureSource, FixtureCase, FixtureCaseReport, FixtureHistoryTurn, FixtureReport,
@@ -68,10 +69,10 @@ pub use macros::{
 pub use paths::AppPaths;
 pub use persona::{Persona, PersonaStore, PersonaStoreError};
 pub use plugin::{
-    InstalledPlugin, PluginCapability, PluginDependency, PluginEffect, PluginError, PluginEvent,
-    PluginGrant, PluginHost, PluginInput, PluginLimits, PluginManifest, PluginOutput,
-    PluginReceipt, PluginRegistry, PluginRuntime, PromptContribution, PromptSlot, ScriptLimits,
-    ScriptLog, order_plugins, plugin_digest, validate_recorded_receipt,
+    ArtifactInspectorRegistration, InstalledPlugin, PluginCapability, PluginDependency,
+    PluginEffect, PluginError, PluginEvent, PluginGrant, PluginHost, PluginInput, PluginLimits,
+    PluginManifest, PluginOutput, PluginReceipt, PluginRegistry, PluginRuntime, PromptContribution,
+    PromptSlot, ScriptLimits, ScriptLog, order_plugins, plugin_digest, validate_recorded_receipt,
 };
 pub use profile::{
     CompatibilityOutcome, CompatibilityProfile, CompatibilitySubject, CompatibilitySubjectKind,

@@ -29,6 +29,7 @@ pub enum PluginCapability {
     ReadSession,
     WriteOwnState,
     AbortPreRequest,
+    InspectArtifact,
 }
 impl std::str::FromStr for PluginCapability {
     type Err = PluginError;
@@ -42,6 +43,7 @@ impl std::str::FromStr for PluginCapability {
             "read-session" => Ok(Self::ReadSession),
             "write-own-state" => Ok(Self::WriteOwnState),
             "abort-pre-request" => Ok(Self::AbortPreRequest),
+            "inspect-artifact" => Ok(Self::InspectArtifact),
             _ => Err(PluginError::UnknownCapability(value.to_owned())),
         }
     }
@@ -55,6 +57,7 @@ pub enum PluginEvent {
     PreRequest,
     PostCommit,
     Command,
+    InspectArtifact,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -119,6 +122,8 @@ pub struct PluginManifest {
 pub struct InstalledPlugin {
     pub manifest: PluginManifest,
     pub directory: PathBuf,
+    #[serde(default)]
+    pub inspection_enabled: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -131,6 +136,14 @@ pub struct PluginGrant {
     pub enabled: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ArtifactInspectorRegistration {
+    pub id: String,
+    pub version: Version,
+    pub component_sha256: ContentHash,
+    pub capabilities: BTreeSet<PluginCapability>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PluginInput {
     pub event: PluginEvent,
@@ -140,6 +153,8 @@ pub struct PluginInput {
     pub context: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub state: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub artifact: Value,
     pub session: Value,
 }
 
@@ -158,6 +173,7 @@ pub struct PromptContribution {
 #[serde(tag = "effect", rename_all = "kebab-case")]
 pub enum PluginEffect {
     Observe { value: Value },
+    Output { value: Value },
     RegisterMacro { name: String, value: String },
     RegisterCommand { name: String, description: String },
     Prompt { contribution: PromptContribution },
@@ -401,6 +417,7 @@ impl PluginRegistry {
         Ok(InstalledPlugin {
             manifest,
             directory: directory.to_owned(),
+            inspection_enabled: false,
         })
     }
 
@@ -616,6 +633,7 @@ fn validate_manifest(manifest: &PluginManifest, directory: &Path) -> Result<(), 
     }
     Ok(())
 }
+
 pub fn validate_recorded_receipt(receipt: &PluginReceipt) -> Result<(), PluginError> {
     if receipt.id != receipt.manifest.id
         || receipt.version != receipt.manifest.version
@@ -631,6 +649,7 @@ pub fn validate_recorded_receipt(receipt: &PluginReceipt) -> Result<(), PluginEr
     let installed = InstalledPlugin {
         manifest: receipt.manifest.clone(),
         directory: PathBuf::new(),
+        inspection_enabled: false,
     };
     let grant = PluginGrant {
         id: receipt.id.clone(),
@@ -668,7 +687,17 @@ fn validate_effects(
     event: PluginEvent,
     effects: &[PluginEffect],
 ) -> Result<(), PluginError> {
+    if event == PluginEvent::InspectArtifact
+        && effects
+            .iter()
+            .any(|effect| !matches!(effect, PluginEffect::Output { .. }))
+    {
+        return Err(PluginError::ArtifactInspectionMutationDenied);
+    }
     for effect in effects {
+        if event != PluginEvent::InspectArtifact && matches!(effect, PluginEffect::Output { .. }) {
+            return Err(PluginError::ArtifactInspectionOutputPhaseDenied);
+        }
         if event == PluginEvent::Command
             && !matches!(
                 effect,
@@ -681,6 +710,7 @@ fn validate_effects(
             return Err(PluginError::PostCommitMutationDenied);
         }
         let capability = match effect {
+            PluginEffect::Output { .. } => PluginCapability::InspectArtifact,
             PluginEffect::Observe { .. } => PluginCapability::ObserveLifecycle,
             PluginEffect::RegisterMacro { name, .. } => {
                 if !installed.manifest.macros.contains(name) {
@@ -785,6 +815,11 @@ pub enum PluginError {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error("failed to write plugin file '{path}': {source}")]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("failed to read plugin directory '{path}': {source}")]
     ReadDirectory {
         path: PathBuf,
@@ -824,12 +859,18 @@ pub enum PluginError {
     ComponentLimit,
     #[error("plugin input exceeds its size limit")]
     InputLimit,
+    #[error("artifact inspection plugin returned {0} outputs; expected exactly one")]
+    ArtifactInspectionOutputCount(usize),
+    #[error("artifact inspection output is only valid during Artifact inspection")]
+    ArtifactInspectionOutputPhaseDenied,
     #[error("plugin output exceeds its size limit")]
     OutputLimit,
     #[error("plugin grant does not match the installed version and digest")]
     GrantPinMismatch,
     #[error("plugin grant exceeds requested capabilities")]
     GrantExceedsRequest,
+    #[error("artifact inspection plugins may only return typed output")]
+    ArtifactInspectionMutationDenied,
     #[error("Plugin post-commit lifecycle is observational only")]
     PostCommitMutationDenied,
     #[error("plugin is disabled")]

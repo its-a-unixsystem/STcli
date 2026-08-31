@@ -12,6 +12,7 @@ STcli also runs plugins written in JavaScript through a sandboxed QuickJS runtim
 |---|---|---|
 | [`proof/`](proof/) | `org.stcli.proof` | Reference implementation and test harness proving the pure Wasm plugin architecture. |
 | [`turn-counter/`](turn-counter/) | `org.stcli.turn-counter` | Reference script plugin for the [Writing plugins](../docs/plugins.md#tutorial-a-script-plugin) tutorial. Counts turns and injects one prompt line. |
+| [`nemo-directives/`](nemo-directives/) | `org.stcli.nemo-directives` | Default read-only evaluator for the supported NemoPresetExt prompt-directive subset. |
 
 ## The `proof` plugin
 
@@ -29,6 +30,16 @@ STcli also runs plugins written in JavaScript through a sandboxed QuickJS runtim
 - **Behavior**: On each `pre-prompt` event it counts the turn, writes the count to its own state, and injects one line (`[Turn N]`) into the `after-character-definitions` slot.
 - **Settings**: A one-property `settings.schema.json` (`start`) shows how a plugin declares settings.
 - **Validation**: `stcli plugin doctor plugins/turn-counter` passes, and `stcli plugin install plugins/turn-counter` installs it.
+
+## Artifact inspectors
+
+An Artifact inspector subscribes to `inspect-artifact`, requests the matching capability, and returns one typed JSON value without a Session. Before use, its exact id, version, component digest, and granted capability set are registered in the Store. Inspection is read-only and ephemeral: mutation effects are rejected and no Turn Trace receipt is created. See [Inspect an Artifact outside a Session](../docs/plugins.md#inspect-an-artifact-outside-a-session).
+
+## Default plugin lifecycle
+
+STcli embeds the Nemo directives Plugin and materializes its manifest and script into the local content-addressed Plugin store without network access. First run and embedded version changes update its Store-level Artifact-inspector registration. Existing Session PluginPins are never rewritten.
+
+`stcli plugin list` reports `inspection_enabled: true` for the active default registration. `stcli plugin remove org.stcli.nemo-directives` writes a persistent opt-out marker, so later runs do not reinstall it. Run `stcli plugin restore-defaults` to clear the marker and materialize the embedded default again.
 
 ## Further documentation
 

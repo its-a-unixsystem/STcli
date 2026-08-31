@@ -8,11 +8,12 @@ use std::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use stcli_core::{
     ArtifactKind, ArtifactRecord, AttemptStatus, BranchHistory, BranchProjection,
-    CHAT_COMPLETION_CHARACTER_ID, CandidateProjection, ContentHash, EngineCommand,
-    EngineInspection, EngineQuery, EngineResult, EntityId, Persona, PersonaStore, PresetPatch,
-    PromptPreset, ProviderEvent, ProviderSettings, ProviderTemplate, RegexPlacement,
-    SessionConfiguration, SessionSummary, StcliEngine, available_duplicated_session_name,
-    clone_and_patch_preset, decode_artifact, transform_preset_content, validate_provider_settings,
+    CHAT_COMPLETION_CHARACTER_ID, CandidateProjection, ContentHash,
+    DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID, EngineCommand, EngineInspection, EngineQuery, EngineResult,
+    EntityId, Persona, PersonaStore, PresetPatch, PromptPreset, ProviderEvent, ProviderSettings,
+    ProviderTemplate, RegexPlacement, SessionConfiguration, SessionSummary, StcliEngine,
+    available_duplicated_session_name, clone_and_patch_preset, decode_artifact,
+    transform_preset_content, validate_provider_settings,
 };
 
 use crate::{config::Config, theme::Theme};
@@ -60,8 +61,35 @@ pub struct PresetOption {
 #[derive(Clone, Debug)]
 pub struct PromptOrderOption {
     pub identifier: String,
+    pub preset_enabled: bool,
+    pub override_enabled: Option<bool>,
     pub enabled: bool,
     pub marker: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct PresetConstraint {
+    pub kind: String,
+    pub name: String,
+    pub members: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct PresetDiagnostic {
+    pub identifier: String,
+    pub severity: String,
+    pub kind: String,
+    pub message: String,
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+struct PresetInspection {
+    #[serde(default)]
+    constraints: Vec<PresetConstraint>,
+    #[serde(default)]
+    diagnostics: Vec<PresetDiagnostic>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -74,6 +102,8 @@ pub struct PresetSummary {
     pub top_p: Option<String>,
     pub max_tokens: Option<String>,
     pub scripts: Vec<PresetScriptSummary>,
+    pub constraints: Vec<PresetConstraint>,
+    pub diagnostics: Vec<PresetDiagnostic>,
 }
 
 #[derive(Clone, Debug)]
@@ -112,6 +142,8 @@ impl PresetSummary {
                     .iter()
                     .map(|entry| PromptOrderOption {
                         identifier: entry.identifier.clone(),
+                        preset_enabled: entry.enabled,
+                        override_enabled: None,
                         enabled: entry.enabled,
                         marker: value
                             .get("prompts")
@@ -197,6 +229,8 @@ impl PresetSummary {
                     .or_else(|| value.get("openai_max_tokens")),
             ),
             scripts,
+            constraints: Vec::new(),
+            diagnostics: Vec::new(),
         }
     }
 }
@@ -776,6 +810,10 @@ pub struct App {
     toast_timeout: Duration,
     pub config_dir: Option<PathBuf>,
     import_browser_dir: Option<PathBuf>,
+    pending_auto_disabled: Vec<String>,
+    pending_override_message: Option<String>,
+    pending_preset_toggle: Option<(String, bool)>,
+    pending_directive_warnings: Vec<String>,
 }
 
 impl App {
@@ -812,6 +850,10 @@ impl App {
             toast_timeout,
             config_dir: None,
             import_browser_dir: None,
+            pending_auto_disabled: Vec::new(),
+            pending_directive_warnings: Vec::new(),
+            pending_override_message: None,
+            pending_preset_toggle: None,
         };
         app.reload_sessions()?;
         if let Some(session_id) = direct_session
@@ -1542,23 +1584,54 @@ impl App {
                                 && key.modifiers.contains(KeyModifiers::CONTROL) =>
                         {
                             let selected_order = state.order_focus.expect("order focus exists");
-                            let Some(row) = state
+                            let Some(entry) = state
                                 .selected
                                 .checked_sub(1)
                                 .and_then(|index| state.filtered_rows().get(index).copied())
+                                .and_then(|row| row.summary.prompt_order.get(selected_order))
                             else {
-                                return Effect::None;
-                            };
-                            let Some(entry) = row.summary.prompt_order.get(selected_order) else {
                                 return Effect::None;
                             };
                             let Some(history) = &self.history else {
                                 return Effect::None;
                             };
+                            let identifier = entry.identifier.clone();
+                            let enabled = Some(!entry.enabled);
+                            let session_id = history.session.session_id;
+                            self.pending_override_message =
+                                Some("Updated Session Prompt Order Override".to_owned());
+                            self.popup = Some(popup.clone());
                             return Effect::Execute(EngineCommand::UpdatePromptOrderOverride {
-                                session_id: history.session.session_id,
-                                identifier: entry.identifier.clone(),
-                                enabled: Some(!entry.enabled),
+                                session_id,
+                                identifier,
+                                enabled,
+                            });
+                        }
+                        KeyCode::Char('r') if state.show_details && state.order_focus.is_some() => {
+                            let selected_order = state.order_focus.expect("order focus exists");
+                            let Some(entry) = state
+                                .selected
+                                .checked_sub(1)
+                                .and_then(|index| state.filtered_rows().get(index).copied())
+                                .and_then(|row| row.summary.prompt_order.get(selected_order))
+                            else {
+                                return Effect::None;
+                            };
+                            if entry.override_enabled.is_none() {
+                                return Effect::None;
+                            }
+                            let Some(history) = &self.history else {
+                                return Effect::None;
+                            };
+                            let identifier = entry.identifier.clone();
+                            let session_id = history.session.session_id;
+                            self.pending_override_message =
+                                Some("Reset Prompt Order Override to preset default".to_owned());
+                            self.popup = Some(popup.clone());
+                            return Effect::Execute(EngineCommand::UpdatePromptOrderOverride {
+                                session_id,
+                                identifier,
+                                enabled: None,
                             });
                         }
                         KeyCode::Char(' ') if state.show_details && state.order_focus.is_some() => {
@@ -1586,8 +1659,53 @@ impl App {
                                 }
                             };
                             let revision_hash = row.record.revision_hash.clone();
+                            let identifier = entry.identifier.clone();
+                            let enabling = !entry.enabled;
                             let mut changes = BTreeMap::new();
-                            changes.insert(entry.identifier.clone(), !entry.enabled);
+                            changes.insert(identifier.clone(), enabling);
+                            let mut auto_disabled = Vec::new();
+                            if enabling {
+                                for constraint in &row.summary.constraints {
+                                    if !matches!(
+                                        constraint.kind.as_str(),
+                                        "named-group" | "exclusive-pair" | "category-limit"
+                                    ) {
+                                        continue;
+                                    }
+                                    if !constraint.members.contains(&identifier) {
+                                        continue;
+                                    }
+                                    for sibling in &constraint.members {
+                                        if sibling != &identifier
+                                            && row.summary.prompt_order.iter().any(|entry| {
+                                                entry.identifier == *sibling && entry.enabled
+                                            })
+                                        {
+                                            changes.insert(sibling.clone(), false);
+                                            if !auto_disabled.contains(sibling) {
+                                                auto_disabled.push(sibling.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            let warnings = if enabling {
+                                row.summary
+                                    .diagnostics
+                                    .iter()
+                                    .filter(|diagnostic| {
+                                        diagnostic.identifier == identifier
+                                            || diagnostic.target.as_deref()
+                                                == Some(identifier.as_str())
+                                    })
+                                    .map(|diagnostic| diagnostic.message.clone())
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            };
+                            self.pending_auto_disabled = auto_disabled;
+                            self.pending_preset_toggle = Some((identifier.clone(), enabling));
+                            self.pending_directive_warnings = warnings;
                             self.popup = Some(popup.clone());
                             return Effect::Execute(EngineCommand::UpdatePromptOrder {
                                 session_id,
@@ -2658,12 +2776,22 @@ impl App {
                             &hash[hash.len().saturating_sub(12)..]
                         )
                     });
-                let summary = artifact
+                let mut summary = artifact
                     .as_ref()
                     .map(|artifact| {
                         PresetSummary::from_semantic(&artifact.semantic, &record.revision_hash)
                     })
                     .unwrap_or_default();
+                if let Ok(EngineInspection::PluginArtifactOutput(output)) =
+                    self.engine.inspect(EngineQuery::InspectArtifactWithPlugin {
+                        plugin_id: DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID.to_owned(),
+                        revision_hash: record.revision_hash.clone(),
+                    })
+                    && let Ok(inspection) = serde_json::from_value::<PresetInspection>(output.value)
+                {
+                    summary.constraints = inspection.constraints;
+                    summary.diagnostics = inspection.diagnostics;
+                }
                 PresetOption {
                     record,
                     label,
@@ -3199,14 +3327,40 @@ impl App {
         Effect::Execute(EngineCommand::ImportArtifact { source: clone })
     }
 
+    fn apply_session_prompt_order_overrides(&self, rows: &mut [PresetOption]) {
+        let Some(history) = self.history.as_ref() else {
+            return;
+        };
+        let configuration = &history.configuration.configuration;
+        let Some(revision) = configuration.prompt_preset_revision.as_ref() else {
+            return;
+        };
+        let Some(row) = rows
+            .iter_mut()
+            .find(|row| &row.record.revision_hash == revision)
+        else {
+            return;
+        };
+        for entry in &mut row.summary.prompt_order {
+            entry.override_enabled = configuration
+                .prompt_order_overrides
+                .get(&entry.identifier)
+                .copied();
+            entry.enabled = entry.override_enabled.unwrap_or(entry.preset_enabled);
+        }
+    }
+
     fn open_preset_popup(&mut self, return_to: ModalTarget) {
-        let rows = match self.query_preset_options() {
+        let mut rows = match self.query_preset_options() {
             Ok(rows) => rows,
             Err(error) => {
                 self.show_error(error.to_string());
                 return;
             }
         };
+        if matches!(return_to, ModalTarget::Chat) {
+            self.apply_session_prompt_order_overrides(&mut rows);
+        }
         let selected = match &return_to {
             ModalTarget::NewSession(state) => state.selected_preset.min(rows.len()),
             _ => self
@@ -3582,6 +3736,29 @@ impl App {
                 }
                 true
             }
+            Ok(EngineResult::Configuration(_)) if self.pending_override_message.is_some() => {
+                let Some(Popup::Presets(mut picker)) = self.popup.take() else {
+                    self.pending_override_message = None;
+                    return false;
+                };
+                let selected_revision = picker.selected_revision();
+                if let Err(error) = self.reload_history() {
+                    self.show_error(error.to_string());
+                }
+                picker.rows = self.query_preset_options().unwrap_or_else(|error| {
+                    self.show_error(error.to_string());
+                    Vec::new()
+                });
+                self.apply_session_prompt_order_overrides(&mut picker.rows);
+                picker.select_filtered_revision(selected_revision.as_ref());
+                let message = self
+                    .pending_override_message
+                    .take()
+                    .expect("guarded pending override message");
+                self.show_info(message);
+                self.popup = Some(Popup::Presets(picker));
+                true
+            }
             Ok(EngineResult::PromptOrderUpdated {
                 artifact,
                 configuration,
@@ -3623,16 +3800,31 @@ impl App {
                             .any(|entry| entry.marker && !entry.enabled)
                     });
                 let preset_only = configuration.is_none();
-                let message = match (preset_only, marker_warning) {
+                let mut message = match (preset_only, marker_warning) {
                     (true, true) => {
                         "Updated preset prompt order (warning: a structural marker is disabled)"
+                            .to_owned()
                     }
-                    (true, false) => "Updated preset prompt order",
+                    (true, false) => "Updated preset prompt order".to_owned(),
                     (false, true) => {
-                        "Updated prompt order (warning: a structural marker is disabled)"
+                        "Updated prompt order (warning: a structural marker is disabled)".to_owned()
                     }
-                    (false, false) => "Updated prompt order",
+                    (false, false) => "Updated prompt order".to_owned(),
                 };
+                if let Some((identifier, enabled)) = self.pending_preset_toggle.take() {
+                    message.push_str(&format!(
+                        "; {identifier} {}",
+                        if enabled { "enabled" } else { "disabled" }
+                    ));
+                }
+                let auto_disabled = std::mem::take(&mut self.pending_auto_disabled);
+                if !auto_disabled.is_empty() {
+                    message.push_str(&format!("; auto-disabled {}", auto_disabled.join(", ")));
+                }
+                let warnings = std::mem::take(&mut self.pending_directive_warnings);
+                if !warnings.is_empty() {
+                    message.push_str(&format!("; warning: {}", warnings.join(" ")));
+                }
                 self.show_info(message);
                 match picker.return_to.clone() {
                     ModalTarget::NewSession(mut session) => {

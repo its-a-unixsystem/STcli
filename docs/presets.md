@@ -140,17 +140,19 @@ Complex presets frequently bundle JavaScript regex scripts and third-party exten
   - `preset-scripts-not-authorized`: Emitted when enabled scripts lack an explicit Preset Script Grant (they are not executed).
   - `preset-scripts-placement-unsupported`: Emitted when a granted script targets only placements the engine does not yet apply (display-only `markdownOnly`, slash command, world info, or reasoning).
 
-### Third-Party Directives (e.g. NemoPresetExt)
+### Third-Party Directives (for example, NemoPresetExt)
 
-Presets built for extensions such as `NemoPresetExt` include directive comments in prompt bodies:
-- `<!-- NEMO:activate ... -->`
-- `{{// @exclusive-with ...}}`, `{{// @mutual-exclusive-group ...}}`, `{{// @category ...}}`
+Core preserves unknown directive comments but does not parse vendor-specific vocabularies. The default `org.stcli.nemo-directives` Plugin evaluates these directives through the read-only Artifact-inspection surface:
 
-STcli parses, counts, and reports these directives:
-- Diagnostic: `prompt-directives-not-evaluated`.
-- Directives are preserved intact in the prompt content without crashing or triggering unauthorized extension execution.
+- Exclusivity: `@mutual-exclusive-group`, legacy `@exclusive-with-category`, `@exclusive-with`, and `@max-one-per-category` with `@category`.
+- Warnings: `@conflicts-with`, `@warning`, `@deprecated`, and unresolved references.
+- Matching: exact identifier or normalized display name.
 
-All Compatibility Warnings are non-blocking and visible in Dry Run output and stored Attempt receipts.
+When a user enables an exclusive Prompt Order Entry, the preset picker disables its enabled siblings in the same Artifact Revision and names them in the toast. Soft findings remain non-blocking Compatibility Warnings. Unknown directives are ignored, and the Plugin never modifies Artifact content.
+
+### Disabled structural markers
+
+If effective Session state disables a `marker: true` Prompt Order Entry, turn preparation and Dry Run emit `structural-prompt-marker-disabled`. The warning names each disabled marker and never blocks generation or changes prompt assembly.
 
 ---
 

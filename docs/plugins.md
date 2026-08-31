@@ -58,6 +58,12 @@ The steps are:
 
 Replay reads the recorded effects from the trace. It does not run the plugin again. As a result, a plugin cannot make a session non-deterministic.
 
+### Inspect an Artifact outside a Session
+
+An Artifact inspector runs without a Session. The engine loads one decoded Artifact Revision, passes its value in `input.artifact`, and returns one typed `output` value to the caller. The plugin must subscribe to `inspect-artifact`, request the `inspect-artifact` capability, and have an exact id, version, digest, and capability set registered in the Store.
+
+This path is read-only. The host rejects prompt contributions, state writes, aborts, and every effect except `output`. It does not create a Turn Trace receipt because no Turn exists; the result is ephemeral. The WIT interface remains the same JSON-string boundary used by Session events.
+
 ## Choose a runtime
 
 Use this table to pick a runtime.
@@ -355,6 +361,7 @@ The engine runs a hook only when the plugin subscribes to its event in the manif
 | `pre-prompt` | `prePrompt` | Before the prompt is assembled. |
 | `pre-request` | `preRequest` | Before the provider request is built. Only here can a Wasm plugin abort. |
 | `post-commit` | `postCommit` | After the turn is committed. Read-only: only `observe` effects are allowed. |
+| `inspect-artifact` | `inspectArtifact` | Outside a Session, with a decoded Artifact Revision in `input.artifact`. Only one `output` effect is allowed. |
 | (command) | `command` | When a user runs a plugin command. Only `observe` and `state-write` effects are allowed. |
 
 When a script plugin subscribes to an event but does not export its function, the engine returns an error.
@@ -368,6 +375,7 @@ Each hook receives one input object with these keys:
 - `settings`: The plugin settings for this session.
 - `context`: Context data for the event.
 - `state`: The plugin's own stored state.
+- `artifact`: The decoded Artifact value for `inspect-artifact`; omitted from other events.
 - `session`: The permitted session data.
 
 A script reads these from its function argument, for example `input.settings.start`. A Wasm plugin parses them from the input JSON string.
@@ -393,6 +401,7 @@ A plugin returns a list of effects. Each effect has an `effect` field that names
 | Effect | Fields | Capability | Notes |
 |---|---|---|---|
 | `observe` | `value` | `observe-lifecycle` | Records a value in the receipt. Changes nothing. |
+| `output` | `value` | `inspect-artifact` | Returns the typed inspection result. Allowed only during Artifact inspection. |
 | `register-macro` | `name`, `value` | `register-macro` | The name must be in `macros`. Wasm only. |
 | `register-command` | `name`, `description` | `register-command` | The name must be in `commands`. Wasm only. |
 | `prompt` | `contribution` | `contribute-prompt` | The slot must be in `prompt_slots`. |
@@ -416,6 +425,10 @@ A state name must not be empty. It can hold letters, digits, `_`, and `-`. It ca
 #### Prompt
 
 `stcli.prompt.inject(slot, content)` adds `content` to a prompt slot as a system message. The slot must be one the manifest declares in `prompt_slots`. The call needs the `contribute-prompt` capability.
+
+#### Inspection output
+
+`stcli.output(value)` returns one JSON-serializable value from `inspectArtifact`. Artifact inspection rejects every mutation effect and rejects missing or multiple output values.
 
 #### Log
 
@@ -446,6 +459,7 @@ The manifest requests capabilities. The session grant allows a subset. The engin
 | Capability | Allows | Runtime |
 |---|---|---|
 | `observe-lifecycle` | An `observe` effect. | Wasm |
+| `inspect-artifact` | One `output` effect from a registered Artifact inspector. | Wasm, Script |
 | `register-macro` | A `register-macro` effect. | Wasm |
 | `register-command` | A `register-command` effect. | Wasm |
 | `contribute-prompt` | A `prompt` effect, and `stcli.prompt.inject`. | Wasm, Script |

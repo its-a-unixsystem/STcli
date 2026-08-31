@@ -11,10 +11,12 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{ContentHash, EntityId, canonical_json, canonical_json_hash};
+use crate::{
+    ArtifactInspectorRegistration, ContentHash, EntityId, canonical_json, canonical_json_hash,
+};
 
 const TRACE_PAYLOAD_DOMAIN: &str = "stcli:trace-payload:v1";
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 pub struct Store {
     pub(crate) connection: Connection,
@@ -329,6 +331,64 @@ impl Store {
         transaction.commit().map_err(StorageError::Sqlite)?;
         Ok(RecoveryReport { attempt_ids })
     }
+    pub fn register_artifact_inspector(
+        &self,
+        registration: &ArtifactInspectorRegistration,
+    ) -> Result<(), StorageError> {
+        let body = serde_json::to_vec(registration).map_err(StorageError::Json)?;
+        self.connection
+            .execute(
+                "INSERT INTO artifact_inspector_registrations(plugin_id, body)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(plugin_id) DO UPDATE SET body = excluded.body",
+                params![registration.id, body],
+            )
+            .map_err(StorageError::Sqlite)?;
+        Ok(())
+    }
+
+    pub fn artifact_inspector(
+        &self,
+        plugin_id: &str,
+    ) -> Result<Option<ArtifactInspectorRegistration>, StorageError> {
+        let body = self
+            .connection
+            .query_row(
+                "SELECT body FROM artifact_inspector_registrations WHERE plugin_id = ?1",
+                [plugin_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .map_err(StorageError::Sqlite)?;
+        body.map(|body| serde_json::from_slice(&body).map_err(StorageError::Json))
+            .transpose()
+    }
+
+    pub fn artifact_inspectors(&self) -> Result<Vec<ArtifactInspectorRegistration>, StorageError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT body FROM artifact_inspector_registrations ORDER BY plugin_id")
+            .map_err(StorageError::Sqlite)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))
+            .map_err(StorageError::Sqlite)?;
+        rows.map(|row| {
+            let body = row.map_err(StorageError::Sqlite)?;
+            serde_json::from_slice(&body).map_err(StorageError::Json)
+        })
+        .collect()
+    }
+
+    pub fn unregister_artifact_inspector(&self, plugin_id: &str) -> Result<bool, StorageError> {
+        Ok(self
+            .connection
+            .execute(
+                "DELETE FROM artifact_inspector_registrations WHERE plugin_id = ?1",
+                [plugin_id],
+            )
+            .map_err(StorageError::Sqlite)?
+            > 0)
+    }
 }
 
 fn persist_asset(assets_root: &Path, data: &[u8]) -> Result<AssetRecord, StorageError> {
@@ -580,6 +640,10 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
                 semantic_hash TEXT NOT NULL,
                 source_blob_hash TEXT NOT NULL REFERENCES content_blobs(hash),
                 imported_event_id TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS artifact_inspector_registrations (
+                plugin_id TEXT PRIMARY KEY,
+                body BLOB NOT NULL
             );
             CREATE TABLE IF NOT EXISTS assets (
                 hash TEXT PRIMARY KEY,

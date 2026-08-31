@@ -413,6 +413,26 @@ impl Store {
         let mut compatibility_warnings = preset_transformation
             .map(|transformation| transformation.warnings)
             .unwrap_or_default();
+        if let Some(artifact) = preset.as_ref()
+            && let Some(revision) = configuration.configuration.prompt_preset_revision.as_ref()
+        {
+            let disabled_markers = disabled_structural_markers(
+                &artifact.semantic,
+                &configuration.configuration.prompt_order_overrides,
+            );
+            if !disabled_markers.is_empty() {
+                compatibility_warnings.push(CompatibilityWarning {
+                    code: "structural-prompt-marker-disabled".to_owned(),
+                    profile_id: configuration.configuration.compatibility_profile.clone(),
+                    non_blocking: true,
+                    source_revision: revision.clone(),
+                    count: disabled_markers.len(),
+                    affected_identifiers: disabled_markers,
+                    detail: "A structural Prompt Order Entry is disabled; prompt assembly remains permissive."
+                        .to_owned(),
+                });
+            }
+        }
         let ungranted_character = all_script_metadata
             .iter()
             .filter(|script| {
@@ -1375,6 +1395,7 @@ impl Store {
                         plugin_id: installed.manifest.id.clone(),
                         settings: grant.settings.clone(),
                         context: Value::Null,
+                        artifact: Value::Null,
                         state: Value::Object(
                             state
                                 .local_namespace(&installed.manifest.id)
@@ -1406,6 +1427,7 @@ impl Store {
                             });
                         }
                         PluginEffect::Observe { .. }
+                        | PluginEffect::Output { .. }
                         | PluginEffect::RegisterCommand { .. }
                         | PluginEffect::Prompt { .. } => {}
                     }
@@ -1497,6 +1519,7 @@ impl Store {
                         plugin_id: installed.manifest.id.clone(),
                         settings: grant.settings.clone(),
                         context: Value::Null,
+                        artifact: Value::Null,
                         state: Value::Object(
                             state
                                 .local_namespace(&installed.manifest.id)
@@ -1572,6 +1595,7 @@ impl Store {
                 plugin_id: plugin_id.to_owned(),
                 settings: pin.settings.clone(),
                 context: json!({"command": command, "arguments": arguments}),
+                artifact: Value::Null,
                 state: Value::Object(state.local_namespace(plugin_id).into_iter().collect()),
                 session: Value::Null,
             },
@@ -3231,6 +3255,33 @@ pub fn extract_character_scripts(
         .collect()
 }
 
+fn disabled_structural_markers(preset: &Value, overrides: &BTreeMap<String, bool>) -> Vec<String> {
+    let markers = preset
+        .get("prompts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|prompt| prompt.get("marker").and_then(Value::as_bool) == Some(true))
+        .filter_map(|prompt| prompt.get("identifier").and_then(Value::as_str))
+        .collect::<BTreeSet<_>>();
+    PromptPreset::parse(preset, CHAT_COMPLETION_CHARACTER_ID)
+        .map(|prompt| {
+            prompt
+                .order
+                .into_iter()
+                .filter(|entry| markers.contains(entry.identifier.as_str()))
+                .filter(|entry| {
+                    !overrides
+                        .get(&entry.identifier)
+                        .copied()
+                        .unwrap_or(entry.enabled)
+                })
+                .map(|entry| entry.identifier)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn preset_compatibility_warnings(
     profile_id: &str,
     source_revision: &ContentHash,
@@ -3286,57 +3337,6 @@ fn preset_compatibility_warnings(
             detail: "Granted preset scripts target placements the engine does not yet apply \
                      (only user-input and AI-output run)."
                 .to_owned(),
-        });
-    }
-    let mut directive_counts = BTreeMap::<String, usize>::new();
-    for content in preset
-        .get("prompts")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|prompt| prompt.get("content").and_then(Value::as_str))
-    {
-        for comment in content.split("<!--").skip(1) {
-            let Some(body) = comment.split_once("-->").map(|(body, _)| body.trim()) else {
-                continue;
-            };
-            let Some((name, _)) = body.split_once(':') else {
-                continue;
-            };
-            let name = name.trim();
-            if !name.is_empty()
-                && name
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-            {
-                *directive_counts.entry(name.to_owned()).or_default() += 1;
-            }
-        }
-        for directive in content.split("{{// @").skip(1) {
-            let name = directive
-                .split(|character: char| {
-                    character.is_ascii_whitespace() || matches!(character, ':' | '}')
-                })
-                .next()
-                .unwrap_or_default();
-            if !name.is_empty()
-                && name
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-            {
-                *directive_counts.entry(name.to_owned()).or_default() += 1;
-            }
-        }
-    }
-    if !directive_counts.is_empty() {
-        warnings.push(CompatibilityWarning {
-            code: "prompt-directives-not-evaluated".to_owned(),
-            profile_id: profile_id.to_owned(),
-            non_blocking: true,
-            source_revision: source_revision.clone(),
-            affected_identifiers: directive_counts.keys().cloned().collect(),
-            count: directive_counts.values().sum(),
-            detail: "Third-party prompt directives are preserved but not evaluated.".to_owned(),
         });
     }
     if profile_id == "sillytavern-1.18-core"
