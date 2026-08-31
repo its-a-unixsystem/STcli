@@ -6,6 +6,12 @@ Run the terminal user interface with:
 stcli tui
 ```
 
+## Manage sessions
+
+On the Sessions screen, highlight a Session and press `c` to duplicate its root Branch lineage. Archived Sessions remain listed with an `[archived]` marker and can also be duplicated. The name prompt starts with `<name> (copy)` and advances to `<name> (copy 2)`, `<name> (copy 3)`, and so on when needed. Edit the name, then press `Enter` to create the independent, active Duplicated Session or `Esc` to cancel.
+
+After duplication, the Sessions screen remains open and highlights the new Session. `Ctrl+c` keeps its global quit behavior.
+
 ## Manage provider profiles
 
 Press `p` to open the provider profile picker. Press `c` to copy the highlighted profile. The profile editor opens with the source settings and a non-conflicting name such as `<name>-copy`. Change the model or other fields, then press `Ctrl+S`. Saving creates a new `[providers.<name>]` entry in `config.toml`; it does not replace the source profile.

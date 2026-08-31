@@ -152,7 +152,7 @@ fn render_sessions(frame: &mut Frame<'_>, app: &mut App) {
                 SessionListEntry::Session(i) => {
                     let session = &filtered[*i];
                     ListItem::new(format!(
-                        "{:<20} {:16} {:16} {:>5}  {} / {}  {:>7}",
+                        "{:<20} {:16} {:16} {:>5}  {} / {}  {:>7}{}",
                         truncate_display(&session.display_name, 20),
                         format_date(session.created_at_ms),
                         format_date(session.modified_at_ms),
@@ -160,6 +160,7 @@ fn render_sessions(frame: &mut Frame<'_>, app: &mut App) {
                         session.character_label,
                         session.persona_label,
                         session.token_count,
+                        if session.archived { "  [archived]" } else { "" },
                     ))
                     .style(style)
                 }
@@ -254,7 +255,7 @@ fn render_sessions(frame: &mut Frame<'_>, app: &mut App) {
     };
     frame.render_widget(
         Paragraph::new(format!(
-            "n new  ↑/k ↓/j navigate  Enter open  / filter  s sort ({:?})  {branches_hint}  p providers  P presets  u personas  x delete  r rename  ? help  q quit",
+            "n new  ↑/k ↓/j navigate  Enter open  / filter  s sort ({:?})  {branches_hint}  c duplicate  p providers  P presets  u personas  x delete  r rename  ? help  q quit",
             app.sort
         ))
         .style(Style::default().fg(app.theme.muted)),
@@ -777,31 +778,32 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
         Popup::Help => {
             frame.render_widget(Clear, area);
             frame.render_widget(
-                Paragraph::new("Sessions\n  n  new session · ↑/↓ or j/k  navigate\n  /  filter · s  sort · Enter  open\n  b  toggle branch tree · x  delete · r  rename\n  p  providers · P  presets · u  personas\n\nChat composer\n  Enter  send or answer an unanswered user message · Shift+Enter  newline\n  Escape or Tab  focus history\n\nChat history\n  ↑/↓ or j/k  scroll · Tab  focus next message · c  copy\n  ←/→  select Greeting or Candidate\n  x  delete candidate (on user message: delete turn)\n  r  regenerate · e  continue · Enter  compose or answer selected user message\n  b  Branches · p  providers · P  presets\n\nEvery action is available without a mouse. Escape closes this help.")
+                Paragraph::new("Sessions\n  n  new session · ↑/↓ or j/k  navigate\n  /  filter · s  sort · Enter  open\n  b  toggle branch tree · c  duplicate · x  delete · r  rename\n  p  providers · P  presets · u  personas\n\nChat composer\n  Enter  send or answer an unanswered user message · Shift+Enter  newline\n  Escape or Tab  focus history\n\nChat history\n  ↑/↓ or j/k  scroll · Tab  focus next message · c  copy\n  ←/→  select Greeting or Candidate\n  x  delete candidate (on user message: delete turn)\n  r  regenerate · e  continue · Enter  compose or answer selected user message\n  b  Branches · p  providers · P  presets\n\nEvery action is available without a mouse. Escape closes this help.")
                     .wrap(Wrap { trim: false })
                     .block(Block::default().borders(Borders::ALL).title(" Help "))
                     .style(Style::default().bg(app.theme.background).fg(app.theme.foreground)),
                 area,
             );
         }
-        Popup::Rename { input, .. } => {
-            let rename_area = centered(frame.area(), 60, 5);
-            frame.render_widget(Clear, rename_area);
+        Popup::Rename { input, .. } | Popup::DuplicateSession { input, .. } => {
+            let input_area = centered(frame.area(), 60, 5);
+            let title = if matches!(popup, Popup::Rename { .. }) {
+                " Rename session · Enter confirm · Esc cancel "
+            } else {
+                " Duplicate session · Enter confirm · Esc cancel "
+            };
+            frame.render_widget(Clear, input_area);
             frame.render_widget(
                 Paragraph::new(input.as_str())
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title(" Rename session · Enter confirm · Esc cancel "),
-                    )
+                    .block(Block::default().borders(Borders::ALL).title(title))
                     .style(
                         Style::default()
                             .bg(app.theme.background)
                             .fg(app.theme.foreground),
                     ),
-                rename_area,
+                input_area,
             );
-            frame.set_cursor_position((rename_area.x + 1 + input.len() as u16, rename_area.y + 1));
+            frame.set_cursor_position((input_area.x + 1 + input.len() as u16, input_area.y + 1));
         }
         Popup::ConfirmExit => {
             let confirm_area = centered(frame.area(), 52, 5);

@@ -11,8 +11,8 @@ use stcli_core::{
     CHAT_COMPLETION_CHARACTER_ID, CandidateProjection, ContentHash, EngineCommand,
     EngineInspection, EngineQuery, EngineResult, EntityId, Persona, PersonaStore, PresetPatch,
     PromptPreset, ProviderEvent, ProviderSettings, ProviderTemplate, RegexPlacement,
-    SessionConfiguration, SessionSummary, StcliEngine, clone_and_patch_preset, decode_artifact,
-    transform_preset_content, validate_provider_settings,
+    SessionConfiguration, SessionSummary, StcliEngine, available_duplicated_session_name,
+    clone_and_patch_preset, decode_artifact, transform_preset_content, validate_provider_settings,
 };
 
 use crate::{config::Config, theme::Theme};
@@ -639,6 +639,10 @@ pub enum Popup {
         session_id: EntityId,
         input: String,
     },
+    DuplicateSession {
+        session_id: EntityId,
+        input: String,
+    },
     ConfirmExit,
     ConfirmDelete {
         session_id: EntityId,
@@ -1018,6 +1022,7 @@ impl App {
             }
             KeyCode::Char('x') => return self.delete_session_list_entry(),
             KeyCode::Char('r') => self.start_rename(),
+            KeyCode::Char('c') => self.start_duplicate_session(),
             KeyCode::Char('n') => self.open_new_session_popup(),
             KeyCode::Char('p') => self.open_provider_popup(ModalTarget::Sessions),
             KeyCode::Char('P') => self.open_preset_popup(ModalTarget::Sessions),
@@ -1410,6 +1415,23 @@ impl App {
                     return Effect::Execute(EngineCommand::RenameSession {
                         session_id: *session_id,
                         name: std::mem::take(input),
+                    });
+                }
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    input.push(character);
+                }
+                _ => {}
+            },
+            Popup::DuplicateSession { session_id, input } => match key.code {
+                KeyCode::Enter => {
+                    return Effect::Execute(EngineCommand::DuplicateSession {
+                        session_id: *session_id,
+                        branch_id: None,
+                        up_to_turn_id: None,
+                        new_name: Some(std::mem::take(input)),
                     });
                 }
                 KeyCode::Backspace => {
@@ -3116,6 +3138,28 @@ impl App {
         }
     }
 
+    fn start_duplicate_session(&mut self) {
+        let entries = self.session_list_entries();
+        let Some(SessionListEntry::Session(i)) = entries.get(self.selected_session) else {
+            self.show_error("Can only duplicate sessions, not branches");
+            return;
+        };
+        let filtered = self.filtered_sessions();
+        let Some(session) = filtered.get(*i) else {
+            return;
+        };
+        let input = available_duplicated_session_name(
+            &session.display_name,
+            self.sessions
+                .iter()
+                .map(|candidate| candidate.display_name.as_str()),
+        );
+        self.popup = Some(Popup::DuplicateSession {
+            session_id: session.session_id,
+            input,
+        });
+    }
+
     fn delete_focused(&mut self) -> Effect {
         let Some(history) = &self.history else {
             return Effect::None;
@@ -3257,6 +3301,31 @@ impl App {
                 }
                 if let Err(error) = self.open_session(created.session.session_id) {
                     self.show_error(error.to_string());
+                }
+                true
+            }
+            Ok(EngineResult::DuplicatedSession(created)) => {
+                let session_id = created.session.session_id;
+                self.popup = None;
+                self.filter.clear();
+                self.filtering = false;
+                if let Err(error) = self.reload_sessions() {
+                    self.show_error(error.to_string());
+                    return true;
+                }
+                let filtered_index = self
+                    .filtered_sessions()
+                    .iter()
+                    .position(|session| session.session_id == session_id);
+                if let Some(filtered_index) = filtered_index
+                    && let Some(selected) = self.session_list_entries().iter().position(|entry| {
+                        matches!(
+                            entry,
+                            SessionListEntry::Session(index) if *index == filtered_index
+                        )
+                    })
+                {
+                    self.selected_session = selected;
                 }
                 true
             }
@@ -3518,6 +3587,7 @@ impl App {
                 | Popup::ConfirmDelete { .. }
                 | Popup::ConfirmDeleteProvider { .. }
                 | Popup::Rename { .. }
+                | Popup::DuplicateSession { .. }
                 | Popup::NewSession(_)
                 | Popup::ImportArtifact(_)
                 | Popup::ProviderProfile(_)
@@ -4362,6 +4432,82 @@ mod tests {
 
         assert_eq!(app.screen, Screen::Sessions);
         assert_eq!(app.sessions[0].display_name, "Renamed");
+    }
+
+    #[test]
+    fn duplicate_session_key_uses_collision_safe_name_and_highlights_result() {
+        let (mut app, _directory) = app_with_session();
+        let source_session_id = app.history.as_ref().unwrap().session.session_id;
+        app.screen = Screen::Sessions;
+        app.history = None;
+        let source_name = app
+            .sessions
+            .iter()
+            .find(|session| session.session_id == source_session_id)
+            .unwrap()
+            .display_name
+            .clone();
+        execute_command(
+            &mut app,
+            Effect::Execute(EngineCommand::DuplicateSession {
+                session_id: source_session_id,
+                branch_id: None,
+                up_to_turn_id: None,
+                new_name: Some(format!("{source_name} (copy)")),
+            }),
+        );
+        // Regression: archived Sessions remain available as duplication sources.
+        execute_command(
+            &mut app,
+            Effect::Execute(EngineCommand::ArchiveSession {
+                session_id: source_session_id,
+            }),
+        );
+        let source_index = app
+            .filtered_sessions()
+            .iter()
+            .position(|session| session.session_id == source_session_id)
+            .unwrap();
+        app.selected_session = app
+            .session_list_entries()
+            .iter()
+            .position(
+                |entry| matches!(entry, SessionListEntry::Session(index) if *index == source_index),
+            )
+            .unwrap();
+
+        let effect = app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+
+        assert!(matches!(effect, Effect::None));
+        assert!(matches!(
+            &app.popup,
+            Some(Popup::DuplicateSession { session_id, input })
+                if *session_id == source_session_id
+                    && input == &format!("{source_name} (copy 2)")
+        ));
+
+        let effect = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            &effect,
+            Effect::Execute(EngineCommand::DuplicateSession {
+                session_id,
+                branch_id: None,
+                up_to_turn_id: None,
+                new_name: Some(name),
+            }) if *session_id == source_session_id && name == &format!("{source_name} (copy 2)")
+        ));
+        execute_command(&mut app, effect);
+
+        let entries = app.session_list_entries();
+        let filtered = app.filtered_sessions();
+        let SessionListEntry::Session(selected_index) = entries[app.selected_session] else {
+            panic!("duplicated Session must be highlighted");
+        };
+        let selected = &filtered[selected_index];
+        assert_ne!(selected.session_id, source_session_id);
+        assert_eq!(selected.display_name, format!("{source_name} (copy 2)"));
+        assert!(!selected.archived);
+        assert_eq!(app.screen, Screen::Sessions);
     }
 
     #[test]

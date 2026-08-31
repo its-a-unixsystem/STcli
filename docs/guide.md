@@ -9,6 +9,7 @@ Replace placeholders such as `<character-revision>`, `<session-id>`, and `<branc
 - [Import content](#import-content)
 - [Import and inspect presets in the TUI](#import-and-inspect-presets-in-the-tui)
 - [Configure a provider and create a session](#configure-a-provider-and-create-a-session)
+- [Duplicate a session](#duplicate-a-session)
 - [Preview and send a turn](#preview-and-send-a-turn)
 - [Inspect a prompt](#inspect-a-prompt)
 - [Generate alternatives](#generate-alternatives)
@@ -123,6 +124,27 @@ Any explicit CLI flags provided alongside `--provider-profile` (e.g. `--model "d
 If the imported character card or preset bundles regex transformation scripts, they are discovered during session inspection and turn preparation. Authorize execution by passing `--grant-script <digest>` (repeatable). Ungranted scripts emit non-blocking warnings and remain inert.
 
 Add repeatable `--lorebook <revision>` options or a `--preset <revision>` option when needed. Use `--provider-ca-certificate <pem-file>` for a private HTTPS test endpoint. The result includes the session ID and root branch ID.
+
+## Duplicate a session
+
+A Duplicated Session preserves one Branch lineage and the current Session Configuration Revision in a new, independent Session. Later Turns or configuration changes in either Session do not affect the other.
+
+Duplicate the root Branch through the CLI:
+
+```bash
+cargo run --quiet --bin stcli -- --output json session duplicate <session-id>
+```
+
+The default name is `<name> (copy)`, with a numeric suffix when needed. Select a different lineage, stop after an inclusive Turn, or provide a name with optional flags:
+
+```bash
+cargo run --quiet --bin stcli -- --output json session duplicate <session-id> \
+  --branch <branch-id> \
+  --up-to <turn-id> \
+  --name "Alternate route"
+```
+
+In the TUI, highlight an active or `[archived]` Session on the Sessions screen and press `c`. Edit the proposed name and press `Enter`. The new active Session remains highlighted on the Sessions screen. The TUI duplicates the root Branch lineage; use the CLI when you need `--branch` or `--up-to`.
 
 ## Preview and send a turn
 
