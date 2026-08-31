@@ -141,6 +141,7 @@ SillyTavern ships these bundled extensions. Each row is one of them.
 | :--- | :---: | :--- |
 | **Regex** | ✅ | Regex scripts from presets (`/extensions/regex_scripts`) and cards (`extensions.regex_scripts`). Runs in an isolated worker with ReDoS protection. Supports `$0`..`$n`, `{{match}}`, `trimStrings`, `minDepth`/`maxDepth`, the global flag, macros in `replaceString`, and `substituteRegex` modes. Placements 1, 2, 5, and 6 are covered; placement 3 (`SlashCommand`) planned for **v0.6**. See Part 2 for the grant model. |
 | **Connection Manager** | ✅ | Connection profiles loaded from `config.toml` (`[providers.<name>]`). Selectable at session create or update (`--provider-profile`) and in the TUI picker. |
+| **Persona backups** | ✅ | Loads, saves, and imports SillyTavern-compatible `personas.json` data with `personas`, `persona_descriptions`, and optional `default_persona` fields. The TUI persona manager supports add, copy, edit, delete, and backup import; New Session selects saved names and descriptions. |
 | **Token Counter** | ✅ | Exact token counts per segment through the tokenizer registry. See "Exact tokenization" in section 2. |
 | **Assets** | ✅ | Content-addressed asset store at `data/assets/sha256/` with SQLite reference tracking ([ADR 0007](adr/0007-external-content-addressed-asset-storage.md)). Stores card avatars and CHARX assets. See Part 2. |
 | **Expressions** | ❌ | Emotion classification and character sprites planned for **v0.3 / v1.x**. |

@@ -9,6 +9,7 @@ pub mod limits;
 pub mod lore;
 pub mod macros;
 pub mod paths;
+pub mod persona;
 pub mod plugin;
 pub mod profile;
 pub mod prompt;
@@ -27,8 +28,9 @@ pub mod tokenizer;
 pub mod turn;
 
 pub use artifact::{
-    ArtifactBundle, ArtifactError, ArtifactKind, ArtifactRecord, DecodedArtifact,
-    artifact_semantic_hash, content_blob_hash, decode_artifact, decode_unique_json,
+    ArtifactBundle, ArtifactError, ArtifactKind, ArtifactRecord, DecodedArtifact, PresetPatch,
+    artifact_semantic_hash, clone_and_patch_preset, content_blob_hash, decode_artifact,
+    decode_unique_json,
 };
 pub use capsule::{
     CapsuleArtifact, CapsuleArtifactSource, CapsuleBaseline, CapsuleCapabilities,
@@ -63,6 +65,7 @@ pub use macros::{
     MacroContext, MacroEngine, MacroError, MacroEvaluation, MacroRender, MacroWarning,
 };
 pub use paths::AppPaths;
+pub use persona::{Persona, PersonaStore, PersonaStoreError};
 pub use plugin::{
     InstalledPlugin, PluginCapability, PluginDependency, PluginEffect, PluginError, PluginEvent,
     PluginGrant, PluginHost, PluginInput, PluginLimits, PluginManifest, PluginOutput,

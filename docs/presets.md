@@ -11,9 +11,12 @@ This document describes how STcli processes complex presets, resolves generation
 ## 1. Preset Lifecycle in STcli
 
 1. **Import**: Presets are imported via [`stcli artifact import <file>`](cli.md#artifact-commands) as immutable Artifact Revisions. Unknown JSON members, order profiles, embedded regex scripts, and directive comments are preserved byte-for-byte.
-2. **Selection**: A Session selects a preset revision via `--preset <revision>` in [`session create`](cli.md#session-commands) or [`session update`](cli.md#session-commands), creating an immutable Session Configuration Revision.
-3. **Turn Preparation**: Before generation or preview, [`Store::prepare_turn`](../crates/stcli-core/src/turn.rs) resolves generation settings, assembles the Prompt Plan, processes macros sequentially, injects in-chat depth prompts, applies assembly behaviors, prunes tokens, and computes the canonical provider request hash.
-4. **Dry Run / Execution**: Both Dry Run (`--dry-run`) and live Generation Attempts share the exact same preparation output. Dry Run emits the prepared request, effective settings, and diagnostics without performing provider I/O or state mutations; a live attempt submits the prepared request and commits the effect receipt to the authoritative Turn Trace.
+2. **Duplicate**: In the TUI preset picker, `c` opens a focused clone form for the name, temperature, maximum context tokens, maximum response tokens, and `use_sysprompt`. Saving imports a new immutable Artifact Revision and keeps the source revision unchanged.
+3. **Selection**: A Session selects a preset revision via `--preset <revision>` in [`session create`](cli.md#session-commands) or [`session update`](cli.md#session-commands), creating an immutable Session Configuration Revision.
+4. **Turn Preparation**: Before generation or preview, [`Store::prepare_turn`](../crates/stcli-core/src/turn.rs) resolves generation settings, assembles the Prompt Plan, processes macros sequentially, injects in-chat depth prompts, applies assembly behaviors, prunes tokens, and computes the canonical provider request hash.
+5. **Dry Run / Execution**: Both Dry Run (`--dry-run`) and live Generation Attempts share the exact same preparation output. Dry Run emits the prepared request, effective settings, and diagnostics without performing provider I/O or state mutations; a live attempt submits the prepared request and commits the effect receipt to the authoritative Turn Trace.
+
+Preset duplication patches only `preset_name`, `temperature`, the `max_context`/`openai_max_context` compatibility pair, `openai_max_tokens`, and `use_sysprompt`. Prompt slots, order profiles such as `character_id: 100001`, extension metadata, and embedded regex script values are copied unchanged. Unchanged script content therefore retains the same canonical script digest and does not require a new Preset Script Grant.
 
 ---
 

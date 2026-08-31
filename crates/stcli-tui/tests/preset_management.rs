@@ -133,7 +133,9 @@ async fn preset_management_covers_import_inspection_filtering_and_navigation() {
     assert!(rendered.contains("Temperature: 0.7"));
     assert!(rendered.contains("One · UserInput"));
     assert!(rendered.contains("[inert — requires grant]"));
-    assert!(rendered.contains("Enter select · i import · d details · / filter · Esc close"));
+    assert!(
+        rendered.contains("Enter select · c copy · i import · d details · / filter · Esc close")
+    );
     press(&mut app, KeyCode::Tab);
     let Some(Popup::Presets(state)) = &app.popup else {
         panic!("expected preset picker");
@@ -188,6 +190,65 @@ async fn preset_management_covers_import_inspection_filtering_and_navigation() {
         effect,
         Effect::Execute(stcli_core::EngineCommand::UpdateConfiguration { .. })
     ));
+}
+
+#[tokio::test]
+async fn preset_copy_opens_patch_form_and_selects_imported_clone() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let source_bytes = scripted_preset("Source");
+    let mut store = Store::open(&database).unwrap();
+    let source = store.import_artifact(&source_bytes).unwrap();
+    drop(store);
+    let mut app = App::load(StcliEngine::new(database.clone()), Config::default(), None).unwrap();
+    press(&mut app, KeyCode::Char('P'));
+    press(&mut app, KeyCode::Down);
+
+    press(&mut app, KeyCode::Char('c'));
+
+    let Some(Popup::ClonePreset(state)) = &mut app.popup else {
+        panic!("expected preset clone form");
+    };
+    assert_eq!(state.name, "Source-copy");
+    assert_eq!(state.temperature, "0.7");
+    assert_eq!(state.max_context, "8192");
+    assert_eq!(state.max_tokens, "512");
+    assert!(state.use_sysprompt);
+    state.name = "Tuned Source".to_owned();
+    state.temperature = "0.9".to_owned();
+    state.max_context = "16384".to_owned();
+    state.max_tokens = "1024".to_owned();
+    state.use_sysprompt = false;
+
+    let effect = app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    let EngineResult::ArtifactBundle { primary, .. } = execute(&mut app, effect).await else {
+        panic!("expected artifact import result");
+    };
+
+    assert_ne!(primary.revision_hash, source.revision_hash);
+    let Some(Popup::Presets(state)) = &app.popup else {
+        panic!("expected preset picker after clone");
+    };
+    assert_eq!(state.rows[state.selected - 1].label, "Tuned Source");
+    assert_eq!(
+        state.rows[state.selected - 1].record.revision_hash,
+        primary.revision_hash
+    );
+    let EngineInspection::ArtifactSource(clone_bytes) = app
+        .engine
+        .inspect(EngineQuery::ArtifactSource {
+            revision_hash: primary.revision_hash,
+        })
+        .unwrap()
+    else {
+        panic!("expected cloned artifact source");
+    };
+    let source_json: serde_json::Value = serde_json::from_slice(&source_bytes).unwrap();
+    let clone_json: serde_json::Value = serde_json::from_slice(&clone_bytes).unwrap();
+    assert_eq!(clone_json["preset_name"], "Tuned Source");
+    assert_eq!(clone_json["prompts"], source_json["prompts"]);
+    assert_eq!(clone_json["prompt_order"], source_json["prompt_order"]);
+    assert_eq!(clone_json["extensions"], source_json["extensions"]);
 }
 
 #[test]

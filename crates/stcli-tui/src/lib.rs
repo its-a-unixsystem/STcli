@@ -16,8 +16,9 @@ use terminal::TerminalSession;
 use tokio::sync::mpsc;
 
 pub use app::{
-    App, ChatFocus, Effect, ImportArtifactState, ModalTarget, Popup, PresetOption,
-    PresetPickerState, PresetScriptSummary, PresetSummary, Screen,
+    App, ChatFocus, ClonePresetState, Effect, ImportArtifactState, ImportPersonasState,
+    ModalTarget, PersonaEditorState, PersonasState, Popup, PresetOption, PresetPickerState,
+    PresetScriptSummary, PresetSummary, Screen,
 };
 pub use config::{Config, ThemeChoice, TuiSettings};
 pub use ui::render;

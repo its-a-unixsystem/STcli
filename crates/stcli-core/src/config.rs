@@ -63,6 +63,19 @@ impl Config {
         Self::save_provider_profile(directory, None, name, settings)
     }
 
+    pub fn duplicate_provider_profile(
+        directory: &Path,
+        source_name: &str,
+        target_name: &str,
+    ) -> Result<(), ConfigError> {
+        let config = Self::load(directory)?;
+        if config.providers.contains_key(target_name) {
+            return Err(ConfigError::ProfileAlreadyExists(target_name.to_owned()));
+        }
+        let settings = config.resolve_provider_profile(source_name)?.clone();
+        Self::save_provider_profile(directory, None, target_name, settings)
+    }
+
     pub fn save_provider_profile(
         directory: &Path,
         original_name: Option<&str>,
@@ -620,6 +633,26 @@ value = "Bearer sk-secret"
         assert!(!config.providers.contains_key("old"));
         assert_eq!(config.providers["new"].model, "new-model");
     }
+    #[test]
+    fn duplicate_provider_profile_preserves_source_and_unmanaged_configuration() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        fs::write(
+            &path,
+            "# keep\n[tui]\ntheme = \"dark\"\n\n[providers.source]\nid = \"openai-compatible\"\nbase_url = \"https://example.com\" # endpoint\nchat_completions_path = \"/v1/chat/completions\"\napi_key_env = \"EXAMPLE_API_KEY\"\ntimeout_seconds = 30\nmodel = \"source-model\"\nstream = true\n",
+        )
+        .unwrap();
+
+        Config::duplicate_provider_profile(directory.path(), "source", "source-copy").unwrap();
+
+        let source = fs::read_to_string(path).unwrap();
+        assert!(source.contains("# keep"));
+        assert!(source.contains("[tui]\ntheme = \"dark\""));
+        assert!(source.contains("base_url = \"https://example.com\" # endpoint"));
+        let config = Config::load(directory.path()).unwrap();
+        assert_eq!(config.providers["source-copy"], config.providers["source"]);
+    }
+
     #[test]
     fn load_provider_templates_parses_file_and_handles_absent() {
         let directory = tempdir().unwrap();

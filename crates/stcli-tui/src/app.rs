@@ -9,9 +9,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use stcli_core::{
     ArtifactKind, ArtifactRecord, AttemptStatus, BranchHistory, BranchProjection,
     CHAT_COMPLETION_CHARACTER_ID, CandidateProjection, ContentHash, EngineCommand,
-    EngineInspection, EngineQuery, EngineResult, EntityId, PromptPreset, ProviderEvent,
-    ProviderSettings, ProviderTemplate, RegexPlacement, SessionConfiguration, SessionSummary,
-    StcliEngine, decode_artifact, transform_preset_content, validate_provider_settings,
+    EngineInspection, EngineQuery, EngineResult, EntityId, Persona, PersonaStore, PresetPatch,
+    PromptPreset, ProviderEvent, ProviderSettings, ProviderTemplate, RegexPlacement,
+    SessionConfiguration, SessionSummary, StcliEngine, clone_and_patch_preset, decode_artifact,
+    transform_preset_content, validate_provider_settings,
 };
 
 use crate::{config::Config, theme::Theme};
@@ -218,6 +219,9 @@ pub struct NewSessionState {
     pub selected_provider: usize,
     pub presets: Vec<PresetOption>,
     pub selected_preset: usize,
+    pub personas: Vec<Persona>,
+    pub selected_persona: usize,
+    pub active_persona: Option<usize>,
     pub persona: String,
     pub persona_description: String,
     pub selected_greeting: usize,
@@ -283,10 +287,46 @@ pub struct ImportArtifactState {
 }
 
 #[derive(Clone, Debug)]
+pub struct ClonePresetState {
+    pub source_revision: ContentHash,
+    pub name: String,
+    pub temperature: String,
+    pub max_context: String,
+    pub max_tokens: String,
+    pub use_sysprompt: bool,
+    pub focused_field: usize,
+    pub picker: Box<PresetPickerState>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PersonasState {
+    pub personas: Vec<Persona>,
+    pub selected: usize,
+    pub return_to: ModalTarget,
+}
+
+#[derive(Clone, Debug)]
+pub struct PersonaEditorState {
+    pub original_key: Option<String>,
+    pub name: String,
+    pub description: String,
+    pub focused_field: usize,
+    pub manager: Box<PersonasState>,
+    pub resume_new_session: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ImportPersonasState {
+    pub input: String,
+    pub manager: Box<PersonasState>,
+}
+
+#[derive(Clone, Debug)]
 pub struct ProviderProfileState {
     pub templates: Vec<ProviderTemplate>,
     pub selected_template: usize,
     pub original_name: Option<String>,
+    pub copy_source_name: Option<String>,
     pub original_settings: Option<ProviderSettings>,
     pub name: String,
     pub base_url: String,
@@ -329,6 +369,10 @@ pub enum Popup {
     NewSession(Box<NewSessionState>),
     ImportArtifact(ImportArtifactState),
     ProviderProfile(Box<ProviderProfileState>),
+    ClonePreset(Box<ClonePresetState>),
+    Personas(Box<PersonasState>),
+    PersonaEditor(Box<PersonaEditorState>),
+    ImportPersonas(Box<ImportPersonasState>),
 }
 
 #[derive(Clone, Debug)]
@@ -693,6 +737,7 @@ impl App {
             KeyCode::Char('n') => self.open_new_session_popup(),
             KeyCode::Char('p') => self.open_provider_popup(ModalTarget::Sessions),
             KeyCode::Char('P') => self.open_preset_popup(ModalTarget::Sessions),
+            KeyCode::Char('u') => self.open_personas(ModalTarget::Sessions),
             KeyCode::Char('?') => self.popup = Some(Popup::Help),
             KeyCode::Enter => {
                 let entries = self.session_list_entries();
@@ -899,9 +944,19 @@ impl App {
                 }
                 Popup::Presets(state) => self.restore_modal(state.return_to),
                 Popup::ImportArtifact(state) => self.restore_modal(state.return_to),
+                Popup::ClonePreset(state) => self.popup = Some(Popup::Presets(state.picker)),
                 Popup::Providers { return_to, .. } => self.restore_modal(return_to),
                 Popup::ProviderProfile(state) => self.restore_modal(state.return_to),
                 Popup::ConfirmDeleteProvider { return_to, .. } => self.restore_modal(return_to),
+                Popup::Personas(state) => self.restore_modal(state.return_to),
+                Popup::PersonaEditor(state) => {
+                    if state.resume_new_session {
+                        self.restore_modal(state.manager.return_to)
+                    } else {
+                        self.popup = Some(Popup::Personas(state.manager))
+                    }
+                }
+                Popup::ImportPersonas(state) => self.popup = Some(Popup::Personas(state.manager)),
                 _ => {}
             }
             return Effect::None;
@@ -998,6 +1053,17 @@ impl App {
                         *selected,
                     );
                     self.open_provider_profile_popup(None, target);
+                    return Effect::None;
+                }
+                KeyCode::Char('c') => {
+                    if let Some(source_name) = names.get(*selected).cloned() {
+                        let target = Self::provider_modal_target(
+                            return_to.clone(),
+                            Some(source_name.clone()),
+                            *selected,
+                        );
+                        self.open_provider_profile_copy(source_name, target);
+                    }
                     return Effect::None;
                 }
                 KeyCode::Char('e') | KeyCode::Char('m') => {
@@ -1104,6 +1170,10 @@ impl App {
                             return Effect::None;
                         }
                         KeyCode::Char('/') => state.filtering = true,
+                        KeyCode::Char('c') => {
+                            self.open_clone_preset(state.as_ref().clone());
+                            return Effect::None;
+                        }
                         KeyCode::Char('i') => {
                             self.popup = Some(Popup::ImportArtifact(ImportArtifactState {
                                 expected_kind: Some(ArtifactKind::ChatCompletionPreset),
@@ -1237,6 +1307,180 @@ impl App {
                 }
                 _ => {}
             },
+            Popup::Personas(state) => match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    state.selected = state.selected.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    state.selected =
+                        (state.selected + 1).min(state.personas.len().saturating_sub(1));
+                }
+                KeyCode::Char('a') => {
+                    self.open_persona_editor(state.as_ref().clone(), None, false, false);
+                    return Effect::None;
+                }
+                KeyCode::Char('c') => {
+                    if let Some(persona) = state.personas.get(state.selected).cloned() {
+                        self.open_persona_editor(
+                            state.as_ref().clone(),
+                            Some(persona),
+                            true,
+                            false,
+                        );
+                    }
+                    return Effect::None;
+                }
+                KeyCode::Char('e') => {
+                    if let Some(persona) = state.personas.get(state.selected).cloned() {
+                        self.open_persona_editor(
+                            state.as_ref().clone(),
+                            Some(persona),
+                            false,
+                            false,
+                        );
+                    }
+                    return Effect::None;
+                }
+                KeyCode::Char('x') => {
+                    self.delete_selected_persona(state.as_ref().clone());
+                    return Effect::None;
+                }
+                KeyCode::Char('i') => {
+                    self.popup = Some(Popup::ImportPersonas(Box::new(ImportPersonasState {
+                        input: String::new(),
+                        manager: Box::new(state.as_ref().clone()),
+                    })));
+                    return Effect::None;
+                }
+                KeyCode::Enter => {
+                    self.select_persona_from_manager(state.as_ref().clone());
+                    return Effect::None;
+                }
+                _ => {}
+            },
+            Popup::PersonaEditor(state) => {
+                if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.save_persona_editor(state.as_ref().clone());
+                    return Effect::None;
+                }
+                match key.code {
+                    KeyCode::Tab | KeyCode::Down => {
+                        state.focused_field = (state.focused_field + 1) % 4;
+                    }
+                    KeyCode::BackTab | KeyCode::Up => {
+                        state.focused_field = (state.focused_field + 3) % 4;
+                    }
+                    _ => match state.focused_field {
+                        0 | 1 => {
+                            if key.code == KeyCode::Enter {
+                                state.focused_field += 1;
+                            } else {
+                                let value = if state.focused_field == 0 {
+                                    &mut state.name
+                                } else {
+                                    &mut state.description
+                                };
+                                match key.code {
+                                    KeyCode::Backspace => {
+                                        value.pop();
+                                    }
+                                    KeyCode::Char(character)
+                                        if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                    {
+                                        value.push(character);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        2 if key.code == KeyCode::Enter => {
+                            self.save_persona_editor(state.as_ref().clone());
+                            return Effect::None;
+                        }
+                        3 if key.code == KeyCode::Enter => {
+                            if state.resume_new_session {
+                                self.restore_modal(state.manager.return_to.clone());
+                            } else {
+                                self.popup = Some(Popup::Personas(state.manager.clone()));
+                            }
+                            return Effect::None;
+                        }
+                        _ => {}
+                    },
+                }
+            }
+            Popup::ImportPersonas(state) => match key.code {
+                KeyCode::Backspace => {
+                    state.input.pop();
+                }
+                KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    state.input.push(character);
+                }
+                KeyCode::Enter => {
+                    self.import_persona_backup(state.as_ref().clone());
+                    return Effect::None;
+                }
+                _ => {}
+            },
+            Popup::ClonePreset(state) => {
+                if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return self.submit_cloned_preset(state.as_ref().clone());
+                }
+                match key.code {
+                    KeyCode::Tab | KeyCode::Down => {
+                        state.focused_field = (state.focused_field + 1) % 7;
+                    }
+                    KeyCode::BackTab | KeyCode::Up => {
+                        state.focused_field = (state.focused_field + 6) % 7;
+                    }
+                    _ => match state.focused_field {
+                        0..=3 => {
+                            if key.code == KeyCode::Enter {
+                                state.focused_field += 1;
+                            } else {
+                                let value = match state.focused_field {
+                                    0 => &mut state.name,
+                                    1 => &mut state.temperature,
+                                    2 => &mut state.max_context,
+                                    3 => &mut state.max_tokens,
+                                    _ => unreachable!(),
+                                };
+                                match key.code {
+                                    KeyCode::Backspace => {
+                                        value.pop();
+                                    }
+                                    KeyCode::Char(character)
+                                        if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                    {
+                                        value.push(character);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        4 => match key.code {
+                            KeyCode::Left
+                            | KeyCode::Right
+                            | KeyCode::Char(' ')
+                            | KeyCode::Enter => {
+                                state.use_sysprompt = !state.use_sysprompt;
+                                if key.code == KeyCode::Enter {
+                                    state.focused_field = 5;
+                                }
+                            }
+                            _ => {}
+                        },
+                        5 if key.code == KeyCode::Enter => {
+                            return self.submit_cloned_preset(state.as_ref().clone());
+                        }
+                        6 if key.code == KeyCode::Enter => {
+                            self.popup = Some(Popup::Presets(state.picker.clone()));
+                            return Effect::None;
+                        }
+                        _ => {}
+                    },
+                }
+            }
             Popup::ProviderProfile(state) => {
                 if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     return self.submit_provider_profile(state.as_ref().clone());
@@ -1309,7 +1553,7 @@ impl App {
                 }
             }
             Popup::NewSession(state) => {
-                if key.code == KeyCode::Char('p') && !matches!(state.focused_field, 3 | 4) {
+                if key.code == KeyCode::Char('p') {
                     self.open_provider_popup(ModalTarget::NewSession(state.clone()));
                     return Effect::None;
                 }
@@ -1327,17 +1571,11 @@ impl App {
                     return self.submit_new_session(state.as_ref().clone());
                 }
                 match key.code {
-                    KeyCode::Tab | KeyCode::Down => {
-                        state.focused_field = (state.focused_field + 1) % 8;
+                    KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => {
+                        state.focused_field = (state.focused_field + 1) % 7;
                     }
-                    KeyCode::Char('j') if !matches!(state.focused_field, 3 | 4) => {
-                        state.focused_field = (state.focused_field + 1) % 8;
-                    }
-                    KeyCode::BackTab | KeyCode::Up => {
-                        state.focused_field = (state.focused_field + 7) % 8;
-                    }
-                    KeyCode::Char('k') if !matches!(state.focused_field, 3 | 4) => {
-                        state.focused_field = (state.focused_field + 7) % 8;
+                    KeyCode::BackTab | KeyCode::Up | KeyCode::Char('k') => {
+                        state.focused_field = (state.focused_field + 6) % 7;
                     }
                     _ => match state.focused_field {
                         0 => match key.code {
@@ -1408,26 +1646,50 @@ impl App {
                             _ => {}
                         },
                         3 => match key.code {
-                            KeyCode::Backspace => {
-                                state.persona.pop();
+                            KeyCode::Left | KeyCode::Char('h') => {
+                                state.selected_persona = state.selected_persona.saturating_sub(1);
+                                Self::apply_new_session_persona(state);
                             }
-                            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                state.persona.push(c);
+                            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => {
+                                state.selected_persona =
+                                    (state.selected_persona + 1).min(state.personas.len() + 1);
+                                Self::apply_new_session_persona(state);
                             }
-                            KeyCode::Enter => state.focused_field = 4,
+                            KeyCode::Enter if state.selected_persona == state.personas.len() => {
+                                let manager = PersonasState {
+                                    personas: state.personas.clone(),
+                                    selected: state.active_persona.unwrap_or(0),
+                                    return_to: ModalTarget::NewSession(state.clone()),
+                                };
+                                self.open_persona_editor(manager, None, false, true);
+                                return Effect::None;
+                            }
+                            KeyCode::Enter
+                                if state.selected_persona == state.personas.len() + 1 =>
+                            {
+                                let Some(active) = state.active_persona else {
+                                    self.show_error("Select a configured persona before editing");
+                                    return Effect::None;
+                                };
+                                let Some(persona) = state.personas.get(active).cloned() else {
+                                    self.show_error("Selected persona is unavailable");
+                                    return Effect::None;
+                                };
+                                let manager = PersonasState {
+                                    personas: state.personas.clone(),
+                                    selected: active,
+                                    return_to: ModalTarget::NewSession(state.clone()),
+                                };
+                                self.open_persona_editor(manager, Some(persona), false, true);
+                                return Effect::None;
+                            }
+                            KeyCode::Enter => {
+                                Self::apply_new_session_persona(state);
+                                state.focused_field = 4;
+                            }
                             _ => {}
                         },
                         4 => match key.code {
-                            KeyCode::Backspace => {
-                                state.persona_description.pop();
-                            }
-                            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                state.persona_description.push(c);
-                            }
-                            KeyCode::Enter => state.focused_field = 5,
-                            _ => {}
-                        },
-                        5 => match key.code {
                             KeyCode::Left | KeyCode::Char('h') => {
                                 state.selected_greeting = state.selected_greeting.saturating_sub(1);
                             }
@@ -1440,19 +1702,15 @@ impl App {
                                 state.selected_greeting =
                                     (state.selected_greeting + 1).min(max.saturating_sub(1));
                             }
-                            KeyCode::Enter => state.focused_field = 6,
+                            KeyCode::Enter => state.focused_field = 5,
                             _ => {}
                         },
-                        6 => {
-                            if key.code == KeyCode::Enter {
-                                return self.submit_new_session(state.as_ref().clone());
-                            }
+                        5 if key.code == KeyCode::Enter => {
+                            return self.submit_new_session(state.as_ref().clone());
                         }
-                        7 => {
-                            if key.code == KeyCode::Enter {
-                                self.popup = None;
-                                return Effect::None;
-                            }
+                        6 if key.code == KeyCode::Enter => {
+                            self.popup = None;
+                            return Effect::None;
                         }
                         _ => {}
                     },
@@ -1551,6 +1809,211 @@ impl App {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
     }
 
+    fn open_personas(&mut self, return_to: ModalTarget) {
+        match PersonaStore::load(&self.profile_config_dir()) {
+            Ok(store) => {
+                self.popup = Some(Popup::Personas(Box::new(PersonasState {
+                    personas: store.personas(),
+                    selected: 0,
+                    return_to,
+                })));
+            }
+            Err(error) => self.show_error(format!("Failed to load personas: {error}")),
+        }
+    }
+
+    fn open_persona_editor(
+        &mut self,
+        manager: PersonasState,
+        source: Option<Persona>,
+        copy: bool,
+        resume_new_session: bool,
+    ) {
+        let (original_key, name, description) = match source {
+            Some(persona) if copy => {
+                let base = format!("{}-copy", persona.name);
+                let name =
+                    if manager.personas.iter().all(|entry| entry.name != base) {
+                        base
+                    } else {
+                        (2..)
+                        .map(|suffix| format!("{base}-{suffix}"))
+                        .find(|candidate| {
+                            manager.personas.iter().all(|entry| entry.name != *candidate)
+                        })
+                        .expect(
+                            "unbounded suffix sequence always contains an available persona name",
+                        )
+                    };
+                (None, name, persona.description)
+            }
+            Some(persona) => (Some(persona.key), persona.name, persona.description),
+            None => (None, String::new(), String::new()),
+        };
+        self.popup = Some(Popup::PersonaEditor(Box::new(PersonaEditorState {
+            original_key,
+            name,
+            description,
+            focused_field: 0,
+            manager: Box::new(manager),
+            resume_new_session,
+        })));
+    }
+
+    fn save_persona_editor(&mut self, state: PersonaEditorState) {
+        if state.name.trim().is_empty() {
+            self.show_error("Persona name cannot be empty");
+            self.popup = Some(Popup::PersonaEditor(Box::new(state)));
+            return;
+        }
+        let directory = self.profile_config_dir();
+        let mut store = match PersonaStore::load(&directory) {
+            Ok(store) => store,
+            Err(error) => {
+                self.show_error(format!("Failed to load personas: {error}"));
+                self.popup = Some(Popup::PersonaEditor(Box::new(state)));
+                return;
+            }
+        };
+        let key = if let Some(key) = &state.original_key {
+            if let Err(error) = store.update(key, state.name.trim(), state.description.trim()) {
+                self.show_error(format!("Failed to update persona: {error}"));
+                self.popup = Some(Popup::PersonaEditor(Box::new(state)));
+                return;
+            }
+            key.clone()
+        } else {
+            store.insert(state.name.trim(), state.description.trim())
+        };
+        if let Err(error) = store.save(&directory) {
+            self.show_error(format!("Failed to save personas: {error}"));
+            self.popup = Some(Popup::PersonaEditor(Box::new(state)));
+            return;
+        }
+        let mut manager = *state.manager;
+        manager.personas = store.personas();
+        manager.selected = manager
+            .personas
+            .iter()
+            .position(|persona| persona.key == key)
+            .unwrap_or(0);
+        self.show_info(format!("Saved persona '{}'", state.name.trim()));
+        if state.resume_new_session {
+            self.select_persona_from_manager(manager);
+        } else {
+            self.popup = Some(Popup::Personas(Box::new(manager)));
+        }
+    }
+
+    fn delete_selected_persona(&mut self, mut manager: PersonasState) {
+        let Some(persona) = manager.personas.get(manager.selected).cloned() else {
+            self.popup = Some(Popup::Personas(Box::new(manager)));
+            return;
+        };
+        let directory = self.profile_config_dir();
+        let mut store = match PersonaStore::load(&directory) {
+            Ok(store) => store,
+            Err(error) => {
+                self.show_error(format!("Failed to load personas: {error}"));
+                self.popup = Some(Popup::Personas(Box::new(manager)));
+                return;
+            }
+        };
+        store.remove(&persona.key);
+        if let Err(error) = store.save(&directory) {
+            self.show_error(format!("Failed to save personas: {error}"));
+            self.popup = Some(Popup::Personas(Box::new(manager)));
+            return;
+        }
+        manager.personas = store.personas();
+        manager.selected = manager
+            .selected
+            .min(manager.personas.len().saturating_sub(1));
+        self.show_info(format!("Deleted persona '{}'", persona.name));
+        self.popup = Some(Popup::Personas(Box::new(manager)));
+    }
+
+    fn import_persona_backup(&mut self, state: ImportPersonasState) {
+        let path = expand_home_path(state.input.trim());
+        if state.input.trim().is_empty() {
+            self.show_error("Path cannot be empty");
+            self.popup = Some(Popup::ImportPersonas(Box::new(state)));
+            return;
+        }
+        let directory = self.profile_config_dir();
+        let mut store = match PersonaStore::load(&directory) {
+            Ok(store) => store,
+            Err(error) => {
+                self.show_error(format!("Failed to load personas: {error}"));
+                self.popup = Some(Popup::ImportPersonas(Box::new(state)));
+                return;
+            }
+        };
+        let previous_keys = store
+            .personas()
+            .into_iter()
+            .map(|persona| persona.key)
+            .collect::<std::collections::HashSet<_>>();
+        let imported = match store.import_backup(&path) {
+            Ok(imported) => imported,
+            Err(error) => {
+                self.show_error(format!("Failed to import personas: {error}"));
+                self.popup = Some(Popup::ImportPersonas(Box::new(state)));
+                return;
+            }
+        };
+        if let Err(error) = store.save(&directory) {
+            self.show_error(format!("Failed to save personas: {error}"));
+            self.popup = Some(Popup::ImportPersonas(Box::new(state)));
+            return;
+        }
+        let mut manager = *state.manager;
+        manager.personas = store.personas();
+        manager.selected = manager
+            .personas
+            .iter()
+            .position(|persona| !previous_keys.contains(&persona.key))
+            .unwrap_or_else(|| {
+                manager
+                    .selected
+                    .min(manager.personas.len().saturating_sub(1))
+            });
+        self.show_info(format!("Imported {imported} personas"));
+        self.popup = Some(Popup::Personas(Box::new(manager)));
+    }
+
+    fn select_persona_from_manager(&mut self, manager: PersonasState) {
+        let Some(persona) = manager.personas.get(manager.selected).cloned() else {
+            self.popup = Some(Popup::Personas(Box::new(manager)));
+            return;
+        };
+        match manager.return_to {
+            ModalTarget::NewSession(mut state) => {
+                state.personas = manager.personas;
+                state.selected_persona = manager.selected;
+                state.active_persona = Some(manager.selected);
+                state.persona = persona.name;
+                state.persona_description = persona.description;
+                self.popup = Some(Popup::NewSession(state));
+            }
+            return_to => {
+                self.popup = Some(Popup::Personas(Box::new(PersonasState {
+                    return_to,
+                    ..manager
+                })));
+            }
+        }
+    }
+
+    fn apply_new_session_persona(state: &mut NewSessionState) {
+        let Some(persona) = state.personas.get(state.selected_persona) else {
+            return;
+        };
+        state.active_persona = Some(state.selected_persona);
+        state.persona = persona.name.clone();
+        state.persona_description = persona.description.clone();
+    }
+
     pub fn query_character_options(&self) -> Vec<CharacterOption> {
         let mut options = Vec::new();
         for kind in [
@@ -1625,7 +2088,8 @@ impl App {
                     .and_then(|artifact| {
                         artifact
                             .semantic
-                            .get("name")
+                            .get("preset_name")
+                            .or_else(|| artifact.semantic.get("name"))
                             .and_then(serde_json::Value::as_str)
                             .map(str::to_owned)
                     })
@@ -1661,6 +2125,19 @@ impl App {
                 Vec::new()
             }
         };
+        let persona_store = match PersonaStore::load(&self.profile_config_dir()) {
+            Ok(store) => store,
+            Err(error) => {
+                self.show_error(format!("Failed to load personas: {error}"));
+                PersonaStore::default()
+            }
+        };
+        let personas = persona_store.personas();
+        let selected_persona = persona_store
+            .default_persona()
+            .and_then(|key| personas.iter().position(|persona| persona.key == key))
+            .unwrap_or(0);
+        let selected = personas.get(selected_persona).cloned();
         let state = Box::new(NewSessionState {
             selected_character: 0,
             characters,
@@ -1668,8 +2145,16 @@ impl App {
             selected_provider: 0,
             presets,
             selected_preset: 0,
-            persona: "User".to_owned(),
-            persona_description: String::new(),
+            personas,
+            selected_persona,
+            active_persona: selected.as_ref().map(|_| selected_persona),
+            persona: selected
+                .as_ref()
+                .map(|persona| persona.name.clone())
+                .unwrap_or_else(|| "User".to_owned()),
+            persona_description: selected
+                .map(|persona| persona.description)
+                .unwrap_or_default(),
             selected_greeting: 0,
             focused_field: 0,
         });
@@ -1704,6 +2189,28 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn open_provider_profile_copy(&mut self, source_name: String, return_to: ModalTarget) {
+        let copy_name = self.available_provider_copy_name(&source_name);
+        self.open_provider_profile_popup(Some(source_name.clone()), return_to);
+        if let Some(Popup::ProviderProfile(state)) = &mut self.popup {
+            state.original_name = None;
+            state.copy_source_name = Some(source_name);
+            state.name = copy_name;
+            Self::focus_profile_field(state, 1);
+        }
+    }
+
+    fn available_provider_copy_name(&self, source_name: &str) -> String {
+        let base = format!("{source_name}-copy");
+        if !self.config.core.providers.contains_key(&base) {
+            return base;
+        }
+        (2..)
+            .map(|suffix| format!("{base}-{suffix}"))
+            .find(|candidate| !self.config.core.providers.contains_key(candidate))
+            .expect("unbounded suffix sequence always contains an available profile name")
     }
 
     pub fn open_provider_profile_popup(
@@ -1753,6 +2260,7 @@ impl App {
             templates,
             selected_template: 0,
             original_name,
+            copy_source_name: None,
             original_settings,
             name,
             base_url,
@@ -1842,6 +2350,16 @@ impl App {
             self.popup = Some(Popup::ProviderProfile(Box::new(state)));
             return Effect::None;
         }
+        if state.copy_source_name.is_some()
+            && self.config.core.providers.contains_key(state.name.trim())
+        {
+            self.show_error(format!(
+                "Provider profile '{}' already exists",
+                state.name.trim()
+            ));
+            self.popup = Some(Popup::ProviderProfile(Box::new(state)));
+            return Effect::None;
+        }
         let timeout_seconds = match state.timeout_seconds.trim().parse::<u64>() {
             Ok(timeout) => timeout,
             Err(_) => {
@@ -1865,7 +2383,9 @@ impl App {
             instruct_template: None,
             context_formatting: None,
         });
-        settings.id = state.name.trim().to_owned();
+        if state.original_settings.is_none() {
+            settings.id = state.name.trim().to_owned();
+        }
         settings.base_url = state.base_url.trim().to_owned();
         settings.chat_completions_path = state.chat_path.trim().to_owned();
         settings.api_key_env =
@@ -1989,6 +2509,140 @@ impl App {
             configuration: Box::new(configuration),
             greeting_index,
         })
+    }
+
+    fn open_clone_preset(&mut self, picker: PresetPickerState) {
+        let Some(source_revision) = picker.selected_revision() else {
+            self.popup = Some(Popup::Presets(Box::new(picker)));
+            return;
+        };
+        let source = match self.engine.inspect(EngineQuery::ArtifactSource {
+            revision_hash: source_revision.clone(),
+        }) {
+            Ok(EngineInspection::ArtifactSource(source)) => source,
+            Ok(_) => unreachable!("artifact source query returned another inspection type"),
+            Err(error) => {
+                self.show_error(error.to_string());
+                self.popup = Some(Popup::Presets(Box::new(picker)));
+                return;
+            }
+        };
+        let decoded = match decode_artifact(&source) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                self.show_error(error.to_string());
+                self.popup = Some(Popup::Presets(Box::new(picker)));
+                return;
+            }
+        };
+        let source_name = decoded
+            .semantic
+            .get("preset_name")
+            .or_else(|| decoded.semantic.get("name"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Preset");
+        let base = format!("{source_name}-copy");
+        let name = if picker.rows.iter().all(|row| row.label != base) {
+            base
+        } else {
+            (2..)
+                .map(|suffix| format!("{base}-{suffix}"))
+                .find(|candidate| picker.rows.iter().all(|row| row.label != *candidate))
+                .expect("unbounded suffix sequence always contains an available preset name")
+        };
+        let temperature =
+            summary_value(decoded.semantic.get("temperature")).unwrap_or_else(|| "1".to_owned());
+        let max_context = summary_value(
+            decoded
+                .semantic
+                .get("max_context")
+                .or_else(|| decoded.semantic.get("openai_max_context")),
+        )
+        .unwrap_or_else(|| "8192".to_owned());
+        let max_tokens = summary_value(
+            decoded
+                .semantic
+                .get("openai_max_tokens")
+                .or_else(|| decoded.semantic.get("max_tokens")),
+        )
+        .unwrap_or_else(|| "512".to_owned());
+        let use_sysprompt = decoded
+            .semantic
+            .get("use_sysprompt")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        self.popup = Some(Popup::ClonePreset(Box::new(ClonePresetState {
+            source_revision,
+            name,
+            temperature,
+            max_context,
+            max_tokens,
+            use_sysprompt,
+            focused_field: 0,
+            picker: Box::new(picker),
+        })));
+    }
+
+    fn submit_cloned_preset(&mut self, state: ClonePresetState) -> Effect {
+        if state.name.trim().is_empty() {
+            self.show_error("Preset name cannot be empty");
+            self.popup = Some(Popup::ClonePreset(Box::new(state)));
+            return Effect::None;
+        }
+        let temperature = match state.temperature.trim().parse::<f64>() {
+            Ok(value) => value,
+            Err(_) => {
+                self.show_error("Temperature must be a number");
+                self.popup = Some(Popup::ClonePreset(Box::new(state)));
+                return Effect::None;
+            }
+        };
+        let max_context = match state.max_context.trim().parse::<u64>() {
+            Ok(value) => value,
+            Err(_) => {
+                self.show_error("Max context tokens must be a non-negative whole number");
+                self.popup = Some(Popup::ClonePreset(Box::new(state)));
+                return Effect::None;
+            }
+        };
+        let max_tokens = match state.max_tokens.trim().parse::<u64>() {
+            Ok(value) => value,
+            Err(_) => {
+                self.show_error("Max tokens must be a non-negative whole number");
+                self.popup = Some(Popup::ClonePreset(Box::new(state)));
+                return Effect::None;
+            }
+        };
+        let source = match self.engine.inspect(EngineQuery::ArtifactSource {
+            revision_hash: state.source_revision.clone(),
+        }) {
+            Ok(EngineInspection::ArtifactSource(source)) => source,
+            Ok(_) => unreachable!("artifact source query returned another inspection type"),
+            Err(error) => {
+                self.show_error(error.to_string());
+                self.popup = Some(Popup::ClonePreset(Box::new(state)));
+                return Effect::None;
+            }
+        };
+        let clone = match clone_and_patch_preset(
+            &source,
+            PresetPatch {
+                preset_name: state.name.trim().to_owned(),
+                temperature,
+                max_context,
+                max_tokens,
+                use_sysprompt: state.use_sysprompt,
+            },
+        ) {
+            Ok(clone) => clone,
+            Err(error) => {
+                self.show_error(format!("Failed to clone preset: {error}"));
+                self.popup = Some(Popup::ClonePreset(Box::new(state)));
+                return Effect::None;
+            }
+        };
+        self.popup = Some(Popup::ClonePreset(Box::new(state)));
+        Effect::Execute(EngineCommand::ImportArtifact { source: clone })
     }
 
     fn open_preset_popup(&mut self, return_to: ModalTarget) {
@@ -2235,7 +2889,8 @@ impl App {
                     .map(|artifact| {
                         let name = artifact
                             .semantic
-                            .get("name")
+                            .get("preset_name")
+                            .or_else(|| artifact.semantic.get("name"))
                             .and_then(serde_json::Value::as_str)
                             .unwrap_or("Unnamed preset")
                             .to_owned();
@@ -2257,8 +2912,13 @@ impl App {
                         supplementary_artifacts.len()
                     ),
                 };
-                if let Some(Popup::ImportArtifact(state)) = self.popup.take() {
-                    match state.return_to {
+                let return_to = match self.popup.take() {
+                    Some(Popup::ImportArtifact(state)) => Some(state.return_to),
+                    Some(Popup::ClonePreset(state)) => Some(ModalTarget::Presets(state.picker)),
+                    _ => None,
+                };
+                if let Some(return_to) = return_to {
+                    match return_to {
                         ModalTarget::NewSession(mut session_state) => {
                             if primary.kind == ArtifactKind::ChatCompletionPreset {
                                 session_state.presets =
@@ -2451,6 +3111,13 @@ impl App {
                     .min(state.filtered_rows().len());
                 return;
             }
+            Some(Popup::Personas(state)) => {
+                state.selected = state
+                    .selected
+                    .saturating_add_signed(amount)
+                    .min(state.personas.len().saturating_sub(1));
+                return;
+            }
             Some(
                 Popup::Help
                 | Popup::ConfirmExit
@@ -2459,7 +3126,10 @@ impl App {
                 | Popup::Rename { .. }
                 | Popup::NewSession(_)
                 | Popup::ImportArtifact(_)
-                | Popup::ProviderProfile(_),
+                | Popup::ProviderProfile(_)
+                | Popup::ClonePreset(_)
+                | Popup::PersonaEditor(_)
+                | Popup::ImportPersonas(_),
             ) => return,
             None => {}
         }
@@ -2597,6 +3267,20 @@ fn sort_sessions(sessions: &mut [SessionSummary], sort: SortKey) {
             .reverse()
             .then_with(|| left.session_id.cmp(&right.session_id))
     });
+}
+
+fn expand_home_path(path: &str) -> PathBuf {
+    if path == "~" {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(path))
+    } else if let Some(stripped) = path.strip_prefix("~/") {
+        std::env::var("HOME")
+            .map(|home| Path::new(&home).join(stripped))
+            .unwrap_or_else(|_| PathBuf::from(path))
+    } else {
+        PathBuf::from(path)
+    }
 }
 
 fn fuzzy_match(needle: &str, haystack: &str) -> bool {
@@ -3285,6 +3969,143 @@ mod tests {
         assert_eq!(state.focused_field, 0);
     }
     #[test]
+    fn persona_manager_handles_add_copy_edit_delete_and_import() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let config_dir = directory.path().join("config");
+        let mut personas = stcli_core::PersonaStore::default();
+        personas.insert("Alice", "An archivist.");
+        personas.save(&config_dir).unwrap();
+        let backup = directory.path().join("personas_backup.json");
+        fs::write(
+            &backup,
+            r#"{"personas":{"bob.png":"Bob"},"persona_descriptions":{"bob.png":{"description":"A navigator.","position":0}}}"#,
+        )
+        .unwrap();
+        let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+        app.set_config_dir(config_dir.clone());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        let Some(Popup::Personas(state)) = &app.popup else {
+            panic!("expected persona manager");
+        };
+        assert_eq!(state.personas[0].name, "Alice");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        let Some(Popup::PersonaEditor(state)) = &app.popup else {
+            panic!("expected copied persona editor");
+        };
+        assert_eq!(state.name, "Alice-copy");
+        assert_eq!(state.description, "An archivist.");
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        let Some(Popup::PersonaEditor(state)) = &mut app.popup else {
+            panic!("expected new persona editor");
+        };
+        state.name = "Carol".to_owned();
+        state.description = "A cartographer.".to_owned();
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        let Some(Popup::PersonaEditor(state)) = &mut app.popup else {
+            panic!("expected persona editor");
+        };
+        state.name = "Carol Prime".to_owned();
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        let Some(Popup::ImportPersonas(state)) = &mut app.popup else {
+            panic!("expected persona import dialog");
+        };
+        state.input = backup.display().to_string();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let Some(Popup::Personas(state)) = &app.popup else {
+            panic!("expected persona manager after import");
+        };
+        assert!(state.personas.iter().any(|persona| persona.name == "Bob"));
+        assert!(
+            state
+                .personas
+                .iter()
+                .any(|persona| persona.name == "Carol Prime")
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        let saved = stcli_core::PersonaStore::load(&config_dir).unwrap();
+        assert_eq!(saved.personas().len(), 3);
+    }
+
+    #[test]
+    fn new_session_persona_selector_applies_profiles_and_inline_actions() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let config_dir = directory.path().join("config");
+        let mut store = stcli_core::Store::open(&database).unwrap();
+        store
+            .import_artifact(stcli_testkit::fixtures::minimal_card().as_bytes())
+            .unwrap();
+        drop(store);
+        let mut personas = stcli_core::PersonaStore::default();
+        personas.insert("Alice", "An archivist.");
+        personas.insert("Bob", "A navigator.");
+        personas.save(&config_dir).unwrap();
+        let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+        app.set_config_dir(config_dir);
+        app.open_new_session_popup();
+
+        let Some(Popup::NewSession(state)) = &mut app.popup else {
+            panic!("expected new session popup");
+        };
+        assert_eq!(state.personas.len(), 2);
+        assert_eq!(state.persona, "Alice");
+        assert_eq!(state.persona_description, "An archivist.");
+        state.focused_field = 3;
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        let Some(Popup::NewSession(state)) = &app.popup else {
+            panic!("expected new session popup");
+        };
+        assert_eq!(state.persona, "Bob");
+        assert_eq!(state.persona_description, "A navigator.");
+
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let Some(Popup::PersonaEditor(state)) = &mut app.popup else {
+            panic!("expected inline persona editor");
+        };
+        assert!(state.original_key.is_none());
+        state.focused_field = 3;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let Some(Popup::NewSession(state)) = &mut app.popup else {
+            panic!("expected New Session after inline persona cancellation");
+        };
+        state.focused_field = 3;
+        state.selected_persona = state.personas.len();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let Some(Popup::PersonaEditor(state)) = &mut app.popup else {
+            panic!("expected inline persona editor");
+        };
+        state.name = "Carol".to_owned();
+        state.description = "A cartographer.".to_owned();
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+
+        let Some(Popup::NewSession(state)) = &mut app.popup else {
+            panic!("expected resumed new session popup");
+        };
+        assert_eq!(state.persona, "Carol");
+        assert_eq!(state.persona_description, "A cartographer.");
+        state.focused_field = 3;
+        state.selected_persona = state.personas.len() + 1;
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let Some(Popup::PersonaEditor(state)) = &app.popup else {
+            panic!("expected inline persona editor");
+        };
+        assert!(state.original_key.is_some());
+        assert_eq!(state.name, "Carol");
+    }
+    #[test]
     fn new_session_selector_cycles_with_space() {
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("stcli.sqlite3");
@@ -3341,6 +4162,59 @@ mod tests {
         };
         assert_eq!(session_state.characters.len(), 1);
         assert_eq!(session_state.selected_character, 0);
+    }
+
+    #[test]
+    fn provider_copy_opens_prefilled_profile_and_saves_without_replacing_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let config_dir = directory.path().join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.toml"),
+            "# keep\n[providers.source]\nid = \"openai-compatible\"\nbase_url = \"https://example.com\"\nchat_completions_path = \"/v1/chat/completions\"\napi_key_env = \"EXAMPLE_API_KEY\"\ntimeout_seconds = 45\nmodel = \"source-model\"\nstream = false\n",
+        )
+        .unwrap();
+        let config = Config::load(&config_dir).unwrap();
+        let source = config.core.providers["source"].clone();
+        let mut app = App::load(StcliEngine::new(database), config, None).unwrap();
+        app.set_config_dir(config_dir.clone());
+        app.open_provider_popup(ModalTarget::Sessions);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+
+        let Some(Popup::ProviderProfile(state)) = &app.popup else {
+            panic!("expected Popup::ProviderProfile");
+        };
+        assert_eq!(state.name, "source-copy");
+        assert!(state.original_name.is_none());
+        assert_eq!(state.original_settings.as_ref(), Some(&source));
+        assert_eq!(state.model, "source-model");
+        assert_eq!(state.api_key_env, "EXAMPLE_API_KEY");
+        assert!(!state.stream);
+        assert_eq!(state.timeout_seconds, "45");
+
+        let Some(Popup::ProviderProfile(state)) = &mut app.popup else {
+            panic!("expected Popup::ProviderProfile");
+        };
+        state.name = "source".to_owned();
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(app.toast.as_ref().is_some_and(|toast| toast.error));
+        let Some(Popup::ProviderProfile(state)) = &mut app.popup else {
+            panic!("expected clone editor after name collision");
+        };
+        state.name = "source-copy".to_owned();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+
+        let saved = stcli_core::Config::load(&config_dir).unwrap();
+        assert_eq!(saved.providers["source"].model, "source-model");
+        assert_eq!(saved.providers["source-copy"].model, "source-model");
+        assert!(
+            fs::read_to_string(config_dir.join("config.toml"))
+                .unwrap()
+                .contains("# keep")
+        );
     }
 
     #[test]
@@ -3494,6 +4368,9 @@ timeout_seconds = 45
         };
         stcli_core::Config::add_provider_profile(&config_dir, "my-provider", provider_settings)
             .unwrap();
+        let mut personas = PersonaStore::default();
+        personas.insert("Tester", "{{user}} greets {{char}}.");
+        personas.save(&config_dir).unwrap();
 
         let mut app = App::load(
             StcliEngine::new(database),
@@ -3507,13 +4384,8 @@ timeout_seconds = 45
         let Some(Popup::NewSession(state)) = &mut app.popup else {
             panic!("expected Popup::NewSession");
         };
-        state.focused_field = 4;
-        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
-        let Some(Popup::NewSession(state)) = &mut app.popup else {
-            panic!("expected Popup::NewSession");
-        };
-        assert_eq!(state.persona_description, "p");
-        state.persona_description = "{{user}} greets {{char}}.".to_owned();
+        assert_eq!(state.persona, "Tester");
+        assert_eq!(state.persona_description, "{{user}} greets {{char}}.");
 
         let effect = app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
         let Effect::Execute(EngineCommand::CreateSession { configuration, .. }) = &effect else {

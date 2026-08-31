@@ -100,6 +100,48 @@ pub fn content_blob_hash(source: &[u8]) -> crate::ContentHash {
     hash_parts(CONTENT_BLOB_DOMAIN, &[source])
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct PresetPatch {
+    pub preset_name: String,
+    pub temperature: f64,
+    pub max_context: u64,
+    pub max_tokens: u64,
+    pub use_sysprompt: bool,
+}
+
+pub fn clone_and_patch_preset(source: &[u8], patch: PresetPatch) -> Result<Vec<u8>, ArtifactError> {
+    let mut decoded = decode_artifact(source)?;
+    if decoded.kind != ArtifactKind::ChatCompletionPreset {
+        return Err(ArtifactError::ChatCompletionPresetRequired(decoded.kind));
+    }
+    let object = decoded
+        .semantic
+        .as_object_mut()
+        .ok_or(ArtifactError::ExpectedObject)?;
+    object.insert("preset_name".to_owned(), Value::String(patch.preset_name));
+    object.insert(
+        "temperature".to_owned(),
+        Value::Number(
+            Number::from_f64(patch.temperature)
+                .ok_or(ArtifactError::InvalidPresetTemperature(patch.temperature))?,
+        ),
+    );
+    object.insert(
+        "max_context".to_owned(),
+        Value::Number(patch.max_context.into()),
+    );
+    object.insert(
+        "openai_max_context".to_owned(),
+        Value::Number(patch.max_context.into()),
+    );
+    object.insert(
+        "openai_max_tokens".to_owned(),
+        Value::Number(patch.max_tokens.into()),
+    );
+    object.insert("use_sysprompt".to_owned(), Value::Bool(patch.use_sysprompt));
+    serde_json::to_vec_pretty(&decoded.semantic).map_err(ArtifactError::Canonicalize)
+}
+
 pub(crate) fn artifact_source_blob_hash(
     source: &[u8],
 ) -> Result<crate::ContentHash, ArtifactError> {
@@ -772,6 +814,10 @@ pub enum ArtifactError {
     InvalidBase64WebpMetadata(base64::DecodeError),
     #[error("invalid WebP artifact: {0}")]
     InvalidWebp(&'static str),
+    #[error("artifact kind '{0}' is not a Chat Completion preset")]
+    ChatCompletionPresetRequired(ArtifactKind),
+    #[error("preset temperature '{0}' is not a finite JSON number")]
+    InvalidPresetTemperature(f64),
     #[error("invalid WebP EXIF metadata: {0}")]
     InvalidWebpExif(&'static str),
     #[error("invalid WebP XMP metadata: {0}")]
@@ -1302,6 +1348,65 @@ mod tests {
             error.to_string().contains("byte limit"),
             "expected SourceTooLarge, got: {error}"
         );
+    }
+
+    #[test]
+    fn clone_and_patch_preset_changes_only_tunable_fields_and_revision_hash() {
+        let directory = tempdir().unwrap();
+        let mut store = Store::open(directory.path().join("stcli.sqlite3")).unwrap();
+        let source = serde_json::json!({
+            "preset_name": "Source",
+            "temperature": 0.7,
+            "max_context": 8192,
+            "openai_max_tokens": 512,
+            "use_sysprompt": true,
+            "prompts": [{"identifier": "main", "role": "system", "content": "Stay in character."}],
+            "prompt_order": [{"character_id": 100001, "order": [
+                {"identifier": "main", "enabled": true}
+            ]}],
+            "extensions": {"regex_scripts": [{
+                "id": "cleanup",
+                "findRegex": "/secret/g",
+                "replaceString": "[redacted]"
+            }]}
+        });
+        let source_bytes = serde_json::to_vec(&source).unwrap();
+        let source_record = store.import_artifact(&source_bytes).unwrap();
+
+        let clone_bytes = clone_and_patch_preset(
+            &source_bytes,
+            PresetPatch {
+                preset_name: "Source-copy".to_owned(),
+                temperature: 0.9,
+                max_context: 16_384,
+                max_tokens: 1_024,
+                use_sysprompt: false,
+            },
+        )
+        .unwrap();
+        let clone = decode_artifact(&clone_bytes).unwrap().semantic;
+        let clone_record = store.import_artifact(&clone_bytes).unwrap();
+
+        assert_eq!(clone["preset_name"], "Source-copy");
+        assert_eq!(clone["temperature"], 0.9);
+        assert_eq!(clone["max_context"], 16_384);
+        assert_eq!(clone["openai_max_tokens"], 1_024);
+        assert_eq!(clone["openai_max_context"], 16_384);
+        assert_eq!(clone["use_sysprompt"], false);
+        assert_eq!(clone["prompts"], source["prompts"]);
+        assert_eq!(clone["prompt_order"], source["prompt_order"]);
+        assert_eq!(clone["extensions"], source["extensions"]);
+        assert_ne!(clone_record.revision_hash, source_record.revision_hash);
+        assert_ne!(clone_record.semantic_hash, source_record.semantic_hash);
+        let source_script =
+            crate::transform_preset_content("", &source_record.revision_hash, &source, &[])
+                .scripts
+                .remove(0);
+        let clone_script =
+            crate::transform_preset_content("", &clone_record.revision_hash, &clone, &[])
+                .scripts
+                .remove(0);
+        assert_eq!(clone_script.digest, source_script.digest);
     }
 
     #[test]

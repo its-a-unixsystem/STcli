@@ -254,7 +254,7 @@ fn render_sessions(frame: &mut Frame<'_>, app: &mut App) {
     };
     frame.render_widget(
         Paragraph::new(format!(
-            "n new  ↑/k ↓/j navigate  Enter open  / filter  s sort ({:?})  {branches_hint}  x delete  r rename  ? help  q quit",
+            "n new  ↑/k ↓/j navigate  Enter open  / filter  s sort ({:?})  {branches_hint}  p providers  P presets  u personas  x delete  r rename  ? help  q quit",
             app.sort
         ))
         .style(Style::default().fg(app.theme.muted)),
@@ -777,7 +777,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
         Popup::Help => {
             frame.render_widget(Clear, area);
             frame.render_widget(
-                Paragraph::new("Sessions\n  n  new session · ↑/↓ or j/k  navigate\n  /  filter · s  sort · Enter  open\n  b  toggle branch tree · x  delete · r  rename\n\nChat composer\n  Enter  send or answer an unanswered user message · Shift+Enter  newline\n  Escape or Tab  focus history\n\nChat history\n  ↑/↓ or j/k  scroll · Tab  focus next message · c  copy\n  ←/→  select Greeting or Candidate\n  x  delete candidate (on user message: delete turn)\n  r  regenerate · e  continue · Enter  compose or answer selected user message\n  b  Branches · p  providers · P  presets\n\nEvery action is available without a mouse. Escape closes this help.")
+                Paragraph::new("Sessions\n  n  new session · ↑/↓ or j/k  navigate\n  /  filter · s  sort · Enter  open\n  b  toggle branch tree · x  delete · r  rename\n  p  providers · P  presets · u  personas\n\nChat composer\n  Enter  send or answer an unanswered user message · Shift+Enter  newline\n  Escape or Tab  focus history\n\nChat history\n  ↑/↓ or j/k  scroll · Tab  focus next message · c  copy\n  ←/→  select Greeting or Candidate\n  x  delete candidate (on user message: delete turn)\n  r  regenerate · e  continue · Enter  compose or answer selected user message\n  b  Branches · p  providers · P  presets\n\nEvery action is available without a mouse. Escape closes this help.")
                     .wrap(Wrap { trim: false })
                     .block(Block::default().borders(Borders::ALL).title(" Help "))
                     .style(Style::default().bg(app.theme.background).fg(app.theme.foreground)),
@@ -926,7 +926,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 frame,
                 app,
                 provider_area,
-                " Provider profiles · * current · Enter switch · e edit · x delete · a add · Esc close ",
+                " Provider profiles · * current · Enter switch · c copy · e edit · x delete · a add · Esc close ",
                 labels,
                 *selected,
                 None,
@@ -982,12 +982,14 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 render_list_popup(frame, app, columns[0], &title, labels, selected, None);
                 render_preset_details(frame, app, columns[1], detail.as_ref());
                 frame.render_widget(
-                    Paragraph::new("Enter select · i import · d details · / filter · Esc close")
-                        .style(
-                            Style::default()
-                                .bg(app.theme.background)
-                                .fg(app.theme.muted),
-                        ),
+                    Paragraph::new(
+                        "Enter select · c copy · i import · d details · / filter · Esc close",
+                    )
+                    .style(
+                        Style::default()
+                            .bg(app.theme.background)
+                            .fg(app.theme.muted),
+                    ),
                     body_and_footer[1],
                 );
             } else {
@@ -998,7 +1000,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                     &title,
                     labels,
                     selected,
-                    Some("Enter select · i import · d details · / filter · Esc close"),
+                    Some("Enter select · c copy · i import · d details · / filter · Esc close"),
                 );
             }
         }
@@ -1044,6 +1046,180 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                         .fg(app.theme.foreground),
                 ),
                 import_area,
+            );
+        }
+        Popup::Personas(state) => {
+            let height = frame.area().height.saturating_mul(70).saturating_div(100);
+            let persona_area = centered(frame.area(), 72, height);
+            let labels = state
+                .personas
+                .iter()
+                .map(|persona| {
+                    if persona.description.is_empty() {
+                        persona.name.clone()
+                    } else {
+                        format!(
+                            "{}  {}",
+                            persona.name,
+                            truncate_display(&persona.description, 42)
+                        )
+                    }
+                })
+                .collect();
+            render_list_popup(
+                frame,
+                app,
+                persona_area,
+                " Personas ",
+                labels,
+                state.selected,
+                Some("Enter select · a add · c copy · e edit · x delete · i import · Esc close"),
+            );
+        }
+        Popup::PersonaEditor(state) => {
+            let editor_area = centered(frame.area(), 76, 11);
+            frame.render_widget(Clear, editor_area);
+            let field_style = |index: usize| {
+                if state.focused_field == index {
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(app.theme.foreground)
+                }
+            };
+            let marker = |index: usize| {
+                if state.focused_field == index {
+                    "> "
+                } else {
+                    "  "
+                }
+            };
+            let content = vec![
+                Line::from(vec![
+                    Span::styled(format!("{}Name: ", marker(0)), field_style(0)),
+                    Span::styled(&state.name, field_style(0)),
+                ]),
+                Line::from(vec![
+                    Span::styled(format!("{}Description: ", marker(1)), field_style(1)),
+                    Span::styled(&state.description, field_style(1)),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(format!("{}[Save]", marker(2)), field_style(2)),
+                    Span::raw("    "),
+                    Span::styled(format!("{}[Cancel]", marker(3)), field_style(3)),
+                ]),
+            ];
+            frame.render_widget(
+                Paragraph::new(content)
+                    .wrap(Wrap { trim: false })
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" Persona · Ctrl+S save · Esc cancel "),
+                    )
+                    .style(
+                        Style::default()
+                            .bg(app.theme.background)
+                            .fg(app.theme.foreground),
+                    ),
+                editor_area,
+            );
+        }
+        Popup::ImportPersonas(state) => {
+            let import_area = centered(frame.area(), 72, 7);
+            frame.render_widget(Clear, import_area);
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(vec![
+                        Span::styled("Path: ", Style::default().fg(app.theme.accent)),
+                        Span::styled(&state.input, Style::default().fg(app.theme.foreground)),
+                        Span::styled("█", Style::default().fg(app.theme.accent)),
+                    ]),
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        "SillyTavern personas_*.json or personas.json",
+                        Style::default().fg(app.theme.muted),
+                    )),
+                ])
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Import Personas · Enter import · Esc cancel "),
+                )
+                .style(
+                    Style::default()
+                        .bg(app.theme.background)
+                        .fg(app.theme.foreground),
+                ),
+                import_area,
+            );
+        }
+        Popup::ClonePreset(state) => {
+            let clone_area = centered(frame.area(), 72, 13);
+            frame.render_widget(Clear, clone_area);
+            let field_style = |index: usize| {
+                if state.focused_field == index {
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(app.theme.foreground)
+                }
+            };
+            let marker = |index: usize| {
+                if state.focused_field == index {
+                    "> "
+                } else {
+                    "  "
+                }
+            };
+            let content = vec![
+                Line::from(vec![
+                    Span::styled(format!("{}New Preset Name: ", marker(0)), field_style(0)),
+                    Span::styled(&state.name, field_style(0)),
+                ]),
+                Line::from(vec![
+                    Span::styled(format!("{}Temperature: ", marker(1)), field_style(1)),
+                    Span::styled(&state.temperature, field_style(1)),
+                ]),
+                Line::from(vec![
+                    Span::styled(format!("{}Max Context Tokens: ", marker(2)), field_style(2)),
+                    Span::styled(&state.max_context, field_style(2)),
+                ]),
+                Line::from(vec![
+                    Span::styled(format!("{}Max Tokens: ", marker(3)), field_style(3)),
+                    Span::styled(&state.max_tokens, field_style(3)),
+                ]),
+                Line::from(Span::styled(
+                    format!(
+                        "{}System Prompt: {}",
+                        marker(4),
+                        if state.use_sysprompt { "On" } else { "Off" }
+                    ),
+                    field_style(4),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(format!("{}[Save]", marker(5)), field_style(5)),
+                    Span::raw("    "),
+                    Span::styled(format!("{}[Cancel]", marker(6)), field_style(6)),
+                ]),
+            ];
+            frame.render_widget(
+                Paragraph::new(content)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" Clone Prompt Preset · Ctrl+S save · Esc cancel "),
+                    )
+                    .style(
+                        Style::default()
+                            .bg(app.theme.background)
+                            .fg(app.theme.foreground),
+                    ),
+                clone_area,
             );
         }
         Popup::ProviderProfile(state) => {
@@ -1315,6 +1491,14 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 "<Import preset...>".to_owned()
             };
 
+            let persona_label = if state.selected_persona < state.personas.len() {
+                format!("<{}>", state.personas[state.selected_persona].name)
+            } else if state.selected_persona == state.personas.len() {
+                "<+ Add new persona...>".to_owned()
+            } else {
+                "<[Edit persona...]>".to_owned()
+            };
+
             let greeting_label = {
                 let total = state
                     .characters
@@ -1331,13 +1515,6 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(app.theme.foreground)
-                }
-            };
-            let cursor = |idx: usize| {
-                if state.focused_field == idx {
-                    "█"
-                } else {
-                    ""
                 }
             };
 
@@ -1378,48 +1555,42 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 Line::from(vec![
                     Span::styled(
                         if state.focused_field == 3 {
-                            "> Persona Name: "
+                            "> Persona:      "
                         } else {
-                            "  Persona Name: "
+                            "  Persona:      "
                         },
                         field_style(3),
                     ),
-                    Span::styled(&state.persona, field_style(3)),
-                    Span::styled(cursor(3), Style::default().fg(app.theme.accent)),
+                    Span::styled(persona_label, field_style(3)),
+                ]),
+                Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        truncate_display(&state.persona_description, 58),
+                        Style::default().fg(app.theme.muted),
+                    ),
                 ]),
                 Line::from(vec![
                     Span::styled(
                         if state.focused_field == 4 {
-                            "> Persona Desc: "
-                        } else {
-                            "  Persona Desc: "
-                        },
-                        field_style(4),
-                    ),
-                    Span::styled(&state.persona_description, field_style(4)),
-                    Span::styled(cursor(4), Style::default().fg(app.theme.accent)),
-                ]),
-                Line::from(vec![
-                    Span::styled(
-                        if state.focused_field == 5 {
                             "> Greeting:     "
                         } else {
                             "  Greeting:     "
                         },
-                        field_style(5),
+                        field_style(4),
                     ),
-                    Span::styled(greeting_label, field_style(5)),
+                    Span::styled(greeting_label, field_style(4)),
                 ]),
                 Line::from(""),
                 Line::from(vec![
                     Span::raw("    "),
                     Span::styled(
-                        if state.focused_field == 6 {
+                        if state.focused_field == 5 {
                             "[ Create Session ]"
                         } else {
                             "  Create Session  "
                         },
-                        if state.focused_field == 6 {
+                        if state.focused_field == 5 {
                             Style::default()
                                 .bg(app.theme.accent)
                                 .fg(app.theme.background)
@@ -1430,12 +1601,12 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                     ),
                     Span::raw("     "),
                     Span::styled(
-                        if state.focused_field == 7 {
+                        if state.focused_field == 6 {
                             "[ Cancel ]"
                         } else {
                             "  Cancel  "
                         },
-                        if state.focused_field == 7 {
+                        if state.focused_field == 6 {
                             Style::default()
                                 .bg(app.theme.accent)
                                 .fg(app.theme.background)
