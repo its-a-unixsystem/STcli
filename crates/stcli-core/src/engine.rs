@@ -404,6 +404,14 @@ impl StcliEngine {
             } => Ok(EngineResult::CreatedSession(Box::new(
                 store.create_session(*configuration, greeting_index)?,
             ))),
+            EngineCommand::DuplicateSession {
+                session_id,
+                branch_id,
+                up_to_turn_id,
+                new_name,
+            } => Ok(EngineResult::DuplicatedSession(Box::new(
+                store.duplicate_session(session_id, branch_id, up_to_turn_id, new_name)?,
+            ))),
             EngineCommand::RenameSession { session_id, name } => {
                 store.rename_session(session_id, &name)?;
                 let session = store
@@ -671,6 +679,12 @@ pub enum EngineCommand {
         configuration: Box<SessionConfiguration>,
         greeting_index: usize,
     },
+    DuplicateSession {
+        session_id: EntityId,
+        branch_id: Option<EntityId>,
+        up_to_turn_id: Option<EntityId>,
+        new_name: Option<String>,
+    },
     RenameSession {
         session_id: EntityId,
         name: String,
@@ -784,6 +798,7 @@ pub enum EngineResult {
     },
     Stscript(StscriptResult),
     CreatedSession(Box<CreatedSession>),
+    DuplicatedSession(Box<CreatedSession>),
     Session(SessionProjection),
     Purge(PurgeReport),
     Compaction(CompactionReport),

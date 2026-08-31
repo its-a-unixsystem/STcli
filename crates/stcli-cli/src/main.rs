@@ -1712,7 +1712,9 @@ fn emit_engine_result(output: OutputFormat, command: &str, result: &EngineResult
                 asset_count: *asset_count,
             },
         ),
-        EngineResult::CreatedSession(data) => emit(output, command, data),
+        EngineResult::CreatedSession(data) | EngineResult::DuplicatedSession(data) => {
+            emit(output, command, data)
+        }
         EngineResult::Session(data) => emit(output, command, data),
         EngineResult::Purge(data) => emit(output, command, data),
         EngineResult::Compaction(data) => emit(output, command, data),

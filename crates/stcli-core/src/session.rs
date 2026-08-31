@@ -16,6 +16,10 @@ use crate::{
     identity::{canonical_json, canonical_json_hash},
     provider::validate_text_completion_settings,
     storage::{StorageError, append_event},
+    turn::{
+        AttemptProjection, AttemptStatus, CandidateOrigin, CandidateProjection, decode_attempt,
+        decode_candidate,
+    },
 };
 
 const SESSION_CONFIG_DOMAIN: &str = "stcli:session-configuration:v1";
@@ -123,6 +127,22 @@ pub struct CreatedSession {
     pub session: SessionProjection,
     pub branch: BranchProjection,
     pub configuration: SessionConfigurationRecord,
+}
+
+struct RecordedTurn {
+    turn_id: EntityId,
+    user_content: String,
+    selected_candidate_id: Option<EntityId>,
+    selection_history: Vec<EntityId>,
+    hidden: bool,
+    deleted: bool,
+    attempts: Vec<AttemptProjection>,
+    candidates: Vec<RecordedCandidate>,
+}
+
+struct RecordedCandidate {
+    projection: CandidateProjection,
+    deleted: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -244,6 +264,346 @@ impl Store {
                 created_event_id: configuration_event.event_id.to_string(),
             },
         })
+    }
+
+    pub fn duplicate_session(
+        &mut self,
+        source_session_id: EntityId,
+        source_branch_id: Option<EntityId>,
+        source_up_to_turn_id: Option<EntityId>,
+        new_name: Option<String>,
+    ) -> Result<CreatedSession, SessionError> {
+        let source_session = self
+            .session(source_session_id)?
+            .ok_or(SessionError::SessionNotFound(source_session_id))?;
+        let source_branch_id = source_branch_id.unwrap_or(source_session.root_branch_id);
+        let source_branch = self
+            .branch(source_branch_id)?
+            .ok_or(SessionError::BranchNotFound(source_branch_id))?;
+        if source_branch.session_id != source_session_id {
+            return Err(SessionError::BranchSessionMismatch);
+        }
+        let configuration = self
+            .configuration(&source_session.current_config_hash)?
+            .ok_or_else(|| {
+                SessionError::ConfigurationNotFound(source_session.current_config_hash.clone())
+            })?;
+        let mut turn_ids =
+            recorded_lineage(&self.connection, source_branch_id, &mut BTreeSet::new())?;
+        if let Some(turn_id) = source_up_to_turn_id {
+            let cutoff = turn_ids
+                .iter()
+                .position(|candidate| *candidate == turn_id)
+                .ok_or(SessionError::TurnNotOnBranch {
+                    turn_id,
+                    branch_id: source_branch_id,
+                })?;
+            turn_ids.truncate(cutoff + 1);
+        }
+        let mut selection_history = BTreeMap::<EntityId, Vec<EntityId>>::new();
+        for event in self.trace_events(Some(source_session_id))? {
+            if event.event_type != "turn.candidate-selected" {
+                continue;
+            }
+            let turn_id = required_string(&event.payload, "turn_id")?
+                .parse()
+                .map_err(|_| SessionError::InvalidTrace("turn_id"))?;
+            let candidate_id = required_string(&event.payload, "candidate_id")?
+                .parse()
+                .map_err(|_| SessionError::InvalidTrace("candidate_id"))?;
+            selection_history
+                .entry(turn_id)
+                .or_default()
+                .push(candidate_id);
+        }
+        let turns = load_recorded_turns(&self.connection, &turn_ids, &selection_history)?;
+        let custom_name =
+            self.duplicated_session_name(&source_session, &configuration, new_name)?;
+
+        let session_id = EntityId::new();
+        let branch_id = EntityId::new();
+        let turn_ids = turns
+            .iter()
+            .map(|turn| (turn.turn_id, EntityId::new()))
+            .collect::<BTreeMap<_, _>>();
+        let attempt_ids = turns
+            .iter()
+            .flat_map(|turn| turn.attempts.iter())
+            .map(|attempt| (attempt.attempt_id, EntityId::new()))
+            .collect::<BTreeMap<_, _>>();
+        let candidate_ids = turns
+            .iter()
+            .flat_map(|turn| turn.candidates.iter())
+            .map(|candidate| (candidate.projection.candidate_id, EntityId::new()))
+            .collect::<BTreeMap<_, _>>();
+        let configuration_value = serde_json::to_value(&configuration.configuration)?;
+        let configuration_bytes = canonical_json(&configuration_value)?;
+
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(StorageError::Sqlite)?;
+        let configuration_event = append_event(
+            &transaction,
+            Some(session_id),
+            "session.configuration-created",
+            &json!({
+                "revision_hash": configuration.revision_hash,
+                "configuration": configuration.configuration,
+            }),
+        )?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO session_config_revisions(revision_hash, body, created_event_id) VALUES (?1, ?2, ?3)",
+                params![
+                    configuration.revision_hash.to_string(),
+                    configuration_bytes,
+                    configuration_event.event_id.to_string(),
+                ],
+            )
+            .map_err(StorageError::Sqlite)?;
+        let session_event = append_event(
+            &transaction,
+            Some(session_id),
+            "session.created",
+            &json!({
+                "session_id": session_id,
+                "configuration_revision": configuration.revision_hash,
+                "root_branch_id": branch_id,
+                "greeting_revision": source_branch.greeting_revision_hash,
+                "greeting_index": source_branch.greeting_index,
+                "custom_name": custom_name,
+            }),
+        )?;
+        transaction
+            .execute(
+                "INSERT INTO sessions(session_id, current_config_hash, root_branch_id, archived, custom_name, created_event_id) VALUES (?1, ?2, ?3, 0, ?4, ?5)",
+                params![
+                    session_id.to_string(),
+                    configuration.revision_hash.to_string(),
+                    branch_id.to_string(),
+                    custom_name,
+                    session_event.event_id.to_string(),
+                ],
+            )
+            .map_err(StorageError::Sqlite)?;
+        transaction
+            .execute(
+                "INSERT INTO branches(branch_id, session_id, parent_branch_id, forked_from_turn_id, greeting_revision_hash, greeting_index, created_event_id) VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5)",
+                params![
+                    branch_id.to_string(),
+                    session_id.to_string(),
+                    source_branch.greeting_revision_hash.to_string(),
+                    source_branch.greeting_index as i64,
+                    session_event.event_id.to_string(),
+                ],
+            )
+            .map_err(StorageError::Sqlite)?;
+        append_event(
+            &transaction,
+            Some(session_id),
+            "session.duplicated",
+            &json!({
+                "source_session_id": source_session_id,
+                "source_branch_id": source_branch_id,
+                "source_up_to_turn_id": source_up_to_turn_id,
+                "copied_turns": turns.len(),
+                "copied_candidates": candidate_ids.len(),
+            }),
+        )?;
+        append_event(
+            &transaction,
+            Some(session_id),
+            "branch.greeting-selected",
+            &json!({
+                "branch_id": branch_id,
+                "greeting_revision": source_branch.greeting_revision_hash,
+                "greeting_index": source_branch.greeting_index,
+            }),
+        )?;
+
+        for turn in &turns {
+            let new_turn_id = turn_ids[&turn.turn_id];
+            let turn_event = append_event(
+                &transaction,
+                Some(session_id),
+                "turn.created",
+                &json!({
+                    "turn_id": new_turn_id,
+                    "branch_id": branch_id,
+                    "user_content": turn.user_content,
+                }),
+            )?;
+            transaction
+                .execute(
+                    "INSERT INTO turns(turn_id, session_id, branch_id, user_content, selected_candidate_id, created_event_id) VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
+                    params![
+                        new_turn_id.to_string(),
+                        session_id.to_string(),
+                        branch_id.to_string(),
+                        turn.user_content,
+                        turn_event.event_id.to_string(),
+                    ],
+                )
+                .map_err(StorageError::Sqlite)?;
+            let candidates_by_attempt = turn
+                .candidates
+                .iter()
+                .filter_map(|candidate| {
+                    candidate
+                        .projection
+                        .attempt_id
+                        .map(|attempt_id| (attempt_id, candidate))
+                })
+                .collect::<BTreeMap<_, _>>();
+            for attempt in &turn.attempts {
+                duplicate_attempt(
+                    &transaction,
+                    session_id,
+                    new_turn_id,
+                    attempt,
+                    candidates_by_attempt.get(&attempt.attempt_id).copied(),
+                    &attempt_ids,
+                    &candidate_ids,
+                )?;
+            }
+            for candidate in turn
+                .candidates
+                .iter()
+                .filter(|candidate| candidate.projection.attempt_id.is_none())
+            {
+                duplicate_manual_candidate(
+                    &transaction,
+                    session_id,
+                    new_turn_id,
+                    candidate,
+                    &candidate_ids,
+                )?;
+            }
+            for selected_candidate_id in &turn.selection_history {
+                let selected_candidate_id = candidate_ids
+                    .get(selected_candidate_id)
+                    .copied()
+                    .ok_or(SessionError::InvalidTrace("candidate_id"))?;
+                append_event(
+                    &transaction,
+                    Some(session_id),
+                    "turn.candidate-selected",
+                    &json!({
+                        "turn_id": new_turn_id,
+                        "candidate_id": selected_candidate_id,
+                    }),
+                )?;
+            }
+            if let Some(selected_candidate_id) = turn.selected_candidate_id {
+                let selected_candidate_id = candidate_ids
+                    .get(&selected_candidate_id)
+                    .copied()
+                    .ok_or(SessionError::InvalidTrace("selected_candidate_id"))?;
+                append_event(
+                    &transaction,
+                    Some(session_id),
+                    "turn.candidate-selected",
+                    &json!({
+                        "turn_id": new_turn_id,
+                        "candidate_id": selected_candidate_id,
+                    }),
+                )?;
+                transaction
+                    .execute(
+                        "UPDATE turns SET selected_candidate_id = ?1 WHERE turn_id = ?2",
+                        params![selected_candidate_id.to_string(), new_turn_id.to_string()],
+                    )
+                    .map_err(StorageError::Sqlite)?;
+            }
+            duplicate_visibility_and_deletion(
+                &transaction,
+                session_id,
+                new_turn_id,
+                turn,
+                &candidate_ids,
+            )?;
+        }
+        transaction.commit().map_err(StorageError::Sqlite)?;
+
+        Ok(CreatedSession {
+            session: SessionProjection {
+                session_id,
+                current_config_hash: configuration.revision_hash.clone(),
+                root_branch_id: branch_id,
+                archived: false,
+                custom_name,
+                created_event_id: session_event.event_id.to_string(),
+            },
+            branch: BranchProjection {
+                branch_id,
+                session_id,
+                parent_branch_id: None,
+                forked_from_turn_id: None,
+                greeting_revision_hash: source_branch.greeting_revision_hash,
+                greeting_index: source_branch.greeting_index,
+                greeting: source_branch.greeting,
+                created_event_id: session_event.event_id.to_string(),
+            },
+            configuration,
+        })
+    }
+
+    fn duplicated_session_name(
+        &self,
+        source: &SessionProjection,
+        configuration: &SessionConfigurationRecord,
+        requested: Option<String>,
+    ) -> Result<Option<String>, SessionError> {
+        if let Some(requested) = requested {
+            let requested = requested.trim();
+            return Ok((!requested.is_empty()).then(|| requested.to_owned()));
+        }
+        let character = self.decoded_artifact(&configuration.configuration.character_revision)?;
+        let source_name = source.custom_name.clone().unwrap_or_else(|| {
+            character
+                .semantic
+                .pointer("/data/name")
+                .or_else(|| character.semantic.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("Character")
+                .to_owned()
+        });
+        let mut existing_names = BTreeSet::new();
+        for session in self.sessions()? {
+            if let Some(name) = session.custom_name {
+                existing_names.insert(name);
+                continue;
+            }
+            let configuration = self
+                .configuration(&session.current_config_hash)?
+                .ok_or_else(|| {
+                    SessionError::ConfigurationNotFound(session.current_config_hash.clone())
+                })?;
+            let character =
+                self.decoded_artifact(&configuration.configuration.character_revision)?;
+            existing_names.insert(
+                character
+                    .semantic
+                    .pointer("/data/name")
+                    .or_else(|| character.semantic.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("Character")
+                    .to_owned(),
+            );
+        }
+        let first = format!("{source_name} (copy)");
+        if !existing_names.contains(&first) {
+            return Ok(Some(first));
+        }
+        let mut counter = 2;
+        loop {
+            let candidate = format!("{source_name} (copy {counter})");
+            if !existing_names.contains(&candidate) {
+                return Ok(Some(candidate));
+            }
+            counter += 1;
+        }
     }
 
     pub fn session(&self, session_id: EntityId) -> Result<Option<SessionProjection>, SessionError> {
@@ -985,10 +1345,11 @@ impl Store {
                     let branch_id = required_string(&event.payload, "root_branch_id")?;
                     let greeting_revision = required_string(&event.payload, "greeting_revision")?;
                     let greeting_index = required_u64(&event.payload, "greeting_index")?;
+                    let custom_name = event.payload.get("custom_name").and_then(Value::as_str);
                     transaction
                         .execute(
-                            "INSERT INTO sessions(session_id, current_config_hash, root_branch_id, archived, created_event_id) VALUES (?1, ?2, ?3, 0, ?4)",
-                            params![session_id, configuration, branch_id, event.event_id.to_string()],
+                            "INSERT INTO sessions(session_id, current_config_hash, root_branch_id, archived, custom_name, created_event_id) VALUES (?1, ?2, ?3, 0, ?4, ?5)",
+                            params![session_id, configuration, branch_id, custom_name, event.event_id.to_string()],
                         )
                         .map_err(StorageError::Sqlite)?;
                     transaction
@@ -1160,7 +1521,7 @@ impl Store {
                             params![
                                 candidate_id,
                                 turn_id,
-                                required_string(&event.payload, "parent_candidate_id")?,
+                                event.payload.get("parent_candidate_id").and_then(Value::as_str),
                                 required_string(&event.payload, "content")?,
                                 event.event_id.to_string(),
                             ],
@@ -1530,6 +1891,450 @@ impl Store {
         })
     }
 }
+fn recorded_lineage(
+    connection: &rusqlite::Connection,
+    branch_id: EntityId,
+    visited: &mut BTreeSet<EntityId>,
+) -> Result<Vec<EntityId>, SessionError> {
+    if !visited.insert(branch_id) {
+        return Err(SessionError::InvalidTrace("branch cycle"));
+    }
+    if visited.len() > crate::limits::MAX_BRANCH_DEPTH {
+        return Err(SessionError::InvalidTrace("branch depth"));
+    }
+    let (parent_branch_id, forked_from_turn_id) = connection
+        .query_row(
+            "SELECT parent_branch_id, forked_from_turn_id FROM branches WHERE branch_id = ?1 AND deleted = 0",
+            [branch_id.to_string()],
+            |row| {
+                Ok((
+                    parse_optional_column(row, 0)?,
+                    parse_optional_column(row, 1)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(StorageError::Sqlite)?
+        .ok_or(SessionError::BranchNotFound(branch_id))?;
+    let mut turns = if let (Some(parent), Some(fork)) = (parent_branch_id, forked_from_turn_id) {
+        let mut inherited = recorded_lineage(connection, parent, visited)?;
+        let cutoff = inherited
+            .iter()
+            .position(|turn_id| *turn_id == fork)
+            .ok_or(SessionError::InvalidTrace("forked_from_turn_id"))?;
+        inherited.truncate(cutoff);
+        inherited
+    } else {
+        Vec::new()
+    };
+    let mut statement = connection
+        .prepare("SELECT turn_id FROM turns WHERE branch_id = ?1 ORDER BY rowid")
+        .map_err(StorageError::Sqlite)?;
+    turns.extend(
+        statement
+            .query_map([branch_id.to_string()], |row| {
+                parse_column::<EntityId>(row, 0)
+            })
+            .map_err(StorageError::Sqlite)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StorageError::Sqlite)?,
+    );
+    Ok(turns)
+}
+
+fn load_recorded_turns(
+    connection: &rusqlite::Connection,
+    turn_ids: &[EntityId],
+    selection_history: &BTreeMap<EntityId, Vec<EntityId>>,
+) -> Result<Vec<RecordedTurn>, SessionError> {
+    turn_ids
+        .iter()
+        .map(|turn_id| {
+            let (user_content, selected_candidate_id, hidden, deleted) = connection
+                .query_row(
+                    "SELECT user_content, selected_candidate_id, hidden, deleted FROM turns WHERE turn_id = ?1",
+                    [turn_id.to_string()],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            parse_optional_column(row, 1)?,
+                            row.get::<_, i64>(2)? != 0,
+                            row.get::<_, i64>(3)? != 0,
+                        ))
+                    },
+                )
+                .map_err(StorageError::Sqlite)?;
+            let attempts = {
+                let mut statement = connection
+                    .prepare("SELECT attempt_id, turn_id, config_hash, retry_of_attempt_id, status, prompt_plan, provider_request_hash, provider_receipt, effect_receipt, error_message, created_event_id, completed_event_id FROM attempts WHERE turn_id = ?1 ORDER BY rowid")
+                    .map_err(StorageError::Sqlite)?;
+                statement
+                    .query_map([turn_id.to_string()], decode_attempt)
+                    .map_err(StorageError::Sqlite)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(StorageError::Sqlite)?
+            };
+            let candidates = {
+                let mut statement = connection
+                    .prepare("SELECT candidate_id, turn_id, attempt_id, parent_candidate_id, origin, content, created_event_id, hidden, deleted FROM candidates WHERE turn_id = ?1 ORDER BY rowid")
+                    .map_err(StorageError::Sqlite)?;
+                statement
+                    .query_map([turn_id.to_string()], |row| {
+                        Ok(RecordedCandidate {
+                            projection: decode_candidate(row)?,
+                            deleted: row.get::<_, i64>(8)? != 0,
+                        })
+                    })
+                    .map_err(StorageError::Sqlite)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(StorageError::Sqlite)?
+            };
+            Ok(RecordedTurn {
+                turn_id: *turn_id,
+                user_content,
+                selected_candidate_id,
+                selection_history: selection_history.get(turn_id).cloned().unwrap_or_default(),
+                hidden,
+                deleted,
+                attempts,
+                candidates,
+            })
+        })
+        .collect()
+}
+
+fn duplicate_attempt(
+    transaction: &Transaction<'_>,
+    session_id: EntityId,
+    turn_id: EntityId,
+    attempt: &AttemptProjection,
+    source_candidate: Option<&RecordedCandidate>,
+    attempt_ids: &BTreeMap<EntityId, EntityId>,
+    candidate_ids: &BTreeMap<EntityId, EntityId>,
+) -> Result<(), SessionError> {
+    let attempt_id = attempt_ids[&attempt.attempt_id];
+    let retry_of_attempt_id = attempt
+        .retry_of_attempt_id
+        .map(|source_id| {
+            attempt_ids
+                .get(&source_id)
+                .copied()
+                .ok_or(SessionError::InvalidTrace("retry_of_attempt_id"))
+        })
+        .transpose()?;
+    let mut prompt_plan = attempt.prompt_plan.clone();
+    prompt_plan.parent_candidate_id =
+        mapped_candidate_id(prompt_plan.parent_candidate_id, candidate_ids);
+    let started = append_event(
+        transaction,
+        Some(session_id),
+        "attempt.started",
+        &json!({
+            "attempt_id": attempt_id,
+            "turn_id": turn_id,
+            "config_hash": attempt.config_hash,
+            "retry_of_attempt_id": retry_of_attempt_id,
+            "prompt_plan": prompt_plan,
+            "effect_receipt": attempt.effect_receipt,
+        }),
+    )?;
+    let mut candidate_event = None;
+    let completed_event = match attempt.status {
+        AttemptStatus::Running => None,
+        AttemptStatus::Completed => {
+            let candidate =
+                source_candidate.ok_or(SessionError::InvalidTrace("completed candidate"))?;
+            let candidate_id = candidate_ids[&candidate.projection.candidate_id];
+            let parent_candidate_id =
+                mapped_candidate_id(candidate.projection.parent_candidate_id, candidate_ids);
+            let request_hash = attempt
+                .provider_request_hash
+                .as_ref()
+                .ok_or(SessionError::InvalidTrace("provider_request_hash"))?;
+            let receipt = attempt
+                .provider_receipt
+                .as_ref()
+                .ok_or(SessionError::InvalidTrace("provider_receipt"))?;
+            let event = append_event(
+                transaction,
+                Some(session_id),
+                "attempt.completed",
+                &json!({
+                    "attempt_id": attempt_id,
+                    "turn_id": turn_id,
+                    "candidate_id": candidate_id,
+                    "parent_candidate_id": parent_candidate_id,
+                    "origin": candidate_origin_name(candidate.projection.origin),
+                    "provider_request_hash": request_hash,
+                    "provider_receipt": receipt,
+                    "plugin_receipts": attempt.effect_receipt.as_ref().map(|effect| &effect.plugins),
+                    "content": candidate.projection.content,
+                }),
+            )?;
+            candidate_event = Some((candidate, event.event_id.to_string()));
+            Some(event.event_id.to_string())
+        }
+        AttemptStatus::Failed => {
+            let event = append_event(
+                transaction,
+                Some(session_id),
+                "attempt.failed",
+                &json!({
+                    "attempt_id": attempt_id,
+                    "turn_id": turn_id,
+                    "message": attempt.error_message.as_deref().unwrap_or("attempt failed"),
+                }),
+            )?;
+            Some(event.event_id.to_string())
+        }
+        AttemptStatus::Cancelled => {
+            let cancelled = append_event(
+                transaction,
+                Some(session_id),
+                "attempt.cancelled",
+                &json!({"attempt_id": attempt_id, "turn_id": turn_id}),
+            )?;
+            if let Some(receipt) = &attempt.provider_receipt {
+                let source_candidate_id =
+                    source_candidate.map(|candidate| candidate.projection.candidate_id);
+                let candidate_id = source_candidate_id.map(|source_id| candidate_ids[&source_id]);
+                let parent_candidate_id = source_candidate.and_then(|candidate| {
+                    mapped_candidate_id(candidate.projection.parent_candidate_id, candidate_ids)
+                });
+                let candidate_content =
+                    source_candidate.map(|candidate| candidate.projection.content.as_str());
+                let event = append_event(
+                    transaction,
+                    Some(session_id),
+                    "attempt.cancellation-receipt",
+                    &json!({
+                        "attempt_id": attempt_id,
+                        "turn_id": turn_id,
+                        "partial_text": receipt.get("partial_text").and_then(Value::as_str).unwrap_or(""),
+                        "candidate_content": candidate_content,
+                        "parent_candidate_id": parent_candidate_id,
+                        "candidate_id": candidate_id,
+                        "origin": candidate_id.map(|_| "accepted-partial"),
+                    }),
+                )?;
+                if let Some(candidate) = source_candidate {
+                    candidate_event = Some((candidate, event.event_id.to_string()));
+                }
+                Some(event.event_id.to_string())
+            } else {
+                Some(cancelled.event_id.to_string())
+            }
+        }
+        AttemptStatus::Incomplete => {
+            let event = append_event(
+                transaction,
+                Some(session_id),
+                "attempt.recovered-incomplete",
+                &json!({"attempt_id": attempt_id, "turn_id": turn_id}),
+            )?;
+            Some(event.event_id.to_string())
+        }
+    };
+    let prompt_bytes = canonical_json(&serde_json::to_value(&prompt_plan)?)?;
+    let receipt_bytes = attempt
+        .provider_receipt
+        .as_ref()
+        .map(canonical_json)
+        .transpose()?;
+    let effect_bytes = attempt
+        .effect_receipt
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()?
+        .as_ref()
+        .map(canonical_json)
+        .transpose()?;
+    transaction
+        .execute(
+            "INSERT INTO attempts(attempt_id, turn_id, config_hash, retry_of_attempt_id, status, prompt_plan, provider_request_hash, provider_receipt, effect_receipt, error_message, created_event_id, completed_event_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                attempt_id.to_string(),
+                turn_id.to_string(),
+                attempt.config_hash.to_string(),
+                retry_of_attempt_id.map(|id| id.to_string()),
+                attempt_status_name(attempt.status),
+                prompt_bytes,
+                attempt.provider_request_hash.as_ref().map(ToString::to_string),
+                receipt_bytes,
+                effect_bytes,
+                attempt.error_message,
+                started.event_id.to_string(),
+                completed_event,
+            ],
+        )
+        .map_err(StorageError::Sqlite)?;
+    if let Some((candidate, event_id)) = candidate_event {
+        insert_duplicated_candidate(
+            transaction,
+            turn_id,
+            Some(attempt_id),
+            candidate,
+            candidate_ids,
+            &event_id,
+        )?;
+    }
+    Ok(())
+}
+
+fn duplicate_manual_candidate(
+    transaction: &Transaction<'_>,
+    session_id: EntityId,
+    turn_id: EntityId,
+    candidate: &RecordedCandidate,
+    candidate_ids: &BTreeMap<EntityId, EntityId>,
+) -> Result<(), SessionError> {
+    let candidate_id = candidate_ids[&candidate.projection.candidate_id];
+    let parent_candidate_id =
+        mapped_candidate_id(candidate.projection.parent_candidate_id, candidate_ids);
+    let event = append_event(
+        transaction,
+        Some(session_id),
+        "candidate.manual-created",
+        &json!({
+            "candidate_id": candidate_id,
+            "turn_id": turn_id,
+            "parent_candidate_id": parent_candidate_id,
+            "content": candidate.projection.content,
+        }),
+    )?;
+    insert_duplicated_candidate(
+        transaction,
+        turn_id,
+        None,
+        candidate,
+        candidate_ids,
+        &event.event_id.to_string(),
+    )
+}
+
+fn insert_duplicated_candidate(
+    transaction: &Transaction<'_>,
+    turn_id: EntityId,
+    attempt_id: Option<EntityId>,
+    candidate: &RecordedCandidate,
+    candidate_ids: &BTreeMap<EntityId, EntityId>,
+    created_event_id: &str,
+) -> Result<(), SessionError> {
+    let candidate_id = candidate_ids[&candidate.projection.candidate_id];
+    let parent_candidate_id =
+        mapped_candidate_id(candidate.projection.parent_candidate_id, candidate_ids);
+    transaction
+        .execute(
+            "INSERT INTO candidates(candidate_id, turn_id, attempt_id, parent_candidate_id, origin, content, created_event_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                candidate_id.to_string(),
+                turn_id.to_string(),
+                attempt_id.map(|id| id.to_string()),
+                parent_candidate_id.map(|id| id.to_string()),
+                candidate_origin_name(candidate.projection.origin),
+                candidate.projection.content,
+                created_event_id,
+            ],
+        )
+        .map_err(StorageError::Sqlite)?;
+    Ok(())
+}
+
+fn duplicate_visibility_and_deletion(
+    transaction: &Transaction<'_>,
+    session_id: EntityId,
+    turn_id: EntityId,
+    turn: &RecordedTurn,
+    candidate_ids: &BTreeMap<EntityId, EntityId>,
+) -> Result<(), SessionError> {
+    for candidate in &turn.candidates {
+        let candidate_id = candidate_ids[&candidate.projection.candidate_id];
+        if candidate.projection.hidden {
+            append_event(
+                transaction,
+                Some(session_id),
+                "candidate.hidden",
+                &json!({"candidate_id": candidate_id, "hidden": true}),
+            )?;
+            transaction
+                .execute(
+                    "UPDATE candidates SET hidden = 1 WHERE candidate_id = ?1",
+                    [candidate_id.to_string()],
+                )
+                .map_err(StorageError::Sqlite)?;
+        }
+        if candidate.deleted {
+            append_event(
+                transaction,
+                Some(session_id),
+                "candidate.deleted",
+                &json!({"candidate_id": candidate_id, "turn_id": turn_id}),
+            )?;
+            transaction
+                .execute(
+                    "UPDATE candidates SET deleted = 1 WHERE candidate_id = ?1",
+                    [candidate_id.to_string()],
+                )
+                .map_err(StorageError::Sqlite)?;
+        }
+    }
+    if turn.hidden {
+        append_event(
+            transaction,
+            Some(session_id),
+            "turn.hidden",
+            &json!({"turn_id": turn_id, "hidden": true}),
+        )?;
+        transaction
+            .execute(
+                "UPDATE turns SET hidden = 1 WHERE turn_id = ?1",
+                [turn_id.to_string()],
+            )
+            .map_err(StorageError::Sqlite)?;
+    }
+    if turn.deleted {
+        append_event(
+            transaction,
+            Some(session_id),
+            "turn.deleted",
+            &json!({"turn_id": turn_id}),
+        )?;
+        transaction
+            .execute(
+                "UPDATE turns SET deleted = 1 WHERE turn_id = ?1",
+                [turn_id.to_string()],
+            )
+            .map_err(StorageError::Sqlite)?;
+    }
+    Ok(())
+}
+
+fn mapped_candidate_id(
+    source_id: Option<EntityId>,
+    candidate_ids: &BTreeMap<EntityId, EntityId>,
+) -> Option<EntityId> {
+    source_id.and_then(|source_id| candidate_ids.get(&source_id).copied())
+}
+
+fn candidate_origin_name(origin: CandidateOrigin) -> &'static str {
+    match origin {
+        CandidateOrigin::Generated => "generated",
+        CandidateOrigin::Continued => "continued",
+        CandidateOrigin::Manual => "manual",
+        CandidateOrigin::AcceptedPartial => "accepted-partial",
+    }
+}
+
+fn attempt_status_name(status: AttemptStatus) -> &'static str {
+    match status {
+        AttemptStatus::Running => "running",
+        AttemptStatus::Completed => "completed",
+        AttemptStatus::Failed => "failed",
+        AttemptStatus::Cancelled => "cancelled",
+        AttemptStatus::Incomplete => "incomplete",
+    }
+}
+
 trait CompactableEntity {
     fn id(&self) -> EntityId;
     fn deleted(&self) -> bool;
@@ -1952,6 +2757,11 @@ pub enum SessionError {
     RootBranchDeletion(EntityId),
     #[error("branch belongs to a different session")]
     BranchSessionMismatch,
+    #[error("turn {turn_id} is not on branch {branch_id}")]
+    TurnNotOnBranch {
+        turn_id: EntityId,
+        branch_id: EntityId,
+    },
     #[error("session configuration revision {0} was not found")]
     ConfigurationNotFound(ContentHash),
     #[error("authoritative trace is missing or has invalid field '{0}'")]

@@ -3667,7 +3667,7 @@ fn decode_turn(row: &rusqlite::Row<'_>) -> rusqlite::Result<TurnProjection> {
     })
 }
 
-fn decode_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttemptProjection> {
+pub(crate) fn decode_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttemptProjection> {
     let status: String = row.get(4)?;
     let prompt_plan: Vec<u8> = row.get(5)?;
     let request_hash: Option<String> = row.get(6)?;
@@ -3703,7 +3703,7 @@ fn decode_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttemptProjection
     })
 }
 
-fn decode_candidate(row: &rusqlite::Row<'_>) -> rusqlite::Result<CandidateProjection> {
+pub(crate) fn decode_candidate(row: &rusqlite::Row<'_>) -> rusqlite::Result<CandidateProjection> {
     let origin: String = row.get(4)?;
     Ok(CandidateProjection {
         candidate_id: parse_column(row, 0)?,

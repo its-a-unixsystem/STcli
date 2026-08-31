@@ -1,6 +1,8 @@
+use serde_json::json;
+use stcli_core::{ContextFormatting, FormatMode, InstructTemplate};
 use stcli_core::{
-    ContextFormatting, EngineCommand, EngineInspection, EngineQuery, EngineResult, FormatMode,
-    InstructTemplate, StcliEngine, Store,
+    EngineCommand, EngineError, EngineInspection, EngineQuery, EngineResult, EntityId,
+    SessionError, StcliEngine, Store,
 };
 use stcli_testkit::{configuration, fixtures};
 use tempfile::tempdir;
@@ -289,4 +291,372 @@ async fn engine_persona_description_is_pinned_rendered_and_ordered_by_preset() {
             .stop_sequences
             .contains(&"Morgan is searching for Alice.".to_owned())
     );
+}
+
+#[tokio::test]
+async fn duplicate_session_reauthors_an_independent_lineage_through_an_inclusive_turn() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let created = store
+        .create_session(configuration(character.revision_hash), 0)
+        .unwrap();
+
+    let first = create_failed_turn(
+        &mut store,
+        created.session.session_id,
+        created.branch.branch_id,
+        "first",
+    )
+    .await;
+    let first_candidate = complete_with_candidate(&mut store, &first, "first answer");
+    let alternate_candidate = EntityId::new();
+    store
+        .record_event(
+            Some(created.session.session_id),
+            "candidate.manual-created",
+            &json!({
+                "candidate_id": alternate_candidate,
+                "turn_id": first.turn_id,
+                "parent_candidate_id": first_candidate,
+                "content": "alternate first answer",
+            }),
+        )
+        .unwrap();
+    store.rebuild_session_projections().unwrap();
+    store
+        .select_swipe(first.turn_id, alternate_candidate)
+        .unwrap();
+    store.select_swipe(first.turn_id, first_candidate).unwrap();
+    let edited = store
+        .edit_candidate(first_candidate, "edited first answer".to_owned())
+        .unwrap();
+    let second = create_failed_turn(
+        &mut store,
+        created.session.session_id,
+        created.branch.branch_id,
+        "second",
+    )
+    .await;
+    let deleted_candidate = complete_with_candidate(&mut store, &second, "deleted answer");
+    store.hide_turn(second.turn_id).unwrap();
+    store.delete_candidate(deleted_candidate).unwrap();
+    let third = create_failed_turn(
+        &mut store,
+        created.session.session_id,
+        created.branch.branch_id,
+        "not copied",
+    )
+    .await;
+    complete_with_candidate(&mut store, &third, "not copied answer");
+    store
+        .rename_session(created.session.session_id, "Original")
+        .unwrap();
+
+    let mut updated_configuration = created.configuration.configuration.clone();
+    updated_configuration.persona_name = "Duplicated persona".to_owned();
+    let selected_configuration = store
+        .update_session_configuration(created.session.session_id, updated_configuration)
+        .unwrap();
+    assert!(
+        store
+            .archive_session(created.session.session_id)
+            .unwrap()
+            .archived
+    );
+    let source_trace = store
+        .trace_events(Some(created.session.session_id))
+        .unwrap();
+    drop(store);
+
+    let engine = StcliEngine::new(&database);
+    let EngineResult::DuplicatedSession(duplicated) = engine
+        .execute(
+            EngineCommand::DuplicateSession {
+                session_id: created.session.session_id,
+                branch_id: None,
+                up_to_turn_id: Some(second.turn_id),
+                new_name: None,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected duplication result");
+    };
+    let EngineResult::DuplicatedSession(edited_duplicate) = engine
+        .execute(
+            EngineCommand::DuplicateSession {
+                session_id: created.session.session_id,
+                branch_id: Some(edited.branch.branch_id),
+                up_to_turn_id: None,
+                new_name: Some("Edited duplicate".to_owned()),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected edited-branch duplication result");
+    };
+
+    assert_ne!(duplicated.session.session_id, created.session.session_id);
+    assert_ne!(duplicated.branch.branch_id, created.branch.branch_id);
+    assert_eq!(
+        duplicated.configuration.revision_hash,
+        selected_configuration.revision_hash
+    );
+    assert_eq!(
+        duplicated.session.custom_name.as_deref(),
+        Some("Original (copy)")
+    );
+    assert!(!duplicated.session.archived);
+
+    let mut store = Store::open(&database).unwrap();
+    assert_eq!(
+        store
+            .trace_events(Some(created.session.session_id))
+            .unwrap(),
+        source_trace
+    );
+    let duplicated_trace = store
+        .trace_events(Some(duplicated.session.session_id))
+        .unwrap();
+    let provenance = duplicated_trace
+        .iter()
+        .find(|event| event.event_type == "session.duplicated")
+        .unwrap();
+    assert_eq!(
+        provenance.payload,
+        json!({
+            "source_session_id": created.session.session_id,
+            "source_branch_id": created.branch.branch_id,
+            "source_up_to_turn_id": second.turn_id,
+            "copied_turns": 2,
+            "copied_candidates": 3,
+        })
+    );
+    assert!(
+        duplicated_trace
+            .iter()
+            .any(|event| event.event_type == "turn.hidden")
+    );
+    assert!(
+        duplicated_trace
+            .iter()
+            .any(|event| event.event_type == "candidate.deleted")
+    );
+    assert!(duplicated_trace.iter().all(|event| !matches!(
+        event.event_type.as_str(),
+        "state.committed" | "plugin.command" | "stscript.started" | "stscript.completed"
+    )));
+    assert_eq!(
+        duplicated_trace
+            .iter()
+            .filter(|event| event.event_type == "turn.candidate-selected")
+            .count(),
+        3
+    );
+
+    let duplicated_turns = store.turns_for_branch(duplicated.branch.branch_id).unwrap();
+    assert_eq!(
+        duplicated_turns
+            .iter()
+            .map(|turn| turn.user_content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first", "second"]
+    );
+    assert!(duplicated_turns[1].hidden);
+    assert!(
+        store
+            .candidates_for_turn(duplicated_turns[1].turn_id)
+            .unwrap()
+            .is_empty()
+    );
+    assert_ne!(duplicated_turns[0].turn_id, first.turn_id);
+    assert_eq!(
+        store
+            .attempts_for_turn(duplicated_turns[0].turn_id)
+            .unwrap()
+            .len(),
+        store.attempts_for_turn(first.turn_id).unwrap().len()
+    );
+    assert_eq!(
+        store
+            .candidates_for_turn(duplicated_turns[0].turn_id)
+            .unwrap()
+            .len(),
+        2
+    );
+    let edited_turns = store
+        .turns_for_branch(edited_duplicate.branch.branch_id)
+        .unwrap();
+    assert_eq!(edited_turns.len(), 1);
+    let edited_candidates = store.candidates_for_turn(edited_turns[0].turn_id).unwrap();
+    assert_eq!(edited_candidates.len(), 1);
+    assert_eq!(edited_candidates[0].parent_candidate_id, None);
+    store.rebuild_session_projections().unwrap();
+    assert_eq!(
+        store
+            .session(duplicated.session.session_id)
+            .unwrap()
+            .unwrap()
+            .custom_name
+            .as_deref(),
+        Some("Original (copy)")
+    );
+    assert_eq!(
+        store
+            .session(edited_duplicate.session.session_id)
+            .unwrap()
+            .unwrap()
+            .custom_name
+            .as_deref(),
+        Some("Edited duplicate")
+    );
+
+    create_failed_turn(
+        &mut store,
+        duplicated.session.session_id,
+        duplicated.branch.branch_id,
+        "duplicate only",
+    )
+    .await;
+    create_failed_turn(
+        &mut store,
+        created.session.session_id,
+        created.branch.branch_id,
+        "source only",
+    )
+    .await;
+    let source_contents = store
+        .turns_for_branch(created.branch.branch_id)
+        .unwrap()
+        .into_iter()
+        .map(|turn| turn.user_content)
+        .collect::<Vec<_>>();
+    let duplicated_contents = store
+        .turns_for_branch(duplicated.branch.branch_id)
+        .unwrap()
+        .into_iter()
+        .map(|turn| turn.user_content)
+        .collect::<Vec<_>>();
+    assert!(
+        source_contents
+            .iter()
+            .any(|content| content == "source only")
+    );
+    assert!(
+        !source_contents
+            .iter()
+            .any(|content| content == "duplicate only")
+    );
+    assert!(
+        duplicated_contents
+            .iter()
+            .any(|content| content == "duplicate only")
+    );
+    assert!(
+        !duplicated_contents
+            .iter()
+            .any(|content| content == "source only")
+    );
+}
+
+#[tokio::test]
+async fn duplicate_session_rejects_a_turn_outside_the_selected_lineage() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let created = store
+        .create_session(configuration(character.revision_hash), 0)
+        .unwrap();
+    let root_turn = create_failed_turn(
+        &mut store,
+        created.session.session_id,
+        created.branch.branch_id,
+        "root only",
+    )
+    .await;
+    let other_branch = store
+        .create_branch(created.session.session_id, created.branch.branch_id, 0)
+        .unwrap();
+    let sessions_before = store.sessions().unwrap().len();
+    drop(store);
+
+    let engine = StcliEngine::new(&database);
+    let error = engine
+        .execute(
+            EngineCommand::DuplicateSession {
+                session_id: created.session.session_id,
+                branch_id: Some(other_branch.branch_id),
+                up_to_turn_id: Some(root_turn.turn_id),
+                new_name: Some("Rejected".to_owned()),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        EngineError::Session(SessionError::TurnNotOnBranch {
+            turn_id,
+            branch_id,
+        }) if turn_id == root_turn.turn_id && branch_id == other_branch.branch_id
+    ));
+    assert_eq!(
+        Store::open(database).unwrap().sessions().unwrap().len(),
+        sessions_before
+    );
+}
+
+async fn create_failed_turn(
+    store: &mut Store,
+    session_id: EntityId,
+    branch_id: EntityId,
+    content: &str,
+) -> stcli_core::TurnProjection {
+    store
+        .send_message(session_id, branch_id, content.to_owned(), |_| {})
+        .await
+        .unwrap_err();
+    store.turns_for_branch(branch_id).unwrap().pop().unwrap()
+}
+
+fn complete_with_candidate(
+    store: &mut Store,
+    turn: &stcli_core::TurnProjection,
+    content: &str,
+) -> EntityId {
+    let attempt = store
+        .attempts_for_turn(turn.turn_id)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let candidate_id = EntityId::new();
+    store
+        .record_event(
+            Some(turn.session_id),
+            "attempt.completed",
+            &json!({
+                "attempt_id": attempt.attempt_id,
+                "turn_id": turn.turn_id,
+                "candidate_id": candidate_id,
+                "origin": "generated",
+                "content": content,
+                "provider_request_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "provider_receipt": {},
+            }),
+        )
+        .unwrap();
+    store.rebuild_session_projections().unwrap();
+    candidate_id
 }
