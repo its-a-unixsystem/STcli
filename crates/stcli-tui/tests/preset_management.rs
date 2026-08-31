@@ -68,6 +68,11 @@ fn render(app: &mut App) -> String {
         .collect()
 }
 
+fn revision_suffix(hash: &stcli_core::ContentHash) -> String {
+    let hash = hash.to_string();
+    hash[hash.len().saturating_sub(12)..].to_owned()
+}
+
 #[tokio::test]
 async fn preset_import_applies_custom_name_from_the_tui_form() {
     let directory = tempdir().unwrap();
@@ -226,6 +231,17 @@ async fn preset_management_covers_import_inspection_filtering_and_navigation() {
     assert!(state.filter.is_empty());
     assert_eq!(state.selected, 1);
 
+    press(&mut app, KeyCode::Char('/'));
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Enter);
+    assert!(preset_picker(&app).show_details);
+    press(&mut app, KeyCode::Esc);
+    assert!(!preset_picker(&app).show_details);
+    assert_eq!(preset_picker(&app).filter, "s");
+    press(&mut app, KeyCode::Esc);
+    assert!(preset_picker(&app).filter.is_empty());
+
     press(&mut app, KeyCode::Char('d'));
     let Some(Popup::Presets(state)) = &app.popup else {
         panic!("expected preset picker");
@@ -247,11 +263,14 @@ async fn preset_management_covers_import_inspection_filtering_and_navigation() {
     );
     let rendered = render(&mut app);
     assert!(rendered.contains("Generation Parameters"));
+    assert!(rendered.contains("Identifier: main"));
+    assert!(rendered.contains("Role: system"));
+    assert!(rendered.contains("Content: test"));
     assert!(rendered.contains("Temperature: 0.7"));
     assert!(rendered.contains("One · UserInput"));
     assert!(rendered.contains("[inert — requires grant]"));
     assert!(
-        rendered.contains("Enter select · c copy · i import · d details · / filter · PgUp/PgDn scroll details · Esc close")
+        rendered.contains("Enter select · c copy · i import · d details · / filter · PgUp/PgDn scroll details · Esc list")
     );
     press(&mut app, KeyCode::Tab);
     let Some(Popup::Presets(state)) = &app.popup else {
@@ -262,10 +281,20 @@ async fn preset_management_covers_import_inspection_filtering_and_navigation() {
     assert!(matches!(app.popup, Some(Popup::Presets(_))));
 
     press(&mut app, KeyCode::Esc);
+    assert!(!preset_picker(&app).show_details);
+    press(&mut app, KeyCode::Esc);
     assert!(app.popup.is_none());
 
     press(&mut app, KeyCode::Char('P'));
     press(&mut app, KeyCode::Down);
+    let effect = press(&mut app, KeyCode::Enter);
+    assert!(matches!(effect, Effect::None));
+    assert!(preset_picker(&app).show_details);
+    press(&mut app, KeyCode::Esc);
+    assert!(!preset_picker(&app).show_details);
+    assert_eq!(preset_picker(&app).selected, 1);
+    press(&mut app, KeyCode::Enter);
+    assert!(preset_picker(&app).show_details);
     press(&mut app, KeyCode::Enter);
     assert!(app.popup.is_none());
     press(&mut app, KeyCode::Char('P'));
@@ -303,10 +332,33 @@ async fn preset_management_covers_import_inspection_filtering_and_navigation() {
     press(&mut chat_app, KeyCode::Char('P'));
     press(&mut chat_app, KeyCode::Down);
     let effect = press(&mut chat_app, KeyCode::Enter);
+    assert!(matches!(effect, Effect::None));
+    assert!(preset_picker(&chat_app).show_details);
+    let effect = press(&mut chat_app, KeyCode::Enter);
     assert!(matches!(
         effect,
         Effect::Execute(stcli_core::EngineCommand::UpdateConfiguration { .. })
     ));
+
+    let mut no_preset_app = App::load(
+        StcliEngine::new(directory.path().join("none.sqlite3")),
+        Config::default(),
+        None,
+    )
+    .unwrap();
+    press(&mut no_preset_app, KeyCode::Char('P'));
+    assert_eq!(preset_picker(&no_preset_app).selected, 0);
+    assert!(matches!(
+        press(&mut no_preset_app, KeyCode::Enter),
+        Effect::None
+    ));
+    assert!(preset_picker(&no_preset_app).show_details);
+    assert!(render(&mut no_preset_app).contains("No preset selected"));
+    assert!(matches!(
+        press(&mut no_preset_app, KeyCode::Enter),
+        Effect::None
+    ));
+    assert!(no_preset_app.popup.is_none());
 }
 
 #[tokio::test]
@@ -352,15 +404,83 @@ async fn prompt_order_toggle_works_from_sessions_and_new_session() {
             ..
         })
     ));
-    execute(&mut app, effect).await;
+    let EngineResult::PromptOrderUpdated { artifact, .. } = execute(&mut app, effect).await else {
+        panic!("expected prompt order update result");
+    };
     let Some(Popup::NewSession(state)) = &app.popup else {
         panic!("expected preserved new session modal");
     };
     assert_eq!(state.selected_preset, 2);
+    let suffix = revision_suffix(&artifact.revision_hash);
     assert_eq!(
         app.toast.as_ref().map(|toast| toast.message.as_str()),
-        Some("Updated preset prompt order; main disabled")
+        Some(
+            format!(
+                "Created immutable Artifact Revision for preset 'Toggle preset' [{suffix}]; main disabled"
+            )
+            .as_str()
+        )
     );
+}
+
+#[tokio::test]
+async fn chat_toggle_selects_and_marks_the_new_pinned_preset_revision() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let original = store
+        .import_artifact(&scripted_preset("Revision UX"))
+        .unwrap();
+    let mut config = configuration(character.revision_hash);
+    config.prompt_preset_revision = Some(original.revision_hash.clone());
+    let session = store.create_session(config, 0).unwrap();
+    drop(store);
+    let mut app = App::load(
+        StcliEngine::new(database),
+        Config::default(),
+        Some(session.session.session_id),
+    )
+    .unwrap();
+    app.chat_focus = ChatFocus::History;
+    let chat_hint = "Enter compose/respond  ↑/k ↓/j scroll";
+    assert!(render(&mut app).contains(chat_hint));
+    press(&mut app, KeyCode::Char('P'));
+
+    let original_suffix = revision_suffix(&original.revision_hash);
+    let initial = render(&mut app);
+    assert!(initial.contains("Revision UX  pinned"));
+    assert!(!initial.contains(&format!("Revision UX [{original_suffix}]")));
+    assert!(!initial.contains(chat_hint));
+
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Right);
+    let effect = press(&mut app, KeyCode::Char(' '));
+    let EngineResult::PromptOrderUpdated { artifact, .. } = execute(&mut app, effect).await else {
+        panic!("expected prompt order update result");
+    };
+    let new_suffix = revision_suffix(&artifact.revision_hash);
+
+    assert_eq!(
+        preset_picker(&app).rows[preset_picker(&app).selected - 1]
+            .record
+            .revision_hash,
+        artifact.revision_hash
+    );
+    assert_eq!(
+        app.toast.as_ref().map(|toast| toast.message.as_str()),
+        Some(
+            format!(
+                "Created immutable Artifact Revision for preset 'Revision UX' [{new_suffix}]; open Session re-pinned; main disabled"
+            )
+            .as_str()
+        )
+    );
+    let rendered = render(&mut app);
+    assert!(rendered.contains(&format!("Revision UX [{original_suffix}]")));
+    assert!(rendered.contains(&format!("Revision UX [{new_suffix}]  pinned")));
 }
 
 #[tokio::test]
@@ -617,14 +737,13 @@ fn preset_details_scrolling_clamps_and_resets_on_selection_change() {
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
     assert_eq!(preset_picker(&app).details_scroll, 0);
 
-    for _ in 0..10 {
+    for _ in 0..30 {
         press(&mut app, KeyCode::PageDown);
     }
-    // 120x40 terminal: 56 content lines against 27 visible detail rows.
     let rendered = render(&mut app);
-    assert_eq!(preset_picker(&app).details_scroll, 29);
-    assert!(rendered.contains("40. slot-40"));
-    assert!(rendered.contains("Generation Parameters"));
+    // 218 logical detail lines against 27 visible rows.
+    assert_eq!(preset_picker(&app).details_scroll, 191);
+    assert!(rendered.contains("Embedded Scripts"));
     assert!(!rendered.contains("1. slot-01"));
 
     press(&mut app, KeyCode::Up);

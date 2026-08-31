@@ -35,17 +35,18 @@ Press `P` from the Sessions screen or Chat view to open the prompt preset picker
 | `Left` | Return focus to the preset list |
 | `Up` / `Down` (in details) | Move through prompt-order entries |
 | `Space` (in details) | Toggle the focused Prompt Order Entry immediately |
-| `Enter` | Select the highlighted preset in Chat; close the picker on Sessions |
+| `Enter` (in list) | Open details for the highlighted preset |
+| `Enter` (in details) | Select the highlighted preset; in Chat, re-pin the Session; in New Session, preselect it; on Sessions, close the picker |
 | `i` | Import a preset from a file |
 | `c` | Copy the highlighted preset and open the tuning form |
 | `d` or `Tab` | Show or hide the detail inspector |
 | `PgDn` / `PgUp` | Scroll the detail inspector down or up (when visible) |
 | `Shift+Down` / `Shift+Up` | Scroll the detail inspector line by line (when visible) |
 | `/` | Filter preset names by a case-insensitive substring |
-| `Esc` | Clear an active filter, or close the picker |
+| `Esc` | Clear an active filter; from details, return to the list; otherwise close the picker |
 | `n` | From Sessions, open New Session with the highlighted preset selected |
 
-The detail inspector shows the prompt count, selected order profile, system-prompt state, prompt order, Compatibility Warnings, `temperature`, `top_p`, `max_tokens`, and embedded regex scripts. Prompt Order Entries show their current enabled state; toggling applies immediately, shows a status toast, and in Chat re-pins only the current session to the new immutable preset revision. Script entries are marked `[inert — requires grant]`. When the metadata exceeds the pane, scroll it with `PgDn`/`PgUp` or `Shift+Down`/`Shift+Up`; the scroll position resets whenever you move to another preset. The mouse wheel scrolls the inspector while it is open.
+The detail inspector shows the prompt count, selected order profile, system-prompt state, prompt order, and every prompt's identifier, role, and full content. It also shows Compatibility Warnings, `temperature`, `top_p`, `max_tokens`, and embedded regex scripts. Prompt Order Entries show their current enabled state. Toggling creates a new immutable Artifact Revision, selects it in the refreshed picker, and shows a toast naming the preset and short revision suffix. In Chat, the toast also says that the open Session was re-pinned. Rows show a short revision suffix only when multiple revisions share a preset label, and the open Session's revision is marked `pinned`. Script entries are marked `[inert — requires grant]`. When the content exceeds the pane, scroll it with `PgDn`/`PgUp` or `Shift+Down`/`Shift+Up`; the scroll position resets whenever you move to another preset. The mouse wheel scrolls the inspector while it is open.
 
 For presets using the supported NemoPresetExt directives, enabling an exclusive entry auto-disables every enabled sibling in the same atomic update. The toast names the auto-disabled entries. `@conflicts-with`, `@warning`, `@deprecated`, and unresolved references appear as non-blocking Compatibility Warnings in the details and at flip time.
 

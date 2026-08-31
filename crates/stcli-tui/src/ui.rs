@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -9,10 +11,11 @@ use ratatui::{
 use crate::{
     app::{
         App, ChatFocus, HitAction, HitTarget, Popup, Screen, SessionListEntry, selected_candidate,
+        short_revision,
     },
     markdown,
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 fn cursor_parts(value: &str, focused: bool, position: usize) -> (&str, &str) {
     if !focused {
@@ -248,6 +251,9 @@ fn render_sessions(frame: &mut Frame<'_>, app: &mut App) {
             chunks[3],
         );
     }
+    if app.popup.is_some() {
+        return;
+    }
     let branches_hint = if app.show_branches {
         "b branches[ON]"
     } else {
@@ -458,8 +464,7 @@ fn render_chat(frame: &mut Frame<'_>, app: &mut App) {
         .configuration
         .prompt_preset_revision
         .as_ref()
-        .map(ToString::to_string)
-        .map(|hash| short_hash(&hash).to_owned())
+        .map(short_revision)
         .unwrap_or_else(|| "none".to_owned());
     let persona_label = summary
         .map(|session| session.persona_label.as_str())
@@ -472,6 +477,9 @@ fn render_chat(frame: &mut Frame<'_>, app: &mut App) {
         .style(Style::default().fg(app.theme.muted)),
         chunks[3],
     );
+    if app.popup.is_some() {
+        return;
+    }
     let hints = if app.generation.is_some() {
         "Esc stop  Ctrl+C quit (confirm)  ↑/↓ scroll  ? help".to_owned()
     } else if app.chat_focus == ChatFocus::Composer {
@@ -895,7 +903,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 " Branches · * current ",
                 labels,
                 *selected,
-                None,
+                Some("↑/↓ or j/k navigate · Enter switch · Esc close"),
             );
         }
         Popup::Providers {
@@ -928,10 +936,10 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 frame,
                 app,
                 provider_area,
-                " Provider profiles · * current · Enter switch · c copy · e edit · x delete · a add · Esc close ",
+                " Provider profiles · * current ",
                 labels,
                 *selected,
-                None,
+                Some("↑↓ move · Enter switch · a add · c copy · e edit · x delete · Esc"),
             );
         }
         Popup::Presets(state) => {
@@ -944,21 +952,31 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                     .prompt_preset_revision
                     .as_ref()
             });
-            let mut labels = vec![format!(
-                "{}No preset",
-                if current.is_none() { "* " } else { "  " }
-            )];
+            let revision_counts =
+                state
+                    .rows
+                    .iter()
+                    .fold(HashMap::<&str, usize>::new(), |mut counts, row| {
+                        *counts.entry(row.label.as_str()).or_default() += 1;
+                        counts
+                    });
+            let mut labels = vec![if current.is_none() {
+                "* No preset".to_owned()
+            } else {
+                "  No preset".to_owned()
+            }];
             labels.extend(rows.iter().map(|row| {
-                format!(
-                    "{}{}  {}",
-                    if Some(&row.record.revision_hash) == current {
-                        "* "
-                    } else {
-                        "  "
-                    },
-                    row.label,
-                    short_hash(&row.record.revision_hash.to_string())
-                )
+                let revision = if revision_counts.get(row.label.as_str()) == Some(&1) {
+                    String::new()
+                } else {
+                    format!(" [{}]", short_revision(&row.record.revision_hash))
+                };
+                let pinned = if Some(&row.record.revision_hash) == current {
+                    "  pinned"
+                } else {
+                    ""
+                };
+                format!("  {}{revision}{pinned}", row.label)
             }));
             let title = if state.filtering {
                 format!(" Filter: {}█ ", state.filter)
@@ -986,7 +1004,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 render_preset_details(frame, app, columns[1], detail.as_ref(), details_scroll);
                 frame.render_widget(
                     Paragraph::new(
-                        "Enter select · c copy · i import · d details · / filter · PgUp/PgDn scroll details · Esc close · → focus order · ↑/↓ navigate · Space preset toggle · Ctrl+Space Session override · r reset override",
+                        "Enter select · c copy · i import · d details · / filter · PgUp/PgDn scroll details · Esc list · → focus order · ↑/↓ navigate · Space preset toggle · Ctrl+Space Session override · r reset override",
                     )
                     .style(
                         Style::default()
@@ -1003,7 +1021,9 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                     &title,
                     labels,
                     selected,
-                    Some("Enter select · c copy · i import · d details · / filter · Esc close"),
+                    Some(
+                        "↑/↓ or j/k navigate · Enter details · c copy · i import · d details · / filter · Esc close",
+                    ),
                 );
             }
         }
@@ -1189,7 +1209,9 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 " Personas ",
                 labels,
                 state.selected,
-                Some("Enter select · a add · c copy · e edit · x delete · i import · Esc close"),
+                Some(
+                    "↑/↓ or j/k navigate · Enter select · a add · c copy · e edit · x delete · i import · Esc close",
+                ),
             );
         }
         Popup::PersonaEditor(state) => {
@@ -1890,6 +1912,20 @@ fn render_preset_details(
                     ))
                 }),
         );
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Prompt Content",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        for prompt in &summary.prompts {
+            lines.push(Line::from(format!("Identifier: {}", prompt.identifier)));
+            lines.push(Line::from(format!("Role: {}", prompt.role)));
+            lines.extend(prompt_content_lines(
+                &prompt.content,
+                area.width.saturating_sub(2) as usize,
+            ));
+            lines.push(Line::from(""));
+        }
         if !summary.diagnostics.is_empty() {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
@@ -1959,6 +1995,13 @@ fn render_preset_details(
     }
     let visible = area.height.saturating_sub(2) as usize;
     let max_scroll = lines.len().saturating_sub(visible);
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(" Details "))
+        .style(
+            Style::default()
+                .bg(app.theme.background)
+                .fg(app.theme.foreground),
+        );
     let focused_scroll = match &app.popup {
         Some(Popup::Presets(state)) => state.order_focus.map(|index| {
             let line = prompt_order_start.unwrap_or_default() + index;
@@ -1974,17 +2017,39 @@ fn render_preset_details(
     if let Some(Popup::Presets(state)) = &mut app.popup {
         state.details_scroll = clamped;
     }
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(" Details "))
-            .scroll((clamped as u16, 0))
-            .style(
-                Style::default()
-                    .bg(app.theme.background)
-                    .fg(app.theme.foreground),
-            ),
-        area,
-    );
+    frame.render_widget(paragraph.scroll((clamped as u16, 0)), area);
+}
+fn prompt_content_lines(content: &str, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut first = true;
+    for source_line in content.split('\n') {
+        let mut remaining = source_line;
+        loop {
+            let prefix = if first { "Content: " } else { "         " };
+            first = false;
+            let available = width.saturating_sub(prefix.width()).max(1);
+            let mut split = remaining.len();
+            let mut used = 0;
+            for (index, character) in remaining.char_indices() {
+                let character_width = character.width().unwrap_or_default();
+                if used + character_width > available {
+                    split = index;
+                    break;
+                }
+                used += character_width;
+            }
+            if split == 0 {
+                split = remaining.chars().next().map_or(0, char::len_utf8);
+            }
+            let (chunk, rest) = remaining.split_at(split);
+            lines.push(Line::from(format!("{prefix}{chunk}")));
+            if rest.is_empty() {
+                break;
+            }
+            remaining = rest;
+        }
+    }
+    lines
 }
 
 fn centered(area: Rect, percent_x: u16, height: u16) -> Rect {
@@ -2026,9 +2091,6 @@ fn short_id(id: &str) -> &str {
     id.get(id.len().saturating_sub(8)..).unwrap_or(id)
 }
 
-fn short_hash(hash: &str) -> &str {
-    hash.get(hash.len().saturating_sub(12)..).unwrap_or(hash)
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2245,5 +2307,64 @@ mod tests {
             .map(|c| c.symbol())
             .collect::<String>();
         assert!(rendered.contains("New Provider Profile"));
+    }
+
+    #[test]
+    fn modal_popups_hide_base_hints_and_list_pickers_show_their_own_keys() {
+        fn rendered(app: &mut App) -> String {
+            let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+            terminal.draw(|frame| render(frame, app)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect()
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::load(
+            StcliEngine::new(directory.path().join("stcli.sqlite3")),
+            Config::default(),
+            None,
+        )
+        .unwrap();
+        let base_hint = "n new  ↑/k ↓/j navigate";
+        assert!(rendered(&mut app).contains(base_hint));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        let providers = rendered(&mut app);
+        assert!(!providers.contains(base_hint));
+        assert!(providers.contains("Enter switch · a add · c copy · e edit · x delete · Esc"));
+
+        app.popup = Some(Popup::Branches {
+            rows: Vec::new(),
+            selected: 0,
+        });
+        let branches = rendered(&mut app);
+        assert!(!branches.contains(base_hint));
+        assert!(branches.contains("↑/↓ or j/k navigate · Enter switch · Esc close"));
+
+        app.popup = None;
+        app.handle_key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::NONE));
+        let presets = rendered(&mut app);
+        assert!(!presets.contains(base_hint));
+        assert!(presets.contains("Enter details · c copy · i import"));
+        assert!(presets.contains("* No preset"));
+
+        app.popup = None;
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        let personas = rendered(&mut app);
+        assert!(!personas.contains(base_hint));
+        assert!(personas.contains("Enter select · a add · c copy · e edit · x delete"));
+
+        app.popup = Some(Popup::ConfirmDelete {
+            session_id: stcli_core::EntityId::new(),
+            name: "Test".to_owned(),
+        });
+        let confirmation = rendered(&mut app);
+        assert!(!confirmation.contains(base_hint));
+        assert!(confirmation.contains("Purge session Test? This cannot be undone. [y/N]"));
     }
 }

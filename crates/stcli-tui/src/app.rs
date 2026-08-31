@@ -8,7 +8,7 @@ use std::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use stcli_core::{
     ArtifactKind, ArtifactRecord, AttemptStatus, BranchHistory, BranchProjection,
-    CHAT_COMPLETION_CHARACTER_ID, CandidateProjection, ContentHash,
+    CHAT_COMPLETION_CHARACTER_ID, CandidateProjection, ChatRole, ContentHash,
     DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID, EngineCommand, EngineInspection, EngineQuery, EngineResult,
     EntityId, Persona, PersonaStore, PresetPatch, PromptPreset, ProviderEvent, ProviderSettings,
     ProviderTemplate, RegexPlacement, SessionConfiguration, SessionSummary, StcliEngine,
@@ -67,6 +67,13 @@ pub struct PromptOrderOption {
     pub marker: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct PresetPromptOption {
+    pub identifier: String,
+    pub role: &'static str,
+    pub content: String,
+}
+
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct PresetConstraint {
     pub kind: String,
@@ -98,6 +105,7 @@ pub struct PresetSummary {
     pub order_profile: String,
     pub system_prompt_enabled: bool,
     pub prompt_order: Vec<PromptOrderOption>,
+    pub prompts: Vec<PresetPromptOption>,
     pub temperature: Option<String>,
     pub top_p: Option<String>,
     pub max_tokens: Option<String>,
@@ -145,20 +153,30 @@ impl PresetSummary {
                         preset_enabled: entry.enabled,
                         override_enabled: None,
                         enabled: entry.enabled,
-                        marker: value
-                            .get("prompts")
-                            .and_then(serde_json::Value::as_array)
-                            .into_iter()
-                            .flatten()
-                            .find(|prompt| {
-                                prompt.get("identifier").and_then(serde_json::Value::as_str)
-                                    == Some(entry.identifier.as_str())
-                            })
-                            .and_then(|prompt| prompt.get("marker"))
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false),
+                        marker: preset
+                            .prompts
+                            .get(&entry.identifier)
+                            .is_some_and(|prompt| prompt.marker),
                     })
                     .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let prompts = parsed
+            .as_ref()
+            .map(|preset| {
+                preset
+                    .prompts
+                    .values()
+                    .map(|prompt| PresetPromptOption {
+                        identifier: prompt.identifier.clone(),
+                        role: match prompt.role {
+                            ChatRole::System => "system",
+                            ChatRole::User => "user",
+                            ChatRole::Assistant => "assistant",
+                        },
+                        content: prompt.content.clone(),
+                    })
+                    .collect()
             })
             .unwrap_or_default();
         let system_prompt_enabled = parsed.as_ref().is_some_and(|preset| {
@@ -221,6 +239,7 @@ impl PresetSummary {
             },
             system_prompt_enabled,
             prompt_order,
+            prompts,
             temperature: summary_value(value.get("temperature")),
             top_p: summary_value(value.get("top_p")),
             max_tokens: summary_value(
@@ -252,6 +271,11 @@ fn summary_value(value: Option<&serde_json::Value>) -> Option<String> {
         serde_json::Value::String(value) => value.clone(),
         value => value.to_string(),
     })
+}
+
+pub(crate) fn short_revision(hash: &ContentHash) -> String {
+    let hash = hash.to_string();
+    hash[hash.len().saturating_sub(12)..].to_owned()
 }
 
 #[derive(Clone, Debug)]
@@ -1299,6 +1323,11 @@ impl App {
     fn handle_popup(&mut self, key: KeyEvent, mut popup: Popup) -> Effect {
         if key.code == KeyCode::Esc {
             match popup {
+                Popup::Presets(mut state) if state.show_details => {
+                    state.show_details = false;
+                    state.order_focus = None;
+                    self.popup = Some(Popup::Presets(state));
+                }
                 Popup::Presets(mut state) if state.filtering || !state.filter.is_empty() => {
                     let selected_revision = state.selected_revision();
                     state.filter.clear();
@@ -1743,6 +1772,10 @@ impl App {
                         }
                         KeyCode::Char('d') | KeyCode::Tab => {
                             state.show_details = !state.show_details;
+                            state.order_focus = None;
+                        }
+                        KeyCode::Enter if !state.show_details => {
+                            state.show_details = true;
                             state.order_focus = None;
                         }
                         KeyCode::Enter => {
@@ -3834,18 +3867,21 @@ impl App {
                             .iter()
                             .any(|entry| entry.marker && !entry.enabled)
                     });
-                let preset_only = configuration.is_none();
-                let mut message = match (preset_only, marker_warning) {
-                    (true, true) => {
-                        "Updated preset prompt order (warning: a structural marker is disabled)"
-                            .to_owned()
-                    }
-                    (true, false) => "Updated preset prompt order".to_owned(),
-                    (false, true) => {
-                        "Updated prompt order (warning: a structural marker is disabled)".to_owned()
-                    }
-                    (false, false) => "Updated prompt order".to_owned(),
-                };
+                let updated = picker
+                    .rows
+                    .get(picker.selected.saturating_sub(1))
+                    .expect("updated preset revision is present after refresh");
+                let mut message = format!(
+                    "Created immutable Artifact Revision for preset '{}' [{}]",
+                    updated.label,
+                    short_revision(&artifact.revision_hash)
+                );
+                if configuration.is_some() {
+                    message.push_str("; open Session re-pinned");
+                }
+                if marker_warning {
+                    message.push_str("; warning: a structural marker is disabled");
+                }
                 if let Some((identifier, enabled)) = self.pending_preset_toggle.take() {
                     message.push_str(&format!(
                         "; {identifier} {}",
