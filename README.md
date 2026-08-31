@@ -156,11 +156,11 @@ Group chat, STscript, UI extensions, and vector lore are outside the current pro
 
 | Version | Theme | Highlights |
 |---|---|---|
-| **v0.2** | Terminal UI & codecs | Rich chat interface, themes, keyboard/mouse, external artifact codecs, macOS support |
+| **v0.2** ⚠️ | Terminal UI & codecs | Rich chat interface, themes, keyboard/mouse (shipped); external artifact codecs and macOS support (pending) |
 | **v0.3** ✅ | Character containers | PNG/APNG/WebP card import, CHARX archives, asset store |
 | **v0.4** ✅ | Text Completion | Instruct/context templates, story strings, flat-prompt mode |
 | **v0.5** | Group roleplay | Multiple characters, reply-order strategies, group lore and variables |
-| **v0.6** | STscript | Parser, commands, pipes, closures, scoped variables |
+| **v0.6** ✅ | STscript | Parser, commands, pipes, closures, scoped variables |
 | **v0.7** | Retrieval & live plugins | Embedding/vector lore, plugin HTTP/filesystem capabilities |
 | **v1.0** | JS compatibility bridge | Sandboxed subset of SillyTavern's extension APIs |
 | **v1.x** | Broader ecosystem | Browser frontend, tool calling, multimedia, local daemon |
