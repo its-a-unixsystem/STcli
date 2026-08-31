@@ -14,8 +14,9 @@ use crate::{
     InstalledPlugin, PluginCapability, PluginCommandResult, PluginError, PluginPin, PluginRegistry,
     PromptDiff, PromptPlan, PromptSegmentInspection, ProviderEvent, RecoveryReport, ReplayReport,
     SessionConfiguration, SessionConfigurationRecord, SessionError, SessionProjection,
-    StorageError, Store, TokenizerError, TokenizerId, TurnCapsule, TurnError, TurnProjection,
-    apply_display_scripts, diff_prompt_plans, extract_character_scripts, transform_preset_content,
+    StorageError, Store, StscriptError, StscriptLimits, StscriptResult, TokenizerError,
+    TokenizerId, TurnCapsule, TurnError, TurnProjection, apply_display_scripts, diff_prompt_plans,
+    extract_character_scripts, transform_preset_content,
 };
 
 #[derive(Clone, Debug)]
@@ -386,6 +387,17 @@ impl StcliEngine {
                     asset_count: bundle.asset_count,
                 })
             }
+            EngineCommand::ExecuteStscript {
+                session_id,
+                execution_id,
+                source,
+                limits,
+            } => Ok(EngineResult::Stscript(store.execute_stscript(
+                session_id,
+                execution_id,
+                &source,
+                limits,
+            )?)),
             EngineCommand::CreateSession {
                 configuration,
                 greeting_index,
@@ -649,6 +661,12 @@ pub enum EngineCommand {
     ImportArtifact {
         source: Vec<u8>,
     },
+    ExecuteStscript {
+        session_id: EntityId,
+        execution_id: EntityId,
+        source: String,
+        limits: StscriptLimits,
+    },
     CreateSession {
         configuration: Box<SessionConfiguration>,
         greeting_index: usize,
@@ -764,6 +782,7 @@ pub enum EngineResult {
         supplementary_artifacts: Vec<ArtifactRecord>,
         asset_count: usize,
     },
+    Stscript(StscriptResult),
     CreatedSession(Box<CreatedSession>),
     Session(SessionProjection),
     Purge(PurgeReport),
@@ -1131,6 +1150,8 @@ pub enum EngineError {
     Tokenizer(#[from] TokenizerError),
     #[error(transparent)]
     Plugin(#[from] PluginError),
+    #[error(transparent)]
+    Stscript(#[from] StscriptError),
     #[error("Plugin '{0}' remains pinned by a Session Configuration Revision")]
     PluginInUse(String),
     #[error("Plugin '{id}' version {version} with digest {digest} was not found")]

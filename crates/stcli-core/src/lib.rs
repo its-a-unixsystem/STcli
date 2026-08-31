@@ -23,6 +23,7 @@ pub mod script;
 pub mod session;
 pub mod state;
 pub mod storage;
+pub mod stscript;
 pub mod text_completion;
 pub mod tokenizer;
 pub mod turn;
@@ -105,6 +106,10 @@ pub use session::{
 pub use state::{StateCell, StateError, StateKey, StateMutation, StateTransaction, VariableScope};
 pub use storage::{
     AssetRecord, AssetReference, RecoveryReport, StorageError, Store, TraceEventRecord,
+};
+pub use stscript::{
+    StscriptCommand, StscriptError, StscriptLimits, StscriptProgram, StscriptReplayOutcome,
+    StscriptResult, parse_stscript,
 };
 pub use text_completion::{ContextFormatting, FormatMode, InstructTemplate, NamesBehavior};
 pub use tokenizer::{TokenizerError, TokenizerId};

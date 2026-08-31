@@ -1731,6 +1731,7 @@ fn emit_engine_result(output: OutputFormat, command: &str, result: &EngineResult
         EngineResult::Configuration(data) => emit(output, command, data),
         EngineResult::EditedCandidate(data) => emit(output, command, data),
         EngineResult::DryRun(data) => emit(output, command, data),
+        EngineResult::Stscript(data) => emit(output, command, data),
     }
 }
 

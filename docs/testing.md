@@ -12,7 +12,7 @@ This document defines how STcli is tested: the layers, where a new test belongs,
 
 | ADR | Invariant | Gated by |
 |---|---|---|
-| 0001 | Trace is authority; projections rebuild exactly | Replay/rebuild tests in `turn_transactions.rs`, migration harness, e2e loop replay assertion |
+| 0001 | Trace is authority; projections rebuild exactly | Replay/rebuild tests in `turn_transactions.rs`, migration harness, e2e loop replay assertion, and STscript outcome/state tests in `stscript.rs` |
 | 0002 | Revision identity includes source bytes; profile bounds compatibility claims | `artifact.rs` unit tests, `compat verify` corpus |
 | 0003 | Plugins are pure Wasm declarative effects, digest-pinned | `stcli-core/tests/plugins.rs`, `stcli-cli/tests/plugins.rs`, `plugin-wasm` CI job |
 | 0004 | Preset settings precedence; embedded scripts execute only under grants | Preset settings/grant tests in `turn_transactions.rs`, `regex_scripts.rs` |

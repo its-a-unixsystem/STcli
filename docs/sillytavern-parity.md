@@ -91,7 +91,7 @@ The percentage counts fully implemented features (✅) against all tracked Silly
 | **Solo group and memory fallbacks** | ✅ | A solo `{{group}}` resolves empty. `{{summary}}` and memories use core fallbacks. |
 | **Unknown macro fallback** | ⚠️ | The macro is kept as literal text. A non-blocking `MacroWarning` is logged. |
 | **Interactive UI macros** | 🛑 | `{{input}}`, `{{ismobile}}`, `{{banned}}`, and `{{systemprompt}}` need a live GUI. Not supported. |
-| **STscript execution** | ❌ | Command pipes, closures, and loops planned for **v0.6**. |
+| **STscript execution** | ⚠️ | Core parser/evaluator supports quoted arguments, command pipes, closures, `/if`, `/else`, `/while`, `/delay`, `/echo`, `/abort`, `/eval`, persistent local/global variables, and attempt-local `/let`. Execution is bounded and outcomes commit atomically to the Turn Trace. Browser-only commands and the wider SillyTavern slash-command registry remain unsupported. |
 
 ## 5. Chat loop and roleplay
 
