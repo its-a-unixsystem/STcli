@@ -1548,18 +1548,25 @@ impl App {
                             let Some(entry) = row.summary.prompt_order.get(selected_order) else {
                                 return Effect::None;
                             };
-                            let Some(history) = &self.history else {
-                                return Effect::None;
+                            let session_id = match &state.return_to {
+                                ModalTarget::Chat => {
+                                    let Some(history) = &self.history else {
+                                        return Effect::None;
+                                    };
+                                    Some(history.session.session_id)
+                                }
+                                ModalTarget::Sessions | ModalTarget::NewSession(_) => None,
+                                ModalTarget::Providers { .. } | ModalTarget::Presets(_) => {
+                                    return Effect::None;
+                                }
                             };
-                            if !matches!(state.return_to, ModalTarget::Chat) {
-                                self.show_error("Prompt order can only be changed from Chat");
-                                return Effect::None;
-                            }
+                            let revision_hash = row.record.revision_hash.clone();
                             let mut changes = BTreeMap::new();
                             changes.insert(entry.identifier.clone(), !entry.enabled);
+                            self.popup = Some(popup.clone());
                             return Effect::Execute(EngineCommand::UpdatePromptOrder {
-                                session_id: Some(history.session.session_id),
-                                revision_hash: row.record.revision_hash.clone(),
+                                session_id,
+                                revision_hash,
                                 character_id: Some(CHAT_COMPLETION_CHARACTER_ID),
                                 changes,
                             });
@@ -2056,7 +2063,10 @@ impl App {
                                 );
                                 return Effect::None;
                             }
-                            KeyCode::Enter => state.focused_field = 3,
+                            KeyCode::Enter => {
+                                self.open_preset_popup(ModalTarget::NewSession(state.clone()));
+                                return Effect::None;
+                            }
                             _ => {}
                         },
                         3 => match key.code {
@@ -3171,21 +3181,24 @@ impl App {
                 return;
             }
         };
-        let selected = self
-            .history
-            .as_ref()
-            .and_then(|history| {
-                history
-                    .configuration
-                    .configuration
-                    .prompt_preset_revision
-                    .as_ref()
-            })
-            .and_then(|current| {
-                rows.iter()
-                    .position(|row| &row.record.revision_hash == current)
-            })
-            .map_or(0, |index| index + 1);
+        let selected = match &return_to {
+            ModalTarget::NewSession(state) => state.selected_preset.min(rows.len()),
+            _ => self
+                .history
+                .as_ref()
+                .and_then(|history| {
+                    history
+                        .configuration
+                        .configuration
+                        .prompt_preset_revision
+                        .as_ref()
+                })
+                .and_then(|current| {
+                    rows.iter()
+                        .position(|row| &row.record.revision_hash == current)
+                })
+                .map_or(0, |index| index + 1),
+        };
         self.popup = Some(Popup::Presets(Box::new(PresetPickerState {
             rows,
             selected,
@@ -3548,7 +3561,9 @@ impl App {
                 configuration,
             }) => {
                 let Some(Popup::Presets(mut picker)) = self.popup.take() else {
-                    if let Err(error) = self.reload_history() {
+                    if configuration.is_some()
+                        && let Err(error) = self.reload_history()
+                    {
                         self.show_error(error.to_string());
                     }
                     self.show_info("Updated prompt order");
@@ -3581,13 +3596,30 @@ impl App {
                             .iter()
                             .any(|entry| entry.marker && !entry.enabled)
                     });
-                let message = if marker_warning {
-                    "Updated prompt order (warning: a structural marker is disabled)"
-                } else {
-                    "Updated prompt order"
+                let preset_only = configuration.is_none();
+                let message = match (preset_only, marker_warning) {
+                    (true, true) => {
+                        "Updated preset prompt order (warning: a structural marker is disabled)"
+                    }
+                    (true, false) => "Updated preset prompt order",
+                    (false, true) => {
+                        "Updated prompt order (warning: a structural marker is disabled)"
+                    }
+                    (false, false) => "Updated prompt order",
                 };
                 self.show_info(message);
-                self.popup = Some(Popup::Presets(picker));
+                match picker.return_to.clone() {
+                    ModalTarget::NewSession(mut session) => {
+                        session.presets = picker.rows;
+                        session.selected_preset = session
+                            .presets
+                            .iter()
+                            .position(|row| row.record.revision_hash == artifact.revision_hash)
+                            .map_or(0, |index| index + 1);
+                        self.popup = Some(Popup::NewSession(session));
+                    }
+                    _ => self.popup = Some(Popup::Presets(picker)),
+                }
                 true
             }
             Ok(_) => {

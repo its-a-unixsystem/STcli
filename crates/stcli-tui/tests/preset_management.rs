@@ -295,6 +295,60 @@ async fn preset_management_covers_import_inspection_filtering_and_navigation() {
 }
 
 #[tokio::test]
+async fn prompt_order_toggle_works_from_sessions_and_new_session() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    store
+        .import_artifact(&scripted_preset("Toggle preset"))
+        .unwrap();
+    drop(store);
+    let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+    press(&mut app, KeyCode::Char('P'));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Right);
+    let sessions_effect = press(&mut app, KeyCode::Char(' '));
+    assert!(matches!(
+        &sessions_effect,
+        Effect::Execute(stcli_core::EngineCommand::UpdatePromptOrder {
+            session_id: None,
+            ..
+        })
+    ));
+
+    app.open_new_session_popup();
+    let Some(Popup::NewSession(state)) = &mut app.popup else {
+        panic!("expected new session modal");
+    };
+    state.selected_preset = 1;
+    state.focused_field = 2;
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Right);
+    let effect = press(&mut app, KeyCode::Char(' '));
+    assert!(matches!(
+        &effect,
+        Effect::Execute(stcli_core::EngineCommand::UpdatePromptOrder {
+            session_id: None,
+            ..
+        })
+    ));
+    execute(&mut app, effect).await;
+    let Some(Popup::NewSession(state)) = &app.popup else {
+        panic!("expected preserved new session modal");
+    };
+    assert_eq!(state.selected_preset, 2);
+    assert_eq!(
+        app.toast.as_ref().map(|toast| toast.message.as_str()),
+        Some("Updated preset prompt order")
+    );
+}
+
+#[tokio::test]
 async fn preset_copy_opens_patch_form_and_selects_imported_clone() {
     let directory = tempdir().unwrap();
     let database = directory.path().join("stcli.sqlite3");

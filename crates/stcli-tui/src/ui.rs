@@ -986,7 +986,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 render_preset_details(frame, app, columns[1], detail.as_ref(), details_scroll);
                 frame.render_widget(
                     Paragraph::new(
-                        "Enter select · c copy · i import · d details · / filter · PgUp/PgDn scroll details · Esc close · → focus order · ↑/↓ navigate order · Space toggle",
+                        "Enter select · c copy · i import · d details · / filter · PgUp/PgDn scroll details · Esc close · → focus order · ↑/↓ navigate order · Space toggle (preset only)",
                     )
                     .style(
                         Style::default()
