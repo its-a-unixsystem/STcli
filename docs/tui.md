@@ -29,11 +29,13 @@ Press `P` from the Sessions screen or Chat view to open the prompt preset picker
 | `i` | Import a preset from a file |
 | `c` | Copy the highlighted preset and open the tuning form |
 | `d` or `Tab` | Show or hide the detail inspector |
+| `PgDn` / `PgUp` | Scroll the detail inspector down or up (when visible) |
+| `Shift+Down` / `Shift+Up` | Scroll the detail inspector line by line (when visible) |
 | `/` | Filter preset names by a case-insensitive substring |
 | `Esc` | Clear an active filter, or close the picker |
 | `n` | From Sessions, open New Session with the highlighted preset selected |
 
-The detail inspector shows the prompt count, selected order profile, system-prompt state, prompt order, `temperature`, `top_p`, `max_tokens`, and embedded regex scripts. Script entries are marked `[inert — requires grant]`.
+The detail inspector shows the prompt count, selected order profile, system-prompt state, prompt order, `temperature`, `top_p`, `max_tokens`, and embedded regex scripts. Script entries are marked `[inert — requires grant]`. When the metadata exceeds the pane, scroll it with `PgDn`/`PgUp` or `Shift+Down`/`Shift+Up`; the scroll position resets whenever you move to another preset. The mouse wheel scrolls the inspector while it is open.
 
 To duplicate a preset, highlight it and press `c`. Set the new name, temperature, maximum context tokens, maximum response tokens, and system-prompt state. Press `Ctrl+S` to import the clone as a new immutable Artifact Revision. The picker reopens with the clone highlighted.
 

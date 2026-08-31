@@ -5,7 +5,8 @@ use ratatui::{Terminal, backend::TestBackend};
 use stcli_core::{ArtifactKind, EngineInspection, EngineQuery, EngineResult, StcliEngine, Store};
 use stcli_testkit::fixtures;
 use stcli_tui::{
-    App, ChatFocus, Config, Effect, ImportArtifactState, ModalTarget, Popup, render as render_ui,
+    App, ChatFocus, Config, Effect, ImportArtifactState, ModalTarget, Popup, PresetPickerState,
+    render as render_ui,
 };
 use tempfile::tempdir;
 
@@ -235,7 +236,7 @@ async fn preset_management_covers_import_inspection_filtering_and_navigation() {
     assert!(rendered.contains("One · UserInput"));
     assert!(rendered.contains("[inert — requires grant]"));
     assert!(
-        rendered.contains("Enter select · c copy · i import · d details · / filter · Esc close")
+        rendered.contains("Enter select · c copy · i import · d details · / filter · PgUp/PgDn scroll details · Esc close")
     );
     press(&mut app, KeyCode::Tab);
     let Some(Popup::Presets(state)) = &app.popup else {
@@ -418,4 +419,119 @@ fn artifact_import_rejects_wrong_kinds_without_writing() {
         panic!("expected artifact records");
     };
     assert!(records.is_empty());
+}
+
+fn scrollable_preset() -> Vec<u8> {
+    let prompts: Vec<_> = (1..=40)
+        .map(|index| {
+            serde_json::json!({
+                "identifier": format!("slot-{index:02}"),
+                "role": "system",
+                "content": "test",
+            })
+        })
+        .collect();
+    let order: Vec<_> = (1..=40)
+        .map(|index| serde_json::json!({"identifier": format!("slot-{index:02}"), "enabled": true}))
+        .collect();
+    serde_json::to_vec(&serde_json::json!({
+        "name": "Scrollable",
+        "prompts": prompts,
+        "prompt_order": [{"character_id": 100001, "order": order}],
+    }))
+    .unwrap()
+}
+
+fn preset_picker(app: &App) -> &PresetPickerState {
+    let Some(Popup::Presets(state)) = &app.popup else {
+        panic!("expected preset picker");
+    };
+    state
+}
+
+#[test]
+fn preset_details_scrolling_clamps_and_resets_on_selection_change() {
+    // Regression test for .scratch/tui-preset-management/issues/03: the detail
+    // inspector rendered a static paragraph with no way to read overflowing metadata.
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    store.import_artifact(&scrollable_preset()).unwrap();
+    drop(store);
+
+    let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+    press(&mut app, KeyCode::Char('P'));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char('d'));
+    assert_eq!(preset_picker(&app).details_scroll, 0);
+    assert!(!render(&mut app).contains("40. slot-40"));
+
+    press(&mut app, KeyCode::PageDown);
+    press(&mut app, KeyCode::PageDown);
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+    assert_eq!(preset_picker(&app).details_scroll, 20);
+    press(&mut app, KeyCode::PageUp);
+    assert_eq!(preset_picker(&app).details_scroll, 10);
+    press(&mut app, KeyCode::PageUp);
+    press(&mut app, KeyCode::PageUp);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+    assert_eq!(preset_picker(&app).details_scroll, 0);
+
+    for _ in 0..10 {
+        press(&mut app, KeyCode::PageDown);
+    }
+    // 120x40 terminal: 56 content lines against 27 visible detail rows.
+    let rendered = render(&mut app);
+    assert_eq!(preset_picker(&app).details_scroll, 29);
+    assert!(rendered.contains("40. slot-40"));
+    assert!(rendered.contains("Generation Parameters"));
+    assert!(!rendered.contains("1. slot-01"));
+
+    press(&mut app, KeyCode::Up);
+    assert_eq!(preset_picker(&app).selected, 0);
+    assert_eq!(preset_picker(&app).details_scroll, 0);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(preset_picker(&app).details_scroll, 0);
+
+    // Shift+Down falls through to list navigation while details are hidden.
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Up);
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+    assert_eq!(preset_picker(&app).selected, 1);
+}
+
+#[test]
+fn preset_details_scroll_resets_when_filter_swaps_the_same_index() {
+    // Filtering can land a different preset on the same selection index; the
+    // scroll offset must reset with it (ticket 03, AC1).
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    store.import_artifact(&scrollable_preset()).unwrap();
+    let mut other =
+        serde_json::from_slice::<serde_json::Value>(&scripted_preset("Second")).unwrap();
+    other["name"] = serde_json::json!("Tiny");
+    store
+        .import_artifact(&serde_json::to_vec(&other).unwrap())
+        .unwrap();
+    drop(store);
+
+    let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+    press(&mut app, KeyCode::Char('P'));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char('d'));
+    for _ in 0..3 {
+        press(&mut app, KeyCode::PageDown);
+    }
+    assert!(preset_picker(&app).details_scroll > 0);
+
+    // Filter down to the single other preset; it takes over index 1.
+    press(&mut app, KeyCode::Char('/'));
+    for character in "Tiny".chars() {
+        press(&mut app, KeyCode::Char(character));
+    }
+    let state = preset_picker(&app);
+    assert_eq!(state.selected, 1);
+    assert_eq!(state.details_scroll, 0);
 }

@@ -970,6 +970,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                     .checked_sub(1)
                     .and_then(|index| rows.get(index))
                     .map(|row| (*row).clone());
+                let details_scroll = state.details_scroll;
                 let preset_area =
                     centered(frame.area(), 94, frame.area().height.saturating_mul(3) / 4);
                 frame.render_widget(Clear, preset_area);
@@ -982,10 +983,10 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                     .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
                     .split(body_and_footer[0]);
                 render_list_popup(frame, app, columns[0], &title, labels, selected, None);
-                render_preset_details(frame, app, columns[1], detail.as_ref());
+                render_preset_details(frame, app, columns[1], detail.as_ref(), details_scroll);
                 frame.render_widget(
                     Paragraph::new(
-                        "Enter select · c copy · i import · d details · / filter · Esc close",
+                        "Enter select · c copy · i import · d details · / filter · PgUp/PgDn scroll details · Esc close",
                     )
                     .style(
                         Style::default()
@@ -1810,9 +1811,10 @@ fn render_list_popup(
 
 fn render_preset_details(
     frame: &mut Frame<'_>,
-    app: &App,
+    app: &mut App,
     area: Rect,
     preset: Option<&crate::app::PresetOption>,
+    details_scroll: usize,
 ) {
     let mut lines = Vec::new();
     if let Some(preset) = preset {
@@ -1880,25 +1882,34 @@ fn render_preset_details(
             lines.push(Line::from("None"));
         } else {
             lines.extend(summary.scripts.iter().map(|script| {
-                Line::from(format!(
-                    "{} · {} · {} [inert — requires grant]",
-                    script.name,
-                    if script.placement.is_empty() {
-                        "Unknown"
-                    } else {
-                        &script.placement
-                    },
-                    script.digest
+                Line::from(truncate_display(
+                    &format!(
+                        "{} · {} · {} [inert — requires grant]",
+                        script.name,
+                        if script.placement.is_empty() {
+                            "Unknown"
+                        } else {
+                            &script.placement
+                        },
+                        script.digest
+                    ),
+                    area.width.saturating_sub(2) as usize,
                 ))
             }));
         }
     } else {
         lines.push(Line::from("No preset selected"));
     }
+    let visible = area.height.saturating_sub(2) as usize;
+    let max_scroll = lines.len().saturating_sub(visible);
+    let clamped = details_scroll.min(max_scroll);
+    if let Some(Popup::Presets(state)) = &mut app.popup {
+        state.details_scroll = clamped;
+    }
     frame.render_widget(
         Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title(" Details "))
-            .wrap(Wrap { trim: false })
+            .scroll((clamped as u16, 0))
             .style(
                 Style::default()
                     .bg(app.theme.background)

@@ -236,6 +236,7 @@ pub struct PresetPickerState {
     pub filter: String,
     pub filtering: bool,
     pub show_details: bool,
+    pub details_scroll: usize,
 }
 
 impl PresetPickerState {
@@ -254,16 +255,27 @@ impl PresetPickerState {
             .map(|row| row.record.revision_hash.clone())
     }
 
+    fn select(&mut self, index: usize) {
+        if self.selected != index {
+            self.selected = index;
+            self.details_scroll = 0;
+        }
+    }
+
     fn select_filtered_revision(&mut self, revision: Option<&ContentHash>) {
         let selected = revision.and_then(|revision| {
             self.filtered_rows()
                 .iter()
                 .position(|row| &row.record.revision_hash == revision)
         });
-        self.selected = selected.map_or_else(
+        let index = selected.map_or_else(
             || usize::from(!self.filter.is_empty() && !self.filtered_rows().is_empty()),
             |index| index + 1,
         );
+        self.select(index);
+        if self.selected_revision().as_ref() != revision {
+            self.details_scroll = 0;
+        }
     }
 }
 #[derive(Clone, Debug)]
@@ -1463,11 +1475,29 @@ impl App {
                     state.select_filtered_revision(selected_revision.as_ref());
                 } else {
                     match key.code {
+                        KeyCode::PageDown if state.show_details => {
+                            state.details_scroll += 10;
+                        }
+                        KeyCode::PageUp if state.show_details => {
+                            state.details_scroll = state.details_scroll.saturating_sub(10);
+                        }
+                        KeyCode::Down
+                            if state.show_details
+                                && key.modifiers.contains(KeyModifiers::SHIFT) =>
+                        {
+                            state.details_scroll += 1;
+                        }
+                        KeyCode::Up
+                            if state.show_details
+                                && key.modifiers.contains(KeyModifiers::SHIFT) =>
+                        {
+                            state.details_scroll = state.details_scroll.saturating_sub(1);
+                        }
                         KeyCode::Up | KeyCode::Char('k') => {
-                            state.selected = state.selected.saturating_sub(1)
+                            state.select(state.selected.saturating_sub(1))
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
-                            state.selected = (state.selected + 1).min(state.filtered_rows().len())
+                            state.select((state.selected + 1).min(state.filtered_rows().len()))
                         }
                         KeyCode::Char('n') if matches!(state.return_to, ModalTarget::Sessions) => {
                             let revision = state.selected_revision();
@@ -3091,6 +3121,7 @@ impl App {
             filter: String::new(),
             filtering: false,
             show_details: false,
+            details_scroll: 0,
         })));
     }
 
@@ -3417,13 +3448,14 @@ impl App {
                                 self.show_error(error.to_string());
                                 Vec::new()
                             });
-                            picker.selected = picker
+                            let selected = picker
                                 .rows
                                 .iter()
                                 .position(|preset| {
                                     preset.record.revision_hash == primary.revision_hash
                                 })
                                 .map_or(0, |index| index + 1);
+                            picker.select(selected);
                             self.show_info(status);
                             self.popup = Some(Popup::Presets(picker));
                         }
@@ -3568,10 +3600,16 @@ impl App {
                 return;
             }
             Some(Popup::Presets(state)) => {
-                state.selected = state
-                    .selected
-                    .saturating_add_signed(amount)
-                    .min(state.filtered_rows().len());
+                if state.show_details {
+                    state.details_scroll = state.details_scroll.saturating_add_signed(amount);
+                } else {
+                    state.select(
+                        state
+                            .selected
+                            .saturating_add_signed(amount)
+                            .min(state.filtered_rows().len()),
+                    );
+                }
                 return;
             }
             Some(Popup::Personas(state)) => {
@@ -3655,7 +3693,7 @@ impl App {
                     Some(Popup::Branches { selected, .. } | Popup::Providers { selected, .. }) => {
                         *selected = index
                     }
-                    Some(Popup::Presets(state)) => state.selected = index,
+                    Some(Popup::Presets(state)) => state.select(index),
                     _ => {}
                 }
                 self.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
