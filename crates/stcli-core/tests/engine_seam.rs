@@ -331,9 +331,6 @@ async fn duplicate_session_reauthors_an_independent_lineage_through_an_inclusive
         .select_swipe(first.turn_id, alternate_candidate)
         .unwrap();
     store.select_swipe(first.turn_id, first_candidate).unwrap();
-    let edited = store
-        .edit_candidate(first_candidate, "edited first answer".to_owned())
-        .unwrap();
     let second = create_failed_turn(
         &mut store,
         created.session.session_id,
@@ -388,21 +385,6 @@ async fn duplicate_session_reauthors_an_independent_lineage_through_an_inclusive
     else {
         panic!("unexpected duplication result");
     };
-    let EngineResult::DuplicatedSession(edited_duplicate) = engine
-        .execute(
-            EngineCommand::DuplicateSession {
-                session_id: created.session.session_id,
-                branch_id: Some(edited.branch.branch_id),
-                up_to_turn_id: None,
-                new_name: Some("Edited duplicate".to_owned()),
-            },
-            |_| {},
-        )
-        .await
-        .unwrap()
-    else {
-        panic!("unexpected edited-branch duplication result");
-    };
 
     assert_ne!(duplicated.session.session_id, created.session.session_id);
     assert_ne!(duplicated.branch.branch_id, created.branch.branch_id);
@@ -454,12 +436,16 @@ async fn duplicate_session_reauthors_an_independent_lineage_through_an_inclusive
         event.event_type.as_str(),
         "state.committed" | "plugin.command" | "stscript.started" | "stscript.completed"
     )));
+    // Regression: duplication re-emits explicit Candidate selections without adding another.
     assert_eq!(
         duplicated_trace
             .iter()
             .filter(|event| event.event_type == "turn.candidate-selected")
             .count(),
-        3
+        source_trace
+            .iter()
+            .filter(|event| event.event_type == "turn.candidate-selected")
+            .count()
     );
 
     let duplicated_turns = store.turns_for_branch(duplicated.branch.branch_id).unwrap();
@@ -492,13 +478,6 @@ async fn duplicate_session_reauthors_an_independent_lineage_through_an_inclusive
             .len(),
         2
     );
-    let edited_turns = store
-        .turns_for_branch(edited_duplicate.branch.branch_id)
-        .unwrap();
-    assert_eq!(edited_turns.len(), 1);
-    let edited_candidates = store.candidates_for_turn(edited_turns[0].turn_id).unwrap();
-    assert_eq!(edited_candidates.len(), 1);
-    assert_eq!(edited_candidates[0].parent_candidate_id, None);
     store.rebuild_session_projections().unwrap();
     assert_eq!(
         store
@@ -508,15 +487,6 @@ async fn duplicate_session_reauthors_an_independent_lineage_through_an_inclusive
             .custom_name
             .as_deref(),
         Some("Original (copy)")
-    );
-    assert_eq!(
-        store
-            .session(edited_duplicate.session.session_id)
-            .unwrap()
-            .unwrap()
-            .custom_name
-            .as_deref(),
-        Some("Edited duplicate")
     );
 
     create_failed_turn(

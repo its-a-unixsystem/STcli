@@ -887,6 +887,7 @@ pub struct DeletionReceipt {
 pub struct SessionSummary {
     pub session_id: EntityId,
     pub display_name: String,
+    pub archived: bool,
     pub created_at_ms: u64,
     pub modified_at_ms: u64,
     pub turn_count: usize,
@@ -954,7 +955,6 @@ fn session_summaries(store: &Store) -> Result<Vec<SessionSummary>, EngineError> 
     store
         .sessions()?
         .into_iter()
-        .filter(|session| !session.archived)
         .map(|session| {
             let configuration = store
                 .configuration(&session.current_config_hash)?
@@ -1026,6 +1026,7 @@ fn session_summaries(store: &Store) -> Result<Vec<SessionSummary>, EngineError> 
             Ok(SessionSummary {
                 session_id: session.session_id,
                 display_name,
+                archived: session.archived,
                 created_at_ms: session.session_id.into_ulid().timestamp_ms(),
                 modified_at_ms,
                 turn_count,

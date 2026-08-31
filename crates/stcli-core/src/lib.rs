@@ -101,7 +101,7 @@ pub use script::{ScriptOutcome, execute};
 pub use session::{
     BranchProjection, CompactionCounts, CompactionReport, CreatedSession, HeaderSetting, PluginPin,
     ProviderSettings, SessionConfiguration, SessionConfigurationRecord, SessionError,
-    SessionProjection,
+    SessionProjection, available_duplicated_session_name,
 };
 pub use state::{StateCell, StateError, StateKey, StateMutation, StateTransaction, VariableScope};
 pub use storage::{

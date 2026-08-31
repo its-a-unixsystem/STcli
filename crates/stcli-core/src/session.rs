@@ -17,8 +17,7 @@ use crate::{
     provider::validate_text_completion_settings,
     storage::{StorageError, append_event},
     turn::{
-        AttemptProjection, AttemptStatus, CandidateOrigin, CandidateProjection, decode_attempt,
-        decode_candidate,
+        AttemptProjection, AttemptStatus, CandidateProjection, decode_attempt, decode_candidate,
     },
 };
 
@@ -156,6 +155,21 @@ pub struct CompactionCounts {
 pub struct CompactionReport {
     pub removed: CompactionCounts,
     pub preserved: CompactionCounts,
+}
+
+pub fn available_duplicated_session_name<'a>(
+    source_name: &str,
+    existing_names: impl IntoIterator<Item = &'a str>,
+) -> String {
+    let existing_names = existing_names.into_iter().collect::<BTreeSet<_>>();
+    let first = format!("{source_name} (copy)");
+    if !existing_names.contains(first.as_str()) {
+        return first;
+    }
+    (2..)
+        .map(|counter| format!("{source_name} (copy {counter})"))
+        .find(|candidate| !existing_names.contains(candidate.as_str()))
+        .expect("an unused Duplicated Session name exists")
 }
 
 impl Store {
@@ -500,15 +514,6 @@ impl Store {
                     .get(&selected_candidate_id)
                     .copied()
                     .ok_or(SessionError::InvalidTrace("selected_candidate_id"))?;
-                append_event(
-                    &transaction,
-                    Some(session_id),
-                    "turn.candidate-selected",
-                    &json!({
-                        "turn_id": new_turn_id,
-                        "candidate_id": selected_candidate_id,
-                    }),
-                )?;
                 transaction
                     .execute(
                         "UPDATE turns SET selected_candidate_id = ?1 WHERE turn_id = ?2",
@@ -592,18 +597,10 @@ impl Store {
                     .to_owned(),
             );
         }
-        let first = format!("{source_name} (copy)");
-        if !existing_names.contains(&first) {
-            return Ok(Some(first));
-        }
-        let mut counter = 2;
-        loop {
-            let candidate = format!("{source_name} (copy {counter})");
-            if !existing_names.contains(&candidate) {
-                return Ok(Some(candidate));
-            }
-            counter += 1;
-        }
+        Ok(Some(available_duplicated_session_name(
+            &source_name,
+            existing_names.iter().map(String::as_str),
+        )))
     }
 
     pub fn session(&self, session_id: EntityId) -> Result<Option<SessionProjection>, SessionError> {
@@ -2064,7 +2061,7 @@ fn duplicate_attempt(
                     "turn_id": turn_id,
                     "candidate_id": candidate_id,
                     "parent_candidate_id": parent_candidate_id,
-                    "origin": candidate_origin_name(candidate.projection.origin),
+                    "origin": candidate.projection.origin.as_str(),
                     "provider_request_hash": request_hash,
                     "provider_receipt": receipt,
                     "plugin_receipts": attempt.effect_receipt.as_ref().map(|effect| &effect.plugins),
@@ -2157,7 +2154,7 @@ fn duplicate_attempt(
                 turn_id.to_string(),
                 attempt.config_hash.to_string(),
                 retry_of_attempt_id.map(|id| id.to_string()),
-                attempt_status_name(attempt.status),
+                attempt.status.as_str(),
                 prompt_bytes,
                 attempt.provider_request_hash.as_ref().map(ToString::to_string),
                 receipt_bytes,
@@ -2231,7 +2228,7 @@ fn insert_duplicated_candidate(
                 turn_id.to_string(),
                 attempt_id.map(|id| id.to_string()),
                 parent_candidate_id.map(|id| id.to_string()),
-                candidate_origin_name(candidate.projection.origin),
+                candidate.projection.origin.as_str(),
                 candidate.projection.content,
                 created_event_id,
             ],
@@ -2314,25 +2311,6 @@ fn mapped_candidate_id(
     candidate_ids: &BTreeMap<EntityId, EntityId>,
 ) -> Option<EntityId> {
     source_id.and_then(|source_id| candidate_ids.get(&source_id).copied())
-}
-
-fn candidate_origin_name(origin: CandidateOrigin) -> &'static str {
-    match origin {
-        CandidateOrigin::Generated => "generated",
-        CandidateOrigin::Continued => "continued",
-        CandidateOrigin::Manual => "manual",
-        CandidateOrigin::AcceptedPartial => "accepted-partial",
-    }
-}
-
-fn attempt_status_name(status: AttemptStatus) -> &'static str {
-    match status {
-        AttemptStatus::Running => "running",
-        AttemptStatus::Completed => "completed",
-        AttemptStatus::Failed => "failed",
-        AttemptStatus::Cancelled => "cancelled",
-        AttemptStatus::Incomplete => "incomplete",
-    }
 }
 
 trait CompactableEntity {

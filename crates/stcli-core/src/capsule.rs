@@ -9,10 +9,10 @@ use thiserror::Error;
 
 use crate::{
     ArtifactError, ArtifactRecord, AttemptEffectReceipt, AttemptProjection, AttemptStatus,
-    BranchProjection, CandidateOrigin, CandidateProjection, ContentHash, EntityId, PromptPlan,
-    ProviderError, SessionConfigurationRecord, SessionError, SessionProjection, StateCell,
-    StateError, Store, TurnError, TurnProjection, artifact_revision_hash, artifact_semantic_hash,
-    canonical_json, canonical_json_hash, content_blob_hash, decode_artifact, provider_request_hash,
+    BranchProjection, CandidateProjection, ContentHash, EntityId, PromptPlan, ProviderError,
+    SessionConfigurationRecord, SessionError, SessionProjection, StateCell, StateError, Store,
+    TurnError, TurnProjection, artifact_revision_hash, artifact_semantic_hash, canonical_json,
+    canonical_json_hash, content_blob_hash, decode_artifact, provider_request_hash,
     session_projection_hash, storage::append_event, validate_recorded_receipt,
 };
 
@@ -511,7 +511,7 @@ impl Store {
                     attempt_id.to_string(),
                     turn_id.to_string(),
                     configuration.revision_hash.to_string(),
-                    attempt_status_name(projection.attempt.status),
+                    projection.attempt.status.as_str(),
                     prompt_bytes,
                     projection.attempt.provider_request_hash.as_ref().map(ToString::to_string),
                     provider_receipt,
@@ -530,7 +530,7 @@ impl Store {
                         candidate_id.to_string(),
                         turn_id.to_string(),
                         attempt_id.to_string(),
-                        candidate_origin_name(source.origin),
+                        source.origin.as_str(),
                         source.content,
                         completion_event.event_id.to_string(),
                     ],
@@ -795,25 +795,6 @@ fn capsule_kind_name(kind: CapsuleKind) -> &'static str {
     match kind {
         CapsuleKind::Portable => "portable",
         CapsuleKind::Thin => "thin",
-    }
-}
-
-fn attempt_status_name(status: AttemptStatus) -> &'static str {
-    match status {
-        AttemptStatus::Running => "running",
-        AttemptStatus::Completed => "completed",
-        AttemptStatus::Failed => "failed",
-        AttemptStatus::Cancelled => "cancelled",
-        AttemptStatus::Incomplete => "incomplete",
-    }
-}
-
-fn candidate_origin_name(origin: CandidateOrigin) -> &'static str {
-    match origin {
-        CandidateOrigin::Generated => "generated",
-        CandidateOrigin::Continued => "continued",
-        CandidateOrigin::Manual => "manual",
-        CandidateOrigin::AcceptedPartial => "accepted-partial",
     }
 }
 

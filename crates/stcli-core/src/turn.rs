@@ -147,7 +147,7 @@ pub enum AttemptStatus {
     Incomplete,
 }
 impl AttemptStatus {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
             Self::Completed => "completed",
@@ -165,6 +165,17 @@ pub enum CandidateOrigin {
     Continued,
     Manual,
     AcceptedPartial,
+}
+
+impl CandidateOrigin {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Generated => "generated",
+            Self::Continued => "continued",
+            Self::Manual => "manual",
+            Self::AcceptedPartial => "accepted-partial",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
