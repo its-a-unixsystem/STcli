@@ -35,8 +35,10 @@ The compatibility target is the bounded `sillytavern-1.18-core` profile, pinned 
 ```text
 Cargo.toml                    Workspace root (edition 2024, MSRV 1.89)
 crates/
-  stcli-core/                 Engine library — all domain logic lives here
-  stcli-cli/                  CLI binary (stcli) — thin layer over stcli-core
+  stcli-core/                 Core engine library (domain logic, storage, provider comms)
+  stcli-cli/                  Gateway CLI binary (stcli)
+  stcli-tui/                  Interactive TUI frontend (ratatui)
+  stcli-testkit/              Shared test utilities
 compat/
   profiles/                   Pinned compatibility profile JSON
   fixtures/                   Deterministic fixture suites for parity testing
@@ -47,9 +49,20 @@ CONTEXT.md                    Domain terminology dictionary
 PRD.md                        Accepted scope, requirements, and roadmap
 ```
 
-### `stcli-core` vs `stcli-cli`
+### Architectural tiers
 
-All domain logic, storage, prompt construction, provider communication, and state management live in **`stcli-core`**. The CLI and TUI are thin adapters: mutations call `StcliEngine::execute`, inspections call `StcliEngine::inspect`, and only the engine orchestrates `Store`. This separation keeps the Turn Trace authoritative and lets frontends share one typed command/event seam.
+All crates and external consumers fall into one of four tiers ([ADR 0008](docs/adr/0008-frontend-core-boundary.md)):
+
+| Tier | Crate | Role |
+|---|---|---|
+| **Core** | `stcli-core` | Engine library — all domain logic, storage, prompt construction, provider communication, display script execution, and configuration parsing live here |
+| **Gateway** | `stcli-cli` | Scriptable CLI — wraps `StcliEngine` commands/queries as shell subcommands with `CliEnvelope` JSON output, plus hidden `internal` plumbing for tooling authors |
+| **Interactive Frontend** | `stcli-tui` (future: GUI, browser, mobile) | Interactive UX — real-time streaming, candidate presentation (markdown→ANSI, HTML→DOM), session navigation, frontend-specific config (theme, layout) |
+| **Headless Consumer** | External scripts, backup tools | Consumes `CliEnvelope` JSON or reads `Store` directly for bulk operations |
+
+Mutations call `StcliEngine::execute`, inspections call `StcliEngine::inspect`. `Store` remains `pub` for specialized tooling (backups, migrations) but direct use bypasses Turn Trace guarantees — prefer the engine seam.
+
+Core returns raw strings after semantic transformations (display scripts, macros). Frontends own all presentation rendering. Core is format-agnostic: it never parses markdown, strips HTML, or emits terminal escape sequences.
 
 `stcli-cli` also contains a deterministic HTTPS mock server (`provider_test`) built on `axum` for integration testing.
 
@@ -257,4 +270,5 @@ Formal ADRs live in [`docs/adr/`](docs/adr/):
 | [0005](docs/adr/0005-granular-deletion-tombstones.md) | Granular deletion as tombstones plus session compaction | Turn, Candidate, and Branch deletion appends tombstone events; physical compaction reaps only entities with no active descendants |
 | [0006](docs/adr/0006-layered-plugins-and-brokered-effects.md) | Layered plugins with a single brokered live-effect boundary | Supersedes 0003 post-MVP; adds QuickJS Plugin Scripts and brokered HTTPS egress/secondary inference |
 | [0007](docs/adr/0007-external-content-addressed-asset-storage.md) | External content-addressed filesystem storage for media assets | SQLite store.db remains lightweight and vacuum-friendly; avatars and media are stored in data/assets/sha256/ with SQLite reference tracking |
+| [0008](docs/adr/0008-frontend-core-boundary.md) | Four-tier frontend–core boundary taxonomy | Core/Gateway/Interactive Frontend/Headless Consumer tiers; engine seam recommended but Store stays pub; core returns raw strings, frontends own presentation |
 
