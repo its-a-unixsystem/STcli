@@ -129,3 +129,12 @@ _Avoid_: Purge, partial deletion
 **Hidden State**:
 A flag on an active Turn or Candidate indicating it should be skipped by the Prompt Builder during generation, while remaining visible in the Session Projection (and UI). Hidden entities survive compaction.
 _Avoid_: Deleted turn, tombstoned turn
+
+**Credential Store**:
+The platform-native secure storage facility (such as the OS keyring, Secret Service, or Keychain) used to store and retrieve API secrets without persisting plaintext tokens in configuration or database tables.
+_Avoid_: Vault, password manager, keystore
+
+**Credential Reference**:
+An alias string (`credential_key`) configured on a provider profile that points to a secret stored in the platform Credential Store.
+_Avoid_: API key, vault key, secret name
+
