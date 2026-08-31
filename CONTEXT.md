@@ -110,6 +110,10 @@ _Avoid_: Byte identity, approximate compatibility
 A non-blocking diagnostic for behavior that the selected Compatibility Profile permits but that is contradictory, risky, or likely accidental. It remains visible to CLI and future UI consumers without changing the behavior.
 _Avoid_: Validation error, automatic repair, blocked configuration
 
+**Prompt Order Entry**:
+An entry in a prompt preset's prompt order that binds a prompt identifier to an enabled flag. Turn preparation assembles the prompt from enabled entries in order; disabled entries are excluded.
+_Avoid_: Prompt slot, toggle, checkbox
+
 **Preset Script Grant**:
 Explicit authorization for the exact digest of transformation scripts embedded in a prompt preset. Importing or selecting the preset does not grant execution.
 _Avoid_: Plugin grant, trusted preset, implicit authorization
