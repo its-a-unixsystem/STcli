@@ -26,6 +26,10 @@ _Avoid_: Global settings, current configuration
 The immutable generation settings used by a Generation Attempt, resolved from explicit Session configuration over the selected prompt preset over Compatibility Profile defaults.
 _Avoid_: Preset settings, provider defaults, current settings
 
+**Duplicated Session**:
+An independent session created by copying the recorded history of one branch from a source session, with no ongoing link to it.
+_Avoid_: fork, clone, copy, child session, alternate session.
+
 **Imported Session**:
 An isolated session created by replaying a portable capsule.
 _Avoid_: Merged session, restored original session
