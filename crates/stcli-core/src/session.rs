@@ -32,6 +32,8 @@ pub struct SessionConfiguration {
     pub persona_description: Option<String>,
     pub lorebook_revisions: Vec<ContentHash>,
     pub prompt_preset_revision: Option<ContentHash>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub prompt_order_overrides: BTreeMap<String, bool>,
     pub provider: ProviderSettings,
     pub tokenizer: String,
     pub generation_settings: Value,
@@ -2773,6 +2775,7 @@ mod tests {
             persona_description: None,
             lorebook_revisions: vec![],
             prompt_preset_revision: None,
+            prompt_order_overrides: BTreeMap::new(),
             provider: ProviderSettings {
                 id: "default".to_owned(),
                 base_url: "https://127.0.0.1:3443".to_owned(),

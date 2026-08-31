@@ -574,6 +574,34 @@ impl StcliEngine {
                     configuration,
                 })
             }
+            EngineCommand::UpdatePromptOrderOverride {
+                session_id,
+                identifier,
+                enabled,
+            } => {
+                let session = store
+                    .session(session_id)?
+                    .ok_or(SessionError::SessionNotFound(session_id))?;
+                let mut configuration = store
+                    .configuration(&session.current_config_hash)?
+                    .ok_or(SessionError::ConfigurationNotFound(
+                        session.current_config_hash,
+                    ))?
+                    .configuration;
+                match enabled {
+                    Some(value) => {
+                        configuration
+                            .prompt_order_overrides
+                            .insert(identifier, value);
+                    }
+                    None => {
+                        configuration.prompt_order_overrides.remove(&identifier);
+                    }
+                }
+                Ok(EngineResult::Configuration(Box::new(
+                    store.update_session_configuration(session_id, configuration)?,
+                )))
+            }
             EngineCommand::DryRunSend {
                 session_id,
                 branch_id,
@@ -799,6 +827,11 @@ pub enum EngineCommand {
         session_id: EntityId,
         branch_id: EntityId,
         greeting_index: usize,
+    },
+    UpdatePromptOrderOverride {
+        session_id: EntityId,
+        identifier: String,
+        enabled: Option<bool>,
     },
     UpdatePromptOrder {
         session_id: Option<EntityId>,

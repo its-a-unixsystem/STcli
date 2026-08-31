@@ -63,6 +63,7 @@ pub fn configuration(character_revision: ContentHash) -> SessionConfiguration {
         persona_description: None,
         lorebook_revisions: vec![],
         prompt_preset_revision: None,
+        prompt_order_overrides: BTreeMap::new(),
         provider: ProviderSettings {
             id: "invalid-http".to_owned(),
             base_url: "http://127.0.0.1:1".to_owned(),

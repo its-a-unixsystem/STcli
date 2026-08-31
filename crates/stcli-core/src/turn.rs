@@ -2176,7 +2176,19 @@ impl Store {
             } else {
                 let preset = preset_value
                     .map(|value| PromptPreset::parse(value, CHAT_COMPLETION_CHARACTER_ID))
-                    .transpose()?;
+                    .transpose()?
+                    .map(|mut preset| {
+                        for entry in &mut preset.order {
+                            if let Some(enabled) = configuration
+                                .configuration
+                                .prompt_order_overrides
+                                .get(&entry.identifier)
+                            {
+                                entry.enabled = *enabled;
+                            }
+                        }
+                        preset
+                    });
                 let mut segments =
                     apply_prompt_preset(tokenizer, preset.as_ref(), segments, |_, input| {
                         let before = state.mutations();

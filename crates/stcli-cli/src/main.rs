@@ -777,6 +777,7 @@ fn configuration_from_args(
         persona_description,
         lorebook_revisions: args.lorebook,
         prompt_preset_revision: args.preset,
+        prompt_order_overrides: BTreeMap::new(),
         provider,
         tokenizer: args.tokenizer,
         generation_settings,

@@ -315,6 +315,7 @@ fn configuration_for_bench(
         persona_description: None,
         lorebook_revisions: lorebook_revision.into_iter().collect(),
         prompt_preset_revision: preset_revision,
+        prompt_order_overrides: BTreeMap::new(),
         provider: stcli_core::ProviderSettings {
             id: "bench-provider".to_owned(),
             base_url: "http://127.0.0.1:1".to_owned(),

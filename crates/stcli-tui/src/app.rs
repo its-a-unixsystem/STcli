@@ -1536,6 +1536,31 @@ impl App {
                         KeyCode::Left if state.order_focus.is_some() => {
                             state.order_focus = None;
                         }
+                        KeyCode::Char(' ')
+                            if state.show_details
+                                && state.order_focus.is_some()
+                                && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            let selected_order = state.order_focus.expect("order focus exists");
+                            let Some(row) = state
+                                .selected
+                                .checked_sub(1)
+                                .and_then(|index| state.filtered_rows().get(index).copied())
+                            else {
+                                return Effect::None;
+                            };
+                            let Some(entry) = row.summary.prompt_order.get(selected_order) else {
+                                return Effect::None;
+                            };
+                            let Some(history) = &self.history else {
+                                return Effect::None;
+                            };
+                            return Effect::Execute(EngineCommand::UpdatePromptOrderOverride {
+                                session_id: history.session.session_id,
+                                identifier: entry.identifier.clone(),
+                                enabled: Some(!entry.enabled),
+                            });
+                        }
                         KeyCode::Char(' ') if state.show_details && state.order_focus.is_some() => {
                             let selected_order = state.order_focus.expect("order focus exists");
                             let Some(row) = state
@@ -3025,6 +3050,7 @@ impl App {
                 .then(|| state.persona_description.clone()),
             lorebook_revisions: vec![],
             prompt_preset_revision,
+            prompt_order_overrides: BTreeMap::new(),
             provider: provider_settings.clone(),
             tokenizer: "tiktoken:o200k_base".to_owned(),
             generation_settings: serde_json::json!({}),

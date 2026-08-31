@@ -182,6 +182,7 @@ async fn run_parity_dry_run(
         persona_description: None,
         lorebook_revisions: vec![],
         prompt_preset_revision: Some(preset.revision_hash),
+        prompt_order_overrides: BTreeMap::new(),
         provider: ProviderSettings {
             id: "compat-parity".to_owned(),
             base_url: format!("https://{address}"),
@@ -711,6 +712,7 @@ mod tests {
                     persona_description: None,
                     lorebook_revisions: vec![],
                     prompt_preset_revision: None,
+                    prompt_order_overrides: BTreeMap::new(),
                     provider: provider_settings.clone(),
                     tokenizer: "tiktoken:o200k_base".to_owned(),
                     generation_settings: json!({
@@ -816,6 +818,7 @@ mod tests {
                     persona_description: None,
                     lorebook_revisions: vec![],
                     prompt_preset_revision: None,
+                    prompt_order_overrides: BTreeMap::new(),
                     provider: ProviderSettings {
                         id: "split-sse".to_owned(),
                         base_url: format!("https://{address}"),
@@ -986,6 +989,7 @@ mod tests {
                     persona_description: None,
                     lorebook_revisions: vec![],
                     prompt_preset_revision: None,
+                    prompt_order_overrides: BTreeMap::new(),
                     provider: ProviderSettings {
                         id: "turn-operations".to_owned(),
                         base_url: format!("https://{address}"),
@@ -1142,6 +1146,7 @@ mod tests {
                     persona_description: None,
                     lorebook_revisions: vec![],
                     prompt_preset_revision: None,
+                    prompt_order_overrides: BTreeMap::new(),
                     provider: ProviderSettings {
                         id: "echo-secret".to_owned(),
                         base_url: format!("https://{address}"),

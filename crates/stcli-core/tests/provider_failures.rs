@@ -38,6 +38,7 @@ async fn with_failed_provider(
                 persona_description: None,
                 lorebook_revisions: vec![],
                 prompt_preset_revision: None,
+                prompt_order_overrides: BTreeMap::new(),
                 provider: ProviderSettings {
                     timeout_seconds: timeout,
                     ..settings
@@ -167,6 +168,7 @@ async fn provider_connection_refused_records_failed_attempt() {
                 persona_description: None,
                 lorebook_revisions: vec![],
                 prompt_preset_revision: None,
+                prompt_order_overrides: BTreeMap::new(),
                 provider: ProviderSettings {
                     id: "conn-refused".to_owned(),
                     base_url: "https://127.0.0.1:1".to_owned(),
