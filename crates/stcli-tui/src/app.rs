@@ -308,6 +308,7 @@ pub struct PersonasState {
 #[derive(Clone, Debug)]
 pub struct PersonaEditorState {
     pub original_key: Option<String>,
+    pub copy_source_key: Option<String>,
     pub name: String,
     pub description: String,
     pub focused_field: usize,
@@ -1829,7 +1830,7 @@ impl App {
         copy: bool,
         resume_new_session: bool,
     ) {
-        let (original_key, name, description) = match source {
+        let (original_key, copy_source_key, name, description) = match source {
             Some(persona) if copy => {
                 let base = format!("{}-copy", persona.name);
                 let name =
@@ -1845,13 +1846,14 @@ impl App {
                             "unbounded suffix sequence always contains an available persona name",
                         )
                     };
-                (None, name, persona.description)
+                (None, Some(persona.key), name, persona.description)
             }
-            Some(persona) => (Some(persona.key), persona.name, persona.description),
-            None => (None, String::new(), String::new()),
+            Some(persona) => (Some(persona.key), None, persona.name, persona.description),
+            None => (None, None, String::new(), String::new()),
         };
         self.popup = Some(Popup::PersonaEditor(Box::new(PersonaEditorState {
             original_key,
+            copy_source_key,
             name,
             description,
             focused_field: 0,
@@ -1882,6 +1884,22 @@ impl App {
                 return;
             }
             key.clone()
+        } else if let Some(source_key) = &state.copy_source_key {
+            let new_key = match store.duplicate(source_key) {
+                Ok(new_key) => new_key,
+                Err(error) => {
+                    self.show_error(format!("Failed to copy persona: {error}"));
+                    self.popup = Some(Popup::PersonaEditor(Box::new(state)));
+                    return;
+                }
+            };
+            if let Err(error) = store.update(&new_key, state.name.trim(), state.description.trim())
+            {
+                self.show_error(format!("Failed to update persona: {error}"));
+                self.popup = Some(Popup::PersonaEditor(Box::new(state)));
+                return;
+            }
+            new_key
         } else {
             store.insert(state.name.trim(), state.description.trim())
         };
@@ -4034,6 +4052,41 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         let saved = stcli_core::PersonaStore::load(&config_dir).unwrap();
         assert_eq!(saved.personas().len(), 3);
+    }
+
+    #[test]
+    fn persona_copy_preserves_imported_position_and_metadata_through_tui() {
+        // Regression: copying an imported SillyTavern persona must retain position and flattened metadata.
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("stcli.sqlite3");
+        let config_dir = directory.path().join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("personas.json"),
+            r#"{"personas":{"alice.png":"Alice"},"persona_descriptions":{"alice.png":{"description":"A curious archivist.","position":3,"depth":2}}}"#,
+        )
+        .unwrap();
+        let mut app = App::load(StcliEngine::new(database), Config::default(), None).unwrap();
+        app.set_config_dir(config_dir.clone());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        let saved = stcli_core::PersonaStore::load(&config_dir).unwrap();
+        let personas = saved.personas();
+        let clone = personas
+            .iter()
+            .find(|persona| persona.name == "Alice-copy")
+            .unwrap();
+        assert_eq!(clone.position, 3);
+        assert_eq!(clone.description, "A curious archivist.");
+        let raw: serde_json::Value =
+            serde_json::from_slice(&fs::read(config_dir.join("personas.json")).unwrap()).unwrap();
+        assert_eq!(raw["persona_descriptions"][clone.key.clone()]["depth"], 2);
+        assert_eq!(
+            raw["persona_descriptions"][clone.key.clone()]["position"],
+            3
+        );
     }
 
     #[test]

@@ -114,11 +114,20 @@ impl PersonaStore {
     }
 
     pub fn duplicate(&mut self, key: &str) -> Result<String, PersonaStoreError> {
-        let source = self
+        let source_description = self
+            .persona_descriptions
             .get(key)
             .ok_or_else(|| PersonaStoreError::PersonaNotFound(key.to_owned()))?;
-        let name = self.available_copy_name(&source.name);
-        Ok(self.insert(name, source.description))
+        let source_name = self
+            .personas
+            .get(key)
+            .ok_or_else(|| PersonaStoreError::PersonaNotFound(key.to_owned()))?;
+        let name = self.available_copy_name(source_name);
+        let new_key = format!("stcli-{}", Ulid::new());
+        self.personas.insert(new_key.clone(), name);
+        self.persona_descriptions
+            .insert(new_key.clone(), source_description.clone());
+        Ok(new_key)
     }
 
     pub fn update(
