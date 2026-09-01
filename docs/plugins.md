@@ -12,6 +12,7 @@ This page is the complete guide. It has an introduction, two tutorials, a packag
 - [How a plugin runs](#how-a-plugin-runs)
 - [Choose a runtime](#choose-a-runtime)
 - [st-bridge deterministic globals](#st-bridge-deterministic-globals)
+- [Brokered HTTPS egress](#brokered-https-egress)
 - [The manifest](#the-manifest)
 - [Tutorial: a script plugin](#tutorial-a-script-plugin)
 - [Tutorial: a Wasm plugin](#tutorial-a-wasm-plugin)
@@ -102,6 +103,59 @@ Warning. Later calls to the abandoned context produce no effects.
 
 Replay does not initialize the PRNG or run timer callbacks. It reads the recorded seed and effects
 from the Turn Trace and reapplies the effects.
+
+### Brokered HTTPS egress
+
+An `st-bridge` Extension can call `fetch(url, options)` and `$.ajax(settings)`. Both route through
+the host-controlled egress broker: the Extension never opens a socket, and every exchange that
+reaches the transport records a receipt in the Turn Trace. `$.ajax` supports the common
+SillyTavern call shape (`url`, `method`/`type`, `headers`, `data`, `dataType`, `success`,
+`error`, `complete`); other jQuery surface is not provided.
+
+Egress is denied by default. A call succeeds only when all of the following hold:
+
+1. The Session's plugin pin grants the `brokered-egress` capability.
+2. The URL uses `https`.
+3. The URL's host exactly matches (case-insensitive) a domain in the pin's egress allow-list.
+
+A denied call does not fail the turn. `fetch` resolves with `ok: false`, `status: 0`,
+`statusText: "egress denied"`, and an empty body, and the plugin receipt records one
+Compatibility Warning that states the denial reason. The same non-fatal shape applies when the
+transport itself fails, with `statusText: "transport error"`.
+
+The allow-list lives on the plugin pin, next to the capabilities. `plugin adopt` adds domain
+entries with a repeatable `--egress-domain <host>` flag:
+
+```shell
+stcli plugin adopt --session <session> <id> --version <version> --digest <digest> \
+  --capability brokered-egress --egress-domain api.example.com
+```
+
+An allowance may carry a secret injection: the broker resolves a Credential Reference from the
+Credential Store, replaces `{secret}` in a value template, and injects the header after the
+Extension hands over the request. Secret values never enter Extension memory, receipts, or
+hashes. Secret-carrying allowances are configured programmatically through
+`EngineCommand::AdoptPlugin`; an interactive consent surface is planned with the Extension import
+UX.
+
+Every exchange that reaches the transport records an `EgressReceipt` on the plugin receipt's
+`egress` list:
+
+| Field | Content |
+|---|---|
+| `url` / `method` | The brokered URL and upper-cased HTTP method. |
+| `request_hash` | Content hash over `stcli:egress-request:v1` of `{method, url, body, injected_headers}`. Only injected header *names* are hashed; secret values are excluded. |
+| `status` | The HTTP status, or `0` when the transport failed before any response. |
+| `response_hash` | Content-blob hash of the response body. |
+| `body` | The response body, or the transport error description when `status` is `0`. |
+
+Replay never re-executes the Extension. A rerun reuses the recorded receipts and effects, so a
+recorded turn replays offline even when the component file is gone.
+
+Dry Runs exercise egress without touching the network: a live broker answers a canned empty `200`
+response, and a broker configured with a stub transport forwards to the stub. Native Plugin hosts
+can reuse the same boundary through `EgressBroker`, `EgressTransport`, and `StubTransport` in
+`stcli-core`.
 
 ## The manifest
 
@@ -490,6 +544,7 @@ The manifest requests capabilities. The session grant allows a subset. The engin
 | `read-session` | A read of permitted session data. | Wasm, Script |
 | `write-own-state` | A `state-write` effect, and `stcli.state.set`. | Wasm, Script |
 | `abort-pre-request` | An `abort` effect on the `pre-request` event. | Wasm |
+| `brokered-egress` | Brokered `fetch`/`$.ajax` calls through the egress allow-list on the pin. | st-bridge |
 
 A script plugin uses `contribute-prompt` and `write-own-state`. It cannot register a macro or a command, and it cannot abort a turn. For those effects, write a Wasm plugin.
 

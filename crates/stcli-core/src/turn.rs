@@ -1361,6 +1361,7 @@ impl Store {
                     component_sha256: pin.component_hash.clone(),
                     capabilities: pin.capabilities.clone(),
                     settings: pin.settings.clone(),
+                    egress_allow_list: pin.egress_allow_list.clone(),
                     enabled: true,
                 },
             );
@@ -1477,7 +1478,7 @@ impl Store {
             return Ok(Vec::new());
         }
         let (ordered, grants) = self.configured_runtime_plugins(configuration)?;
-        let host = PluginHost::new(Default::default());
+        let host = PluginHost::with_egress(Default::default(), self.egress.clone());
         let mut receipts = Vec::new();
         for installed in ordered {
             if installed.manifest.runtime != PluginRuntime::StBridge {
@@ -1731,6 +1732,7 @@ impl Store {
             component_sha256: pin.component_hash.clone(),
             capabilities: pin.capabilities.clone(),
             settings: pin.settings.clone(),
+            egress_allow_list: pin.egress_allow_list.clone(),
             enabled: true,
         };
         let mut state = self.state_transaction(session_id)?;

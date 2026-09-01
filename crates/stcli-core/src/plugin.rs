@@ -35,6 +35,7 @@ pub enum PluginCapability {
     WriteOwnState,
     AbortPreRequest,
     InspectArtifact,
+    BrokeredEgress,
 }
 impl std::str::FromStr for PluginCapability {
     type Err = PluginError;
@@ -49,6 +50,7 @@ impl std::str::FromStr for PluginCapability {
             "write-own-state" => Ok(Self::WriteOwnState),
             "abort-pre-request" => Ok(Self::AbortPreRequest),
             "inspect-artifact" => Ok(Self::InspectArtifact),
+            "brokered-egress" => Ok(Self::BrokeredEgress),
             _ => Err(PluginError::UnknownCapability(value.to_owned())),
         }
     }
@@ -143,6 +145,8 @@ pub struct PluginGrant {
     pub component_sha256: ContentHash,
     pub capabilities: BTreeSet<PluginCapability>,
     pub settings: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub egress_allow_list: Vec<crate::EgressAllowance>,
     pub enabled: bool,
 }
 
@@ -218,6 +222,8 @@ pub struct PluginReceipt {
     pub fuel_consumed: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub script_logs: Vec<ScriptLog>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub egress: Vec<crate::EgressReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prng_seed: Option<u64>,
 }
@@ -277,11 +283,22 @@ impl Default for PluginLimits {
 
 pub struct PluginHost {
     limits: PluginLimits,
+    egress: Option<crate::EgressBroker>,
 }
 
 impl PluginHost {
     pub fn new(limits: PluginLimits) -> Self {
-        Self { limits }
+        Self {
+            limits,
+            egress: None,
+        }
+    }
+
+    pub fn with_egress(limits: PluginLimits, broker: crate::EgressBroker) -> Self {
+        Self {
+            limits,
+            egress: Some(broker),
+        }
     }
 
     pub fn execute(
@@ -317,6 +334,7 @@ impl PluginHost {
         if digest != installed.manifest.component_sha256 || digest != grant.component_sha256 {
             return Err(PluginError::DigestMismatch);
         }
+        let mut egress_receipts = Vec::new();
         let (effects, fuel_consumed, script_logs, prng_seed) = match installed.manifest.runtime {
             PluginRuntime::Wasm => {
                 let (output_json, fuel_consumed) =
@@ -357,20 +375,51 @@ impl PluginHost {
                 {
                     let source = String::from_utf8(component_bytes)
                         .map_err(|_| PluginError::ScriptNotUtf8(installed.manifest.id.clone()))?;
-                    let outcome =
-                        crate::st_bridge::execute(installed, &input, &source, self.limits.script)?;
+                    let policy = crate::EgressPolicy {
+                        capability_granted: grant
+                            .capabilities
+                            .contains(&PluginCapability::BrokeredEgress),
+                        allowances: grant.egress_allow_list.clone(),
+                    };
+                    let invocation = self.egress.clone().map(|broker| {
+                        let mode = if input
+                            .session
+                            .get("dry_run")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                        {
+                            crate::EgressMode::DryRun
+                        } else {
+                            crate::EgressMode::Live
+                        };
+                        crate::EgressInvocation {
+                            broker,
+                            policy,
+                            mode,
+                        }
+                    });
+                    let outcome = crate::st_bridge::execute(
+                        installed,
+                        &input,
+                        &source,
+                        self.limits.script,
+                        invocation,
+                    )?;
                     let output_json = serde_json::to_string(&PluginOutput {
                         effects: outcome.effects.clone(),
                     })?;
                     if output_json.len() > self.limits.output_bytes {
                         return Err(PluginError::OutputLimit);
                     }
+                    egress_receipts = outcome.egress_receipts;
                     (outcome.effects, 0, outcome.logs, outcome.prng_seed)
                 }
                 #[cfg(not(feature = "scripting"))]
-                return Err(PluginError::ScriptingUnavailable(
-                    installed.manifest.id.clone(),
-                ));
+                {
+                    return Err(PluginError::ScriptingUnavailable(
+                        installed.manifest.id.clone(),
+                    ));
+                }
             }
         };
         validate_effects(installed, grant, input.event, &effects)?;
@@ -383,6 +432,7 @@ impl PluginHost {
             event: input.event,
             input,
             effects,
+            egress: egress_receipts,
             fuel_consumed,
             script_logs,
             prng_seed,
@@ -736,6 +786,7 @@ pub fn validate_recorded_receipt(receipt: &PluginReceipt) -> Result<(), PluginEr
         component_sha256: receipt.component_sha256.clone(),
         capabilities: receipt.grants.clone(),
         settings: receipt.input.settings.clone(),
+        egress_allow_list: Vec::new(),
         enabled: true,
     };
     validate_effects(&installed, &grant, receipt.event, &receipt.effects)

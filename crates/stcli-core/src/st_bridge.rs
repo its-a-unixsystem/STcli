@@ -28,8 +28,9 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 use crate::{
-    ChatMessage, ChatRole, ContentHash, EntityId, InstalledPlugin, PluginEffect, PluginError,
-    PluginEvent, PluginInput, PromptRewriteMessage, ScriptLimits, ScriptOutcome,
+    ChatMessage, ChatRole, ContentHash, EgressInvocation, EgressReceipt, EgressRequest, EntityId,
+    InstalledPlugin, PluginEffect, PluginError, PluginEvent, PluginInput, PromptRewriteMessage,
+    ScriptLimits, ScriptOutcome,
 };
 
 type Listener = Persistent<Function<'static>>;
@@ -73,6 +74,13 @@ struct BridgeContext {
     abandoned: Rc<Cell<bool>>,
     prng_seed: u64,
     logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
+    egress: Rc<RefCell<EgressState>>,
+}
+
+struct EgressState {
+    caller: String,
+    invocation: Option<EgressInvocation>,
+    receipts: Vec<EgressReceipt>,
 }
 
 struct Xoshiro128PlusPlus {
@@ -120,6 +128,7 @@ struct Request {
     input: PluginInput,
     source: String,
     limits: ScriptLimits,
+    egress: Option<EgressInvocation>,
     response: mpsc::SyncSender<Result<ScriptOutcome, PluginError>>,
 }
 
@@ -139,6 +148,7 @@ pub(crate) fn execute(
     input: &PluginInput,
     source: &str,
     limits: ScriptLimits,
+    egress: Option<EgressInvocation>,
 ) -> Result<ScriptOutcome, PluginError> {
     let worker = WORKER
         .get_or_init(|| {
@@ -159,6 +169,7 @@ pub(crate) fn execute(
             input: input.clone(),
             source: source.to_owned(),
             limits,
+            egress,
             response,
         })
         .map_err(|_| PluginError::StBridgeWorkerStopped)?;
@@ -178,6 +189,7 @@ impl Worker {
                 request.input,
                 &request.source,
                 request.limits,
+                request.egress,
             );
             let result = match result {
                 Err(PluginError::StBridgeAsyncTimeout) => Ok(ScriptOutcome {
@@ -186,6 +198,7 @@ impl Worker {
                         level: "warn".to_owned(),
                         message: "st-bridge async callback exceeded 64 microtasks; dispatch effects were discarded".to_owned(),
                     }],
+                    egress_receipts: Vec::new(),
                     prng_seed: timeout_seed,
                 }),
                 other => other,
@@ -200,6 +213,7 @@ impl Worker {
         input: PluginInput,
         source: &str,
         limits: ScriptLimits,
+        egress: Option<EgressInvocation>,
     ) -> Result<ScriptOutcome, PluginError> {
         let key = ContextKey::from_request(&installed, &input)?;
         if !self.contexts.contains_key(&key) {
@@ -212,10 +226,16 @@ impl Worker {
             .contexts
             .get_mut(&key)
             .ok_or(PluginError::StBridgeWorkerStopped)?;
+        *context.egress.borrow_mut() = EgressState {
+            caller: installed.manifest.id.clone(),
+            invocation: egress,
+            receipts: Vec::new(),
+        };
         if context.abandoned.get() {
             return Ok(ScriptOutcome {
                 effects: Vec::new(),
                 logs: context.take_logs(),
+                egress_receipts: Vec::new(),
                 prng_seed: Some(context.prng_seed),
             });
         }
@@ -232,7 +252,7 @@ impl Worker {
             context.app_ready_emitted.set(true);
         }
 
-        match input.event {
+        let mut outcome = match input.event {
             PluginEvent::GenerateInterceptor => {
                 if let Some(branch_id) = input
                     .session
@@ -394,6 +414,7 @@ impl Worker {
                 Ok(ScriptOutcome {
                     effects: vec![PluginEffect::PromptRewrite { messages }],
                     logs: context.take_logs(),
+                    egress_receipts: Vec::new(),
                     prng_seed: Some(context.prng_seed),
                 })
             }
@@ -412,6 +433,7 @@ impl Worker {
                     Ok(ScriptOutcome {
                         effects: Vec::new(),
                         logs: context.take_logs(),
+                        egress_receipts: Vec::new(),
                         prng_seed: Some(context.prng_seed),
                     })
                 } else {
@@ -426,6 +448,7 @@ impl Worker {
                                 .collect(),
                         }],
                         logs: context.take_logs(),
+                        egress_receipts: Vec::new(),
                         prng_seed: Some(context.prng_seed),
                     })
                 }
@@ -452,11 +475,14 @@ impl Worker {
                         value: serde_json::json!({}),
                     }],
                     logs: context.take_logs(),
+                    egress_receipts: Vec::new(),
                     prng_seed: Some(context.prng_seed),
                 })
             }
             _ => Err(PluginError::UnsupportedStBridgeEvent),
-        }
+        }?;
+        outcome.egress_receipts = std::mem::take(&mut context.egress.borrow_mut().receipts);
+        Ok(outcome)
     }
 }
 
@@ -501,6 +527,11 @@ impl BridgeContext {
         let next_timer_id = Rc::new(Cell::new(1));
         let logs = Rc::new(RefCell::new(Vec::new()));
         let warned_delayed_timer = Rc::new(Cell::new(false));
+        let egress = Rc::new(RefCell::new(EgressState {
+            caller: plugin_id.to_owned(),
+            invocation: None,
+            receipts: Vec::new(),
+        }));
         context.with(|ctx| {
             install_globals(
                 &ctx,
@@ -510,6 +541,7 @@ impl BridgeContext {
                 next_timer_id,
                 Rc::clone(&logs),
                 warned_delayed_timer,
+                Rc::clone(&egress),
             )
             .map_err(|error| PluginError::ScriptRuntime(error.to_string()))?;
             let globals = ctx.globals();
@@ -543,6 +575,7 @@ impl BridgeContext {
             abandoned,
             prng_seed,
             logs,
+            egress,
         })
     }
 
@@ -685,6 +718,7 @@ fn install_timer<'js>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn install_globals<'js>(
     ctx: &Ctx<'js>,
     listeners: Rc<RefCell<HashMap<String, Vec<Listener>>>>,
@@ -693,6 +727,7 @@ fn install_globals<'js>(
     next_timer_id: Rc<Cell<u32>>,
     logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
     warned_delayed_timer: Rc<Cell<bool>>,
+    egress: Rc<RefCell<EgressState>>,
 ) -> rquickjs::Result<()> {
     let globals = ctx.globals();
     let event_types = Object::new(ctx.clone())?;
@@ -784,12 +819,116 @@ fn install_globals<'js>(
         &globals,
         "setInterval",
         next_timer_id,
-        logs,
+        Rc::clone(&logs),
         warned_delayed_timer,
     )?;
 
     globals.set("clearTimeout", Function::new(ctx.clone(), || ())?)?;
     globals.set("clearInterval", Function::new(ctx.clone(), || ())?)?;
+    install_egress(ctx, &globals, egress, Rc::clone(&logs))?;
+    Ok(())
+}
+
+const DENIED_FETCH_JSON: &str =
+    r#"{"ok":false,"status":0,"statusText":"egress denied","headers":{},"body":"","url":""}"#;
+
+const EGRESS_SHIM: &str = r#"
+(() => {
+    const respond = (raw) => {
+        const r = JSON.parse(raw);
+        return {
+            ok: r.ok,
+            status: r.status,
+            statusText: r.statusText,
+            headers: r.headers,
+            redirected: false,
+            type: "basic",
+            url: r.url,
+            bodyUsed: false,
+            text: () => Promise.resolve(r.body),
+            json: () => Promise.resolve(JSON.parse(r.body)),
+        };
+    };
+    globalThis.fetch = (url, options = {}) => {
+        const request = JSON.stringify({
+            url: String(url),
+            method: (options.method || "GET").toUpperCase(),
+            headers: options.headers || {},
+            body: options.body == null ? null : String(options.body),
+        });
+        return Promise.resolve(respond(__stcliFetch(request)));
+    };
+    const ajax = (settings = {}) => globalThis.fetch(settings.url, {
+        method: (settings.method || settings.type || "GET").toUpperCase(),
+        headers: settings.headers || {},
+        body: settings.data == null ? null : String(settings.data),
+    }).then((response) => response.text().then((text) => {
+        let data = text;
+        if (settings.dataType === "json" && text) {
+            try { data = JSON.parse(text); } catch { }
+        }
+        const jqXHR = { status: response.status, statusText: response.statusText, responseText: text };
+        if (response.ok && settings.success) settings.success(data, "success", jqXHR);
+        if (!response.ok && settings.error) settings.error(jqXHR, "error", response.statusText);
+        if (settings.complete) settings.complete(jqXHR);
+        return data;
+    }));
+    globalThis.$ = { ajax };
+    globalThis.jQuery = globalThis.$;
+})();
+"#;
+
+fn install_egress<'js>(
+    ctx: &Ctx<'js>,
+    globals: &Object<'js>,
+    egress: Rc<RefCell<EgressState>>,
+    logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
+) -> rquickjs::Result<()> {
+    globals.set(
+        "__stcliFetch",
+        Function::new(ctx.clone(), move |request_json: String| -> String {
+            let request: EgressRequest = match serde_json::from_str(&request_json) {
+                Ok(request) => request,
+                Err(_) => {
+                    logs.borrow_mut().push(crate::ScriptLog {
+                        level: "warn".to_owned(),
+                        message: "egress denied: malformed fetch request".to_owned(),
+                    });
+                    return DENIED_FETCH_JSON.to_owned();
+                }
+            };
+            let invocation = egress.borrow().invocation.clone();
+            let Some(invocation) = invocation else {
+                logs.borrow_mut().push(crate::ScriptLog {
+                    level: "warn".to_owned(),
+                    message: "egress denied: egress is unavailable in this host".to_owned(),
+                });
+                return DENIED_FETCH_JSON.to_owned();
+            };
+            let caller = egress.borrow().caller.clone();
+            let mut state = egress.borrow_mut();
+            let outcome = invocation.broker.fetch(
+                &caller,
+                &invocation.policy,
+                invocation.mode,
+                &request,
+                &mut logs.borrow_mut(),
+            );
+            if let Some(receipt) = outcome.receipt {
+                state.receipts.push(receipt);
+            }
+            serde_json::to_string(&serde_json::json!({
+                "ok": outcome.ok,
+                "status": outcome.response.status,
+                "statusText": outcome.response.status_text,
+                "headers": outcome.response.headers,
+                "body": outcome.response.body,
+                "url": request.url,
+            }))
+            .unwrap_or_else(|_| DENIED_FETCH_JSON.to_owned())
+        })?,
+    )?;
+    ctx.eval::<Value, _>(EGRESS_SHIM)?;
     Ok(())
 }
 

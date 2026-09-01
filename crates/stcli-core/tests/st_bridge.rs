@@ -1,10 +1,17 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
+use parking_lot::Mutex;
 use serde_json::json;
 use stcli_core::{
-    EngineCommand, EngineResult, EntityId, InstalledPlugin, PluginEffect, PluginEvent, PluginGrant,
-    PluginHost, PluginInput, PluginLimits, PluginPin, PluginReceipt, PluginRegistry, StcliEngine,
-    Store, plugin_digest,
+    CredentialError, CredentialResolver, EGRESS_REQUEST_DOMAIN, EgressAllowance, EgressBroker,
+    EgressRequest, EgressResponse, EgressSecretInjection, EgressTransport, EngineCommand,
+    EngineResult, EntityId, InstalledPlugin, PluginEffect, PluginEvent, PluginGrant, PluginHost,
+    PluginInput, PluginLimits, PluginPin, PluginReceipt, PluginRegistry, StcliEngine, Store,
+    StubTransport, canonical_json_hash, content_blob_hash, plugin_digest,
 };
 use stcli_testkit::{MockProvider, configuration as base_configuration, fixtures};
 use tempfile::tempdir;
@@ -171,6 +178,7 @@ fn authorize(installed: &InstalledPlugin) -> PluginGrant {
         component_sha256: installed.manifest.component_sha256.clone(),
         capabilities: installed.manifest.requested_capabilities.clone(),
         settings: json!({}),
+        egress_allow_list: Vec::new(),
         enabled: true,
     }
 }
@@ -201,6 +209,7 @@ fn bridge_dispatches_lifecycle_events_and_interceptor_with_async_settlement() {
         component_sha256: installed.manifest.component_sha256.clone(),
         capabilities: installed.manifest.requested_capabilities.clone(),
         settings: json!({}),
+        egress_allow_list: Vec::new(),
         enabled: true,
     };
     let session_id = EntityId::new();
@@ -333,6 +342,7 @@ async fn dry_run_applies_interceptor_and_prompt_ready_mutations() {
         component_hash: installed.manifest.component_sha256.clone(),
         capabilities: installed.manifest.requested_capabilities.clone(),
         settings: json!({}),
+        egress_allow_list: Vec::new(),
         enabled: true,
     }];
     let engine = StcliEngine::new(&database);
@@ -432,6 +442,7 @@ async fn live_attempt_records_lifecycle_and_rerun_reuses_recorded_prompt() {
         component_hash: installed.manifest.component_sha256.clone(),
         capabilities: installed.manifest.requested_capabilities.clone(),
         settings: json!({}),
+        egress_allow_list: Vec::new(),
         enabled: true,
     }];
     let created = store.create_session(configuration, 0).unwrap();
@@ -617,4 +628,396 @@ globalThis.namedInterceptor = namedInterceptor;
             .message
             .contains("async callback exceeded 64 microtasks")
     );
+}
+
+struct MapCredentialResolver {
+    secrets: BTreeMap<String, String>,
+}
+
+impl CredentialResolver for MapCredentialResolver {
+    fn get(&self, key: &str) -> Result<String, CredentialError> {
+        self.secrets
+            .get(key)
+            .cloned()
+            .ok_or(CredentialError::Missing)
+    }
+}
+
+#[derive(Default)]
+struct CapturingTransport {
+    requests: Mutex<Vec<EgressRequest>>,
+    responses: BTreeMap<String, EgressResponse>,
+}
+
+impl EgressTransport for CapturingTransport {
+    fn roundtrip(
+        &self,
+        request: &EgressRequest,
+    ) -> Result<EgressResponse, stcli_core::EgressTransportError> {
+        self.requests.lock().push(request.clone());
+        Ok(self
+            .responses
+            .get(&request.url)
+            .cloned()
+            .unwrap_or(EgressResponse {
+                status: 200,
+                status_text: "OK".to_owned(),
+                headers: BTreeMap::new(),
+                body: String::new(),
+            }))
+    }
+}
+
+const EGRESS_SOURCE: &str = r#"
+async function namedInterceptor(chat) {
+  const response = await fetch("https://api.example.com/v1/data");
+  const body = await response.text();
+  chat.push({
+    name: 'System',
+    is_user: false,
+    is_system: true,
+    mes: 'fetch:' + response.status + ':' + body,
+    extra: {},
+    index: chat.length
+  });
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+
+fn write_egress_plugin(directory: &Path) -> PathBuf {
+    let plugin = write_test_bridge_plugin(
+        &directory.join("plugin"),
+        "org.stcli.egress-proof",
+        EGRESS_SOURCE,
+    );
+    // widen requested capabilities to include brokered-egress
+    let manifest_path = plugin.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["requested_capabilities"] =
+        json!(["contribute-prompt", "brokered-egress", "read-session"]);
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    plugin
+}
+
+fn stub_broker() -> EgressBroker {
+    let mut responses = BTreeMap::new();
+    responses.insert(
+        "https://api.example.com/v1/data".to_owned(),
+        EgressResponse {
+            status: 200,
+            status_text: "OK".to_owned(),
+            headers: BTreeMap::new(),
+            body: "egress-body".to_owned(),
+        },
+    );
+    let transport = StubTransport { responses };
+    let credentials = MapCredentialResolver {
+        secrets: BTreeMap::new(),
+    };
+    EgressBroker::stub(Arc::new(transport), Arc::new(credentials))
+}
+
+fn egress_pin(installed: &InstalledPlugin, allow_list: Vec<EgressAllowance>) -> PluginPin {
+    PluginPin {
+        id: installed.manifest.id.clone(),
+        version: installed.manifest.version.to_string(),
+        component_hash: installed.manifest.component_sha256.clone(),
+        capabilities: installed.manifest.requested_capabilities.clone(),
+        settings: json!({}),
+        egress_allow_list: allow_list,
+        enabled: true,
+    }
+}
+
+#[tokio::test]
+async fn allowed_fetch_records_receipt_and_replays_offline() {
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("data");
+    let plugin = write_egress_plugin(&data);
+    let registry = PluginRegistry::new(data.join("plugins"));
+    let installed = registry.install(&plugin).unwrap();
+    let mock = MockProvider::spawn(["Generated response"]).await.unwrap();
+    let database = data.join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.provider = mock.provider_settings();
+    configuration.plugins = vec![egress_pin(
+        &installed,
+        vec![EgressAllowance {
+            domain: "api.example.com".to_owned(),
+            secret: None,
+        }],
+    )];
+    let created = store.create_session(configuration, 0).unwrap();
+    store.set_egress_broker(stub_broker());
+    let completed = store
+        .send_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "Hello".to_owned(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    let attempt = &completed.attempt;
+    let receipt = attempt
+        .effect_receipt
+        .as_ref()
+        .unwrap()
+        .plugins
+        .iter()
+        .find(|receipt| receipt.event == PluginEvent::GenerateInterceptor)
+        .unwrap();
+    assert_eq!(receipt.egress.len(), 1);
+    let egress = &receipt.egress[0];
+    assert_eq!(egress.url, "https://api.example.com/v1/data");
+    assert_eq!(egress.method, "GET");
+    assert_eq!(egress.status, 200);
+    assert_eq!(egress.body, "egress-body");
+    assert_eq!(egress.response_hash, content_blob_hash(b"egress-body"));
+    assert_ne!(egress.request_hash, content_blob_hash(b""));
+
+    let messages = &attempt.effect_receipt.as_ref().unwrap().provider_request["messages"];
+    let contents = serde_json::to_string(messages).unwrap();
+    assert!(contents.contains("fetch:200:egress-body"), "{contents}");
+
+    // Offline replay: delete the component, dry_run_rerun must not re-execute.
+    let attempt_id = attempt.attempt_id;
+    let persisted = store.attempt(attempt_id).unwrap().unwrap();
+    let original_plan = persisted.prompt_plan.clone();
+    let original_request = persisted
+        .effect_receipt
+        .as_ref()
+        .unwrap()
+        .provider_request
+        .clone();
+    std::fs::remove_file(installed.directory.join(&installed.manifest.component)).unwrap();
+    let rerun = store.dry_run_rerun(attempt_id).unwrap();
+    assert_eq!(rerun.prompt_plan, original_plan);
+    assert_eq!(rerun.provider_request, original_request);
+}
+
+#[tokio::test]
+async fn dry_run_exercises_egress_offline() {
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("data");
+    let plugin = write_egress_plugin(&data);
+    let registry = PluginRegistry::new(data.join("plugins"));
+    let installed = registry.install(&plugin).unwrap();
+    let database = data.join("stcli.sqlite3");
+    let engine = StcliEngine::with_egress_broker(&database, stub_broker());
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.plugins = vec![egress_pin(
+        &installed,
+        vec![EgressAllowance {
+            domain: "api.example.com".to_owned(),
+            secret: None,
+        }],
+    )];
+    let EngineResult::CreatedSession(created) = engine
+        .execute(
+            EngineCommand::CreateSession {
+                configuration: Box::new(configuration),
+                greeting_index: 0,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected create result");
+    };
+    let EngineResult::DryRun(result) = engine
+        .execute(
+            EngineCommand::DryRunSend {
+                session_id: created.session.session_id,
+                branch_id: created.branch.branch_id,
+                content: "Hello".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected dry run result");
+    };
+
+    let contents = serde_json::to_string(&result.provider_request["messages"]).unwrap();
+    assert!(contents.contains("fetch:200:egress-body"), "{contents}");
+    let receipt = result
+        .prompt_plan
+        .plugin_receipts
+        .iter()
+        .find(|receipt| receipt.event == PluginEvent::GenerateInterceptor)
+        .unwrap();
+    assert_eq!(receipt.egress.len(), 1);
+    assert_eq!(receipt.egress[0].status, 200);
+    assert_eq!(receipt.egress[0].body, "egress-body");
+
+    // Nothing was committed.
+    let store = Store::open(&database).unwrap();
+    assert!(
+        store
+            .turns_for_branch(created.branch.branch_id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn unallowed_domain_is_refused_non_fatally() {
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("data");
+    let plugin = write_egress_plugin(&data);
+    let registry = PluginRegistry::new(data.join("plugins"));
+    let installed = registry.install(&plugin).unwrap();
+    let mock = MockProvider::spawn(["Generated response"]).await.unwrap();
+    let database = data.join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.provider = mock.provider_settings();
+    // Empty allow-list: the capability is granted but no domain is allowed.
+    configuration.plugins = vec![egress_pin(&installed, Vec::new())];
+    let created = store.create_session(configuration, 0).unwrap();
+    store.set_egress_broker(stub_broker());
+    let completed = store
+        .send_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "Hello".to_owned(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    let attempt = &completed.attempt;
+    let receipt = attempt
+        .effect_receipt
+        .as_ref()
+        .unwrap()
+        .plugins
+        .iter()
+        .find(|receipt| receipt.event == PluginEvent::GenerateInterceptor)
+        .unwrap();
+    assert!(receipt.egress.is_empty());
+    let warn = receipt
+        .script_logs
+        .iter()
+        .find(|log| log.level == "warn")
+        .unwrap();
+    assert!(
+        warn.message
+            .contains("'api.example.com' is not in the egress allow-list"),
+        "{}",
+        warn.message
+    );
+
+    let contents = serde_json::to_string(
+        &attempt.effect_receipt.as_ref().unwrap().provider_request["messages"],
+    )
+    .unwrap();
+    assert!(contents.contains("fetch:0:"), "{contents}");
+}
+
+#[tokio::test]
+async fn secret_is_injected_out_of_band() {
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("data");
+    let plugin = write_egress_plugin(&data);
+    let registry = PluginRegistry::new(data.join("plugins"));
+    let installed = registry.install(&plugin).unwrap();
+    let mock = MockProvider::spawn(["Generated response"]).await.unwrap();
+    let database = data.join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.provider = mock.provider_settings();
+    configuration.plugins = vec![egress_pin(
+        &installed,
+        vec![EgressAllowance {
+            domain: "api.example.com".to_owned(),
+            secret: Some(EgressSecretInjection {
+                credential_key: "test-key".to_owned(),
+                header: "Authorization".to_owned(),
+                value_template: "Bearer {secret}".to_owned(),
+            }),
+        }],
+    )];
+    let created = store.create_session(configuration, 0).unwrap();
+    let transport = Arc::new(CapturingTransport::default());
+    let credentials = MapCredentialResolver {
+        secrets: BTreeMap::from([("test-key".to_owned(), "s3cr3t".to_owned())]),
+    };
+    store.set_egress_broker(EgressBroker::stub(transport.clone(), Arc::new(credentials)));
+    let completed = store
+        .send_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "Hello".to_owned(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    let requests = transport.requests.lock();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].headers.get("Authorization"),
+        Some(&"Bearer s3cr3t".to_owned())
+    );
+    drop(requests);
+
+    // Everything the Plugin could observe (its prompt contribution) stays secret-free.
+    let contents = serde_json::to_string(
+        &completed
+            .attempt
+            .effect_receipt
+            .as_ref()
+            .unwrap()
+            .provider_request["messages"],
+    )
+    .unwrap();
+    assert!(!contents.contains("s3cr3t"), "{contents}");
+
+    // The request hash covers names, not values: no secret entered the hash input.
+    let receipt = completed
+        .attempt
+        .effect_receipt
+        .as_ref()
+        .unwrap()
+        .plugins
+        .iter()
+        .find(|receipt| receipt.event == PluginEvent::GenerateInterceptor)
+        .unwrap();
+    let expected_hash = canonical_json_hash(
+        EGRESS_REQUEST_DOMAIN,
+        &json!({
+            "method": "GET",
+            "url": "https://api.example.com/v1/data",
+            "body": null,
+            "injected_headers": ["Authorization"],
+        }),
+    )
+    .unwrap();
+    assert_eq!(receipt.egress[0].request_hash, expected_hash);
+    let receipt_json = serde_json::to_string(receipt).unwrap();
+    assert!(!receipt_json.contains("s3cr3t"), "{receipt_json}");
 }

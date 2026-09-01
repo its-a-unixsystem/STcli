@@ -54,6 +54,7 @@ fn upgrade_disable_and_reference_aware_remove_are_explicit() {
                     component_hash: installed.manifest.component_sha256.clone(),
                     capabilities: installed.manifest.requested_capabilities.clone(),
                     settings: json!({"retained": true}),
+                    egress_allow_list: Vec::new(),
                     enabled: true,
                 }];
                 configuration

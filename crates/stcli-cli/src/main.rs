@@ -15,11 +15,12 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use stcli_core::{
     AppPaths, ArtifactBundle, CapsuleKind, CliEnvelope, CliError, Config, ContentHash,
-    CredentialError, EngineCommand, EngineInspection, EngineQuery, EngineResult, EntityId,
-    InstalledPlugin, PluginCapability, PromptDiff, PromptSegmentChange, PromptSegmentInspection,
-    PromptTextChangeKind, ProviderEvent, ProviderSettings, RegexReplaceRequest, RegexRequest,
-    SessionConfiguration, StcliEngine, TurnCapsule, delete_credential, get_credential,
-    run_replace_worker, run_worker, set_credential, verify_fixture_suite,
+    CredentialError, EgressAllowance, EngineCommand, EngineInspection, EngineQuery, EngineResult,
+    EntityId, InstalledPlugin, PluginCapability, PromptDiff, PromptSegmentChange,
+    PromptSegmentInspection, PromptTextChangeKind, ProviderEvent, ProviderSettings,
+    RegexReplaceRequest, RegexRequest, SessionConfiguration, StcliEngine, TurnCapsule,
+    delete_credential, get_credential, run_replace_worker, run_worker, set_credential,
+    verify_fixture_suite,
 };
 
 #[derive(Debug, Parser)]
@@ -386,6 +387,8 @@ enum PluginCommand {
         capability: Vec<String>,
         #[arg(long, default_value = "{}")]
         settings: String,
+        #[arg(long = "egress-domain")]
+        egress_domain: Vec<String>,
     },
     Upgrade {
         #[arg(long)]
@@ -1463,6 +1466,7 @@ async fn plugin(output: OutputFormat, command: PluginCommand) -> Result<()> {
             digest,
             capability,
             settings,
+            egress_domain,
         } => {
             let capabilities = capability
                 .into_iter()
@@ -1479,6 +1483,13 @@ async fn plugin(output: OutputFormat, command: PluginCommand) -> Result<()> {
                         digest,
                         capabilities,
                         settings,
+                        egress: egress_domain
+                            .into_iter()
+                            .map(|domain| EgressAllowance {
+                                domain,
+                                secret: None,
+                            })
+                            .collect(),
                     },
                     |_| {},
                 )

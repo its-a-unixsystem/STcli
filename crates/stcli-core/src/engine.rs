@@ -28,12 +28,21 @@ const NEMO_PLUGIN_SCRIPT: &str = include_str!("../../../plugins/nemo-directives/
 #[derive(Clone, Debug)]
 pub struct StcliEngine {
     database: PathBuf,
+    egress: Option<crate::EgressBroker>,
 }
 
 impl StcliEngine {
     pub fn new(database: impl AsRef<Path>) -> Self {
         Self {
             database: database.as_ref().to_owned(),
+            egress: None,
+        }
+    }
+
+    pub fn with_egress_broker(database: impl AsRef<Path>, broker: crate::EgressBroker) -> Self {
+        Self {
+            database: database.as_ref().to_owned(),
+            egress: Some(broker),
         }
     }
 
@@ -401,6 +410,7 @@ impl StcliEngine {
                     component_sha256: registration.component_sha256,
                     capabilities: registration.capabilities,
                     settings: serde_json::Value::Null,
+                    egress_allow_list: Vec::new(),
                     enabled: true,
                 };
                 let receipt = PluginHost::new(Default::default()).execute(
@@ -449,6 +459,9 @@ impl StcliEngine {
     ) -> Result<EngineResult, EngineError> {
         self.ensure_default_plugins()?;
         let mut store = Store::open(&self.database)?;
+        if let Some(broker) = &self.egress {
+            store.set_egress_broker(broker.clone());
+        }
         match command {
             EngineCommand::InstallPlugin { directory } => {
                 let installed = self.plugin_registry().install(&directory)?;
@@ -527,6 +540,7 @@ impl StcliEngine {
                 digest,
                 capabilities,
                 settings,
+                egress,
             } => {
                 let installed = self.installed_plugin(&id, &version, &digest)?;
                 if !capabilities.is_subset(&installed.manifest.requested_capabilities) {
@@ -540,6 +554,7 @@ impl StcliEngine {
                     component_hash: installed.manifest.component_sha256,
                     capabilities,
                     settings,
+                    egress_allow_list: egress,
                     enabled: true,
                 });
                 Ok(EngineResult::Configuration(Box::new(
@@ -958,6 +973,7 @@ pub enum EngineCommand {
         digest: ContentHash,
         capabilities: BTreeSet<PluginCapability>,
         settings: serde_json::Value,
+        egress: Vec<crate::EgressAllowance>,
     },
     RegisterArtifactInspector {
         id: String,

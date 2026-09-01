@@ -14,7 +14,7 @@ pub enum CredentialError {
     Store(String),
 }
 
-pub trait CredentialResolver {
+pub trait CredentialResolver: Send + Sync {
     fn get(&self, key: &str) -> Result<String, CredentialError>;
 }
 

@@ -37,6 +37,7 @@ async fn proof_component_contributes_only_granted_recorded_effects() {
         component_hash: installed.manifest.component_sha256.clone(),
         capabilities: installed.manifest.requested_capabilities.clone(),
         settings: json!({}),
+        egress_allow_list: Vec::new(),
         enabled: true,
     };
     let created = store
@@ -178,6 +179,7 @@ fn denied_effect_fails_before_attempt_creation() {
         .into_iter()
         .collect(),
         settings: json!({}),
+        egress_allow_list: Vec::new(),
         enabled: true,
     };
     let created = store
@@ -246,6 +248,7 @@ fn execute_mode(
         component_sha256: installed.manifest.component_sha256.clone(),
         capabilities: installed.manifest.requested_capabilities.clone(),
         settings: json!({"mode": mode}),
+        egress_allow_list: Vec::new(),
         enabled: true,
     };
     PluginHost::new(limits).execute(
@@ -401,6 +404,7 @@ fn disabled_and_removed_plugins_do_not_execute() {
         component_hash: installed.manifest.component_sha256,
         capabilities: installed.manifest.requested_capabilities,
         settings: json!({}),
+        egress_allow_list: Vec::new(),
         enabled: false,
     };
     let created = store

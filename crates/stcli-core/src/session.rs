@@ -92,6 +92,8 @@ pub struct PluginPin {
     pub component_hash: ContentHash,
     pub capabilities: BTreeSet<PluginCapability>,
     pub settings: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub egress_allow_list: Vec<crate::EgressAllowance>,
     pub enabled: bool,
 }
 

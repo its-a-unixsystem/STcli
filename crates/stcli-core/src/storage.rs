@@ -22,6 +22,7 @@ pub struct Store {
     pub(crate) connection: Connection,
     path: PathBuf,
     assets_root: PathBuf,
+    pub(crate) egress: crate::EgressBroker,
 }
 
 impl Store {
@@ -48,7 +49,12 @@ impl Store {
             connection,
             path,
             assets_root,
+            egress: crate::EgressBroker::live(),
         })
+    }
+
+    pub fn set_egress_broker(&mut self, broker: crate::EgressBroker) {
+        self.egress = broker;
     }
 
     pub fn path(&self) -> &Path {

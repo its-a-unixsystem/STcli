@@ -64,6 +64,7 @@ fn execute_script(
         component_sha256: installed.manifest.component_sha256.clone(),
         capabilities: installed.manifest.requested_capabilities.clone(),
         settings: json!({}),
+        egress_allow_list: Vec::new(),
         enabled: true,
     };
     PluginHost::new(limits).execute(
@@ -123,6 +124,7 @@ function prePrompt() {
         component_hash: installed.manifest.component_sha256.clone(),
         capabilities: installed.manifest.requested_capabilities.clone(),
         settings: json!({}),
+        egress_allow_list: Vec::new(),
         enabled: true,
     };
     let mut configuration = configuration(character.revision_hash, pin);
@@ -204,6 +206,7 @@ fn documented_turn_counter_plugin_executes_as_written() {
         component_sha256: installed.manifest.component_sha256.clone(),
         capabilities: installed.manifest.requested_capabilities.clone(),
         settings: json!({"start": 10}),
+        egress_allow_list: Vec::new(),
         enabled: true,
     };
     let run = |state| {

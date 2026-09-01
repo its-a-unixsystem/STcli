@@ -80,7 +80,8 @@
           "read-session",
           "write-own-state",
           "abort-pre-request",
-          "inspect-artifact"
+          "inspect-artifact",
+          "brokered-egress"
         ]
       }
     },

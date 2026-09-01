@@ -3,6 +3,7 @@ pub mod capsule;
 pub mod config;
 pub mod credential;
 pub mod ecma_regex;
+pub mod egress;
 pub mod engine;
 pub mod fixture;
 pub mod identity;
@@ -50,6 +51,11 @@ pub use credential::{
 pub use ecma_regex::{
     EcmaRegexError, EcmaRegexWorker, RegexMatch, RegexReplaceRequest, RegexReplaceResponse,
     RegexRequest, RegexResponse, run_replace_worker, run_worker,
+};
+pub use egress::{
+    EGRESS_REQUEST_DOMAIN, EgressAllowance, EgressBroker, EgressInvocation, EgressMode,
+    EgressOutcome, EgressPolicy, EgressReceipt, EgressRequest, EgressResponse,
+    EgressSecretInjection, EgressTransport, EgressTransportError, ReqwestTransport, StubTransport,
 };
 pub use engine::{
     BranchHistory, DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID, DeletionReceipt, EngineCommand, EngineError,

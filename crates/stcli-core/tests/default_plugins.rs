@@ -117,6 +117,7 @@ async fn default_materialization_never_rewrites_session_plugin_pins() {
                 digest: nemo.manifest.component_sha256,
                 capabilities: [PluginCapability::InspectArtifact].into_iter().collect(),
                 settings: serde_json::Value::Null,
+                egress: Vec::new(),
             },
             |_| {},
         )
