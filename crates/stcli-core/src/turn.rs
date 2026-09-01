@@ -11,14 +11,15 @@ use thiserror::Error;
 
 use crate::{
     ActivatedLore, BranchProjection, CHAT_COMPLETION_CHARACTER_ID, ChatMessage, ChatRole,
-    ContentHash, EcmaRegexError, EcmaRegexWorker, EntityId, FormatMode, LoreEngine, LoreError,
-    LorePosition, LoreResult, LoreSettings, MacroContext, MacroEngine, MacroError, MacroEvaluation,
-    MacroWarning, OpenAiProvider, PluginEffect, PluginError, PluginEvent, PluginGrant, PluginHost,
-    PluginInput, PluginReceipt, PluginRegistry, PromptContribution, PromptError, PromptPreset,
-    PromptPruning, PromptSegment, PromptSlot, ProviderError, ProviderEvent, ProviderResult,
-    RegexPlacement, RegexScript, RegexScriptApplication, RenderedPromptContent,
-    SessionConfigurationRecord, SessionError, StateError, StateMutation, StateTransaction, Store,
-    TokenizerError, TokenizerId, apply_prompt_preset,
+    ContentHash, EcmaRegexError, EcmaRegexWorker, EntityId, FormatMode, InstalledPlugin,
+    LoreEngine, LoreError, LorePosition, LoreResult, LoreSettings, MacroContext, MacroEngine,
+    MacroError, MacroEvaluation, MacroWarning, OpenAiProvider, PluginEffect, PluginError,
+    PluginEvent, PluginGrant, PluginHost, PluginInput, PluginReceipt, PluginRegistry,
+    PluginRuntime, PromptContribution, PromptError, PromptPreset, PromptPruning, PromptSegment,
+    PromptSlot, ProviderError, ProviderEvent, ProviderResult, RegexPlacement, RegexScript,
+    RegexScriptApplication, RenderedPromptContent, SessionConfigurationRecord, SessionError,
+    StateError, StateMutation, StateTransaction, Store, TokenizerError, TokenizerId,
+    apply_prompt_preset,
     artifact::ArtifactError,
     canonical_json, insert_in_chat_segments,
     lore::parse_lore_entries,
@@ -1316,18 +1317,10 @@ impl Store {
         Ok((session.current_config_hash, configuration))
     }
 
-    fn run_runtime_plugins(
+    fn configured_runtime_plugins(
         &self,
         configuration: &SessionConfigurationRecord,
-        session_id: EntityId,
-        branch_id: EntityId,
-        generation_type: GenerationType,
-        context: &mut MacroContext,
-        state: &mut crate::StateTransaction,
-    ) -> Result<Vec<PluginReceipt>, TurnError> {
-        if configuration.configuration.plugins.is_empty() {
-            return Ok(Vec::new());
-        }
+    ) -> Result<(Vec<InstalledPlugin>, BTreeMap<String, PluginGrant>), TurnError> {
         let registry = PluginRegistry::new(
             self.path()
                 .parent()
@@ -1362,7 +1355,22 @@ impl Store {
             );
             selected.push(installed);
         }
-        let ordered = order_plugins(&selected)?;
+        Ok((order_plugins(&selected)?, grants))
+    }
+
+    fn run_runtime_plugins(
+        &self,
+        configuration: &SessionConfigurationRecord,
+        session_id: EntityId,
+        branch_id: EntityId,
+        generation_type: GenerationType,
+        context: &mut MacroContext,
+        state: &mut crate::StateTransaction,
+    ) -> Result<Vec<PluginReceipt>, TurnError> {
+        if configuration.configuration.plugins.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (ordered, grants) = self.configured_runtime_plugins(configuration)?;
         let host = PluginHost::new(Default::default());
         let mut receipts = Vec::new();
         for event in [
@@ -1395,6 +1403,7 @@ impl Store {
                         plugin_id: installed.manifest.id.clone(),
                         settings: grant.settings.clone(),
                         context: Value::Null,
+                        payload: Value::Null,
                         artifact: Value::Null,
                         state: Value::Object(
                             state
@@ -1438,6 +1447,84 @@ impl Store {
         }
         Ok(receipts)
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_st_bridge_plugins(
+        &self,
+        configuration: &SessionConfigurationRecord,
+        session_id: EntityId,
+        branch_id: EntityId,
+        generation_type: GenerationType,
+        character_name: &str,
+        session_chat: &[ChatMessage],
+        tokenizer: TokenizerId,
+        segments: &mut Vec<PromptSegment>,
+    ) -> Result<Vec<PluginReceipt>, TurnError> {
+        if configuration.configuration.plugins.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (ordered, grants) = self.configured_runtime_plugins(configuration)?;
+        let host = PluginHost::new(Default::default());
+        let mut receipts = Vec::new();
+        for installed in ordered {
+            if installed.manifest.runtime != PluginRuntime::StBridge
+                || !installed
+                    .manifest
+                    .subscriptions
+                    .contains(&PluginEvent::ChatCompletionPromptReady)
+            {
+                continue;
+            }
+            let grant = &grants[&installed.manifest.id];
+            let bridge_context = if grant
+                .capabilities
+                .contains(&crate::PluginCapability::ReadSession)
+            {
+                json!({
+                    "name2": character_name,
+                    "chat": session_chat,
+                })
+            } else {
+                Value::Null
+            };
+            let current_messages = segments
+                .iter()
+                .map(|segment| ChatMessage {
+                    role: segment.role,
+                    content: segment.content.clone(),
+                })
+                .collect::<Vec<_>>();
+            let receipt = host.execute(
+                &installed,
+                grant,
+                PluginInput {
+                    event: PluginEvent::ChatCompletionPromptReady,
+                    plugin_id: installed.manifest.id.clone(),
+                    settings: grant.settings.clone(),
+                    context: bridge_context,
+                    payload: json!({"chat": current_messages}),
+                    artifact: Value::Null,
+                    state: Value::Null,
+                    session: json!({
+                        "session_id": session_id,
+                        "branch_id": branch_id,
+                        "generation_type": generation_type,
+                    }),
+                },
+            )?;
+            let contributions = receipt
+                .effects
+                .iter()
+                .filter_map(|effect| match effect {
+                    PluginEffect::Prompt { contribution } => Some(contribution.clone()),
+                    _ => None,
+                })
+                .collect();
+            inject_plugin_contributions(tokenizer, segments, contributions)?;
+            receipts.push(receipt);
+        }
+        Ok(receipts)
+    }
     fn run_post_commit_plugins(
         &self,
         attempt: &AttemptProjection,
@@ -1451,44 +1538,11 @@ impl Store {
         if configuration.configuration.plugins.is_empty() {
             return Ok(Vec::new());
         }
-        let registry = PluginRegistry::new(
-            self.path()
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .join("plugins"),
-        );
-        let mut selected = Vec::new();
-        let mut grants = BTreeMap::new();
-        for pin in configuration
-            .configuration
-            .plugins
-            .iter()
-            .filter(|pin| pin.enabled)
-        {
-            let version = pin
-                .version
-                .parse()
-                .map_err(|_| TurnError::PluginVersion(pin.version.clone()))?;
-            let installed = registry
-                .find_pinned(&pin.id, &version, &pin.component_hash)?
-                .ok_or_else(|| TurnError::PluginNotInstalled(pin.id.clone()))?;
-            grants.insert(
-                pin.id.clone(),
-                PluginGrant {
-                    id: pin.id.clone(),
-                    version,
-                    component_sha256: pin.component_hash.clone(),
-                    capabilities: pin.capabilities.clone(),
-                    settings: pin.settings.clone(),
-                    enabled: true,
-                },
-            );
-            selected.push(installed);
-        }
+        let (ordered, grants) = self.configured_runtime_plugins(&configuration)?;
         let host = PluginHost::new(Default::default());
         let mut receipts = Vec::new();
         let state = self.state_transaction(session_id)?;
-        for installed in order_plugins(&selected)? {
+        for installed in ordered {
             if !installed
                 .manifest
                 .subscriptions
@@ -1519,6 +1573,7 @@ impl Store {
                         plugin_id: installed.manifest.id.clone(),
                         settings: grant.settings.clone(),
                         context: Value::Null,
+                        payload: Value::Null,
                         artifact: Value::Null,
                         state: Value::Object(
                             state
@@ -1595,6 +1650,7 @@ impl Store {
                 plugin_id: plugin_id.to_owned(),
                 settings: pin.settings.clone(),
                 context: json!({"command": command, "arguments": arguments}),
+                payload: Value::Null,
                 artifact: Value::Null,
                 state: Value::Object(state.local_namespace(plugin_id).into_iter().collect()),
                 session: Value::Null,
@@ -1783,7 +1839,7 @@ impl Store {
             context.insert("personaDescription", &rendered.content);
             context.insert("persona_description", &rendered.content);
         }
-        let plugin_receipts = self.run_runtime_plugins(
+        let mut plugin_receipts = self.run_runtime_plugins(
             configuration,
             session_id,
             branch_id,
@@ -2017,6 +2073,10 @@ impl Store {
             &mut evaluations,
             &mut warnings,
         )?;
+        let mut session_chat = vec![ChatMessage {
+            role: ChatRole::Assistant,
+            content: branch.greeting.clone(),
+        }];
 
         let mut segments = Vec::new();
         push_segment(
@@ -2110,6 +2170,10 @@ impl Store {
         segments.last_mut().unwrap().source_revision =
             Some(configuration.configuration.character_revision.clone());
         for turn in history {
+            session_chat.push(ChatMessage {
+                role: ChatRole::User,
+                content: turn.user_content.clone(),
+            });
             push_segment(
                 &mut segments,
                 tokenizer,
@@ -2123,6 +2187,10 @@ impl Store {
                     .candidate(candidate_id)?
                     .ok_or(TurnError::CandidateNotFound(candidate_id))?;
                 if !candidate.hidden {
+                    session_chat.push(ChatMessage {
+                        role: ChatRole::Assistant,
+                        content: candidate.content.clone(),
+                    });
                     push_segment(
                         &mut segments,
                         tokenizer,
@@ -2159,6 +2227,12 @@ impl Store {
                 user_content.to_owned(),
                 current_user,
             );
+        }
+        if !user_content.is_empty() {
+            session_chat.push(ChatMessage {
+                role: ChatRole::User,
+                content: user_content.to_owned(),
+            });
         }
         if generation_type == GenerationType::Continue
             && let Some(nudge) = effective_generation_settings
@@ -2265,6 +2339,18 @@ impl Store {
                 .unwrap_or(false)
         {
             segments = squash_system_segments(tokenizer, segments);
+        }
+        if configuration.configuration.provider.format_mode == FormatMode::ChatCompletion {
+            plugin_receipts.extend(self.run_st_bridge_plugins(
+                configuration,
+                session_id,
+                branch_id,
+                generation_type,
+                character_name,
+                &session_chat,
+                tokenizer,
+                &mut segments,
+            )?);
         }
         let context_limit = effective
             .get("max_context")

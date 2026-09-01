@@ -1,3 +1,8 @@
+//! Capability-limited Plugin package, grant, execution, and receipt boundary.
+//!
+//! `st-bridge` Plugins run SillyTavern Extensions in persistent per-Session
+//! QuickJS contexts; stateless `script` Plugins use the separate script path.
+
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -57,6 +62,7 @@ pub enum PluginEvent {
     PreRequest,
     PostCommit,
     Command,
+    ChatCompletionPromptReady,
     InspectArtifact,
 }
 
@@ -66,6 +72,7 @@ pub enum PluginRuntime {
     #[default]
     Wasm,
     Script,
+    StBridge,
 }
 
 impl PluginRuntime {
@@ -151,6 +158,8 @@ pub struct PluginInput {
     pub settings: Value,
     #[serde(default)]
     pub context: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub payload: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub state: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
@@ -316,6 +325,26 @@ impl PluginHost {
                         &input_json,
                         self.limits.script,
                     )?;
+                    let output_json = serde_json::to_string(&PluginOutput {
+                        effects: outcome.effects.clone(),
+                    })?;
+                    if output_json.len() > self.limits.output_bytes {
+                        return Err(PluginError::OutputLimit);
+                    }
+                    (outcome.effects, 0, outcome.logs)
+                }
+                #[cfg(not(feature = "scripting"))]
+                return Err(PluginError::ScriptingUnavailable(
+                    installed.manifest.id.clone(),
+                ));
+            }
+            PluginRuntime::StBridge => {
+                #[cfg(feature = "scripting")]
+                {
+                    let source = String::from_utf8(component_bytes)
+                        .map_err(|_| PluginError::ScriptNotUtf8(installed.manifest.id.clone()))?;
+                    let outcome =
+                        crate::st_bridge::execute(installed, &input, &source, self.limits.script)?;
                     let output_json = serde_json::to_string(&PluginOutput {
                         effects: outcome.effects.clone(),
                     })?;
@@ -905,7 +934,7 @@ pub enum PluginError {
     DependencyVersion { plugin: String, dependency: String },
     #[error("plugin dependency ordering contains a cycle")]
     DependencyCycle,
-    #[error("plugin '{0}' is a script plugin but this build has scripting disabled")]
+    #[error("plugin '{0}' requires scripting support but this build has scripting disabled")]
     ScriptingUnavailable(String),
     #[error("plugin script source for '{0}' is not valid UTF-8")]
     ScriptNotUtf8(String),
@@ -915,6 +944,20 @@ pub enum PluginError {
     ScriptTrap { plugin: String, message: String },
     #[error("plugin script exceeded its execution step budget")]
     ScriptStepLimit,
+    #[error("st-bridge requires a valid Session identity")]
+    StBridgeSessionIdentity,
+    #[error("st-bridge worker stopped")]
+    StBridgeWorkerStopped,
+    #[error("st-bridge only supports CHAT_COMPLETION_PROMPT_READY in this build")]
+    UnsupportedStBridgeEvent,
+    #[error("st-bridge Extension '{plugin}' initialization failed: {message}")]
+    StBridgeInitialization { plugin: String, message: String },
+    #[error("st-bridge Extension '{plugin}' handler failed: {message}")]
+    StBridgeHandler { plugin: String, message: String },
+    #[error("st-bridge payload read-back failed: {0}")]
+    StBridgePayload(String),
+    #[error("st-bridge Extension attempted an unsupported prompt mutation")]
+    UnsupportedStBridgeMutation,
     #[error("QuickJS runtime setup failed: {0}")]
     ScriptRuntime(String),
 }

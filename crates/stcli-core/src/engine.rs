@@ -411,6 +411,7 @@ impl StcliEngine {
                         plugin_id: plugin_id.clone(),
                         settings: serde_json::Value::Null,
                         context: serde_json::Value::Null,
+                        payload: serde_json::Value::Null,
                         state: serde_json::json!({}),
                         artifact: artifact.semantic,
                         session: serde_json::Value::Null,

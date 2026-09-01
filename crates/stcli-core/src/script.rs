@@ -264,6 +264,7 @@ fn hook_name(event: PluginEvent) -> &'static str {
         PluginEvent::PreRequest => "preRequest",
         PluginEvent::PostCommit => "postCommit",
         PluginEvent::Command => "command",
+        PluginEvent::ChatCompletionPromptReady => "chatCompletionPromptReady",
         PluginEvent::InspectArtifact => "inspectArtifact",
     }
 }

@@ -22,6 +22,8 @@ pub mod regex_script;
 #[cfg(feature = "scripting")]
 pub mod script;
 pub mod session;
+#[cfg(feature = "scripting")]
+mod st_bridge;
 pub mod state;
 pub mod storage;
 pub mod stscript;

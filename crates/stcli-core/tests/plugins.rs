@@ -256,6 +256,7 @@ fn execute_mode(
             plugin_id: installed.manifest.id.clone(),
             settings: grant.settings.clone(),
             context: json!({}),
+            payload: json!(null),
             artifact: json!(null),
             state: json!({}),
             session: json!(null),
