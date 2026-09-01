@@ -3937,6 +3937,7 @@ impl App {
             }
             Ok(EngineResult::Branch(branch)) if self.pending_branch_creation => {
                 self.pending_branch_creation = false;
+                let mut composer_recovery_failed = false;
                 let composer = branch
                     .forked_from_turn_id
                     .and_then(|turn_id| {
@@ -3948,7 +3949,11 @@ impl App {
                                 .into_iter()
                                 .find(|turn| turn.turn.turn_id == turn_id)
                                 .map(|turn| turn.turn.user_content),
-                            _ => None,
+                            Ok(_) => None,
+                            Err(_) => {
+                                composer_recovery_failed = true;
+                                None
+                            }
                         }
                     })
                     .unwrap_or_default();
@@ -3958,7 +3963,11 @@ impl App {
                 }
                 self.composer = composer;
                 self.chat_focus = ChatFocus::Composer;
-                self.show_info("Created Branch");
+                if composer_recovery_failed {
+                    self.show_info("Created Branch (could not recover the source turn text)");
+                } else {
+                    self.show_info("Created Branch");
+                }
                 true
             }
             Ok(EngineResult::Branch(_)) => {
