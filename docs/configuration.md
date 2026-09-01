@@ -27,7 +27,7 @@ stcli credentials list
 stcli credentials delete openrouter
 ```
 
-`set` reads the secret without terminal echo. `list` audits Credential References used by provider profiles and reports each entry as `configured`, `missing`, or `unavailable`. If the operating-system keyring or Secret Service is unavailable, use `api_key_env` instead:
+`set` reads the secret without terminal echo. `list` audits Credential References used by provider profiles and reports each entry as `configured`, `missing`, or `unavailable`. When both `api_key_env` and `credential_key` are configured and the environment variable holds a non-empty value, `list` reports `"credential_store_used": false`, because the environment variable takes precedence at provider construction. Credential Store access is bounded by a five-second timeout; an unresponsive system keyring fails with a `Store` error instead of hanging, and you can fall back to `api_key_env`:
 
 ```toml
 [providers.openrouter]

@@ -2,7 +2,7 @@ mod provider_test;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    env, fs,
     io::{self, Read, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -906,6 +906,15 @@ fn credentials(output: OutputFormat, command: CredentialCommand) -> Result<()> {
                         .map(str::trim)
                         .filter(|key| !key.is_empty())
                         .map(|key| {
+                            let overridden =
+                                settings.api_key_env.as_deref().map(str::trim).is_some_and(
+                                    |name| {
+                                        !name.is_empty()
+                                            && env::var(name)
+                                                .ok()
+                                                .is_some_and(|value| !value.trim().is_empty())
+                                    },
+                                );
                             let (status, error) = match get_credential(key) {
                                 Ok(_) => ("configured", None),
                                 Err(CredentialError::Missing) => ("missing", None),
@@ -915,6 +924,7 @@ fn credentials(output: OutputFormat, command: CredentialCommand) -> Result<()> {
                                 "profile": profile,
                                 "credential_key": key,
                                 "status": status,
+                                "credential_store_used": !overridden,
                                 "error": error,
                             })
                         })

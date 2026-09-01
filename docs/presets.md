@@ -148,7 +148,7 @@ Core preserves unknown directive comments but does not parse vendor-specific voc
 - Warnings: `@conflicts-with`, `@warning`, `@deprecated`, and unresolved references.
 - Matching: exact identifier or normalized display name.
 
-When a user enables an exclusive Prompt Order Entry, the preset picker disables its enabled siblings in the same Artifact Revision and names them in the toast. Soft findings remain non-blocking Compatibility Warnings. Unknown directives are ignored, and the Plugin never modifies Artifact content.
+When a user enables an exclusive Prompt Order Entry, the preset picker disables its enabled siblings in the same Artifact Revision and names them in the toast. Soft findings remain non-blocking Compatibility Warnings. Unknown directives are ignored, and the Plugin never modifies Artifact content. Removing the Plugin (`stcli plugin remove org.stcli.nemo-directives`) removes this evaluation: directives are still preserved byte-for-byte, but exclusivity is no longer enforced and directive findings no longer appear. `stcli plugin restore-defaults` re-materializes the embedded default.
 
 ### Disabled structural markers
 
