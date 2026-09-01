@@ -120,8 +120,8 @@ Egress is denied by default. A call succeeds only when all of the following hold
 
 A denied call does not fail the turn. `fetch` resolves with `ok: false`, `status: 0`,
 `statusText: "egress denied"`, and an empty body, and the plugin receipt's `script_logs`
-records one warn-level Compatibility Warning stating the denial reason. The same non-fatal
-shape applies when the transport itself fails, with `statusText: "transport error"`.
+records one warn-level script log stating the denial reason. The same non-fatal shape
+applies when the transport itself fails, with `statusText: "transport error"`.
 
 The allow-list lives on the plugin pin, next to the capabilities. `plugin adopt` adds domain
 entries with a repeatable `--egress-domain <host>` flag:
