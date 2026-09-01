@@ -29,6 +29,7 @@ fn scripted_preset(name: &str) -> Vec<u8> {
         "temperature": 0.7,
         "top_p": 0.9,
         "max_tokens": 512,
+        "reasoning_effort": "auto",
         "prompts": [{"identifier": "main", "role": "system", "content": "test"}],
         "prompt_order": [{"character_id": 100001, "order": [
             {"identifier": "main", "enabled": true}
@@ -267,6 +268,7 @@ async fn preset_management_covers_import_inspection_filtering_and_navigation() {
     assert!(rendered.contains("Role: system"));
     assert!(rendered.contains("Content: test"));
     assert!(rendered.contains("Temperature: 0.7"));
+    assert!(rendered.contains("Reasoning effort: auto"));
     assert!(rendered.contains("One · UserInput"));
     assert!(rendered.contains("[inert — requires grant]"));
     assert!(
@@ -574,11 +576,13 @@ async fn preset_copy_opens_patch_form_and_selects_imported_clone() {
     assert_eq!(state.temperature, "0.7");
     assert_eq!(state.max_context, "8192");
     assert_eq!(state.max_tokens, "512");
+    assert_eq!(state.reasoning_effort, "auto");
     assert!(state.use_sysprompt);
     state.name = "Tuned Source".to_owned();
     state.temperature = "0.9".to_owned();
     state.max_context = "16384".to_owned();
     state.max_tokens = "1024".to_owned();
+    state.reasoning_effort = "high".to_owned();
     state.use_sysprompt = false;
 
     let effect = app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
@@ -607,6 +611,7 @@ async fn preset_copy_opens_patch_form_and_selects_imported_clone() {
     let source_json: serde_json::Value = serde_json::from_slice(&source_bytes).unwrap();
     let clone_json: serde_json::Value = serde_json::from_slice(&clone_bytes).unwrap();
     assert_eq!(clone_json["preset_name"], "Tuned Source");
+    assert_eq!(clone_json["reasoning_effort"], "high");
     assert_eq!(clone_json["prompts"], source_json["prompts"]);
     assert_eq!(clone_json["prompt_order"], source_json["prompt_order"]);
     assert_eq!(clone_json["extensions"], source_json["extensions"]);
@@ -741,8 +746,8 @@ fn preset_details_scrolling_clamps_and_resets_on_selection_change() {
         press(&mut app, KeyCode::PageDown);
     }
     let rendered = render(&mut app);
-    // 218 logical detail lines against 27 visible rows.
-    assert_eq!(preset_picker(&app).details_scroll, 191);
+    // 219 logical detail lines against 27 visible rows.
+    assert_eq!(preset_picker(&app).details_scroll, 192);
     assert!(rendered.contains("Embedded Scripts"));
     assert!(!rendered.contains("1. slot-01"));
 

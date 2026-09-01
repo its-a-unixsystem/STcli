@@ -2993,6 +2993,16 @@ fn provider_generation_settings(settings: &EffectiveGenerationSettings) -> Value
     if source.get("n").and_then(Value::as_i64) == Some(1) {
         provider.remove("n");
     }
+    if source
+        .get("reasoning_effort")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| {
+            value.eq_ignore_ascii_case("auto") || value.eq_ignore_ascii_case("default")
+        })
+    {
+        provider.remove("reasoning_effort");
+    }
     Value::Object(provider)
 }
 

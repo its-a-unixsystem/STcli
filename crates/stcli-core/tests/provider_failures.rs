@@ -174,6 +174,7 @@ async fn provider_connection_refused_records_failed_attempt() {
                     base_url: "https://127.0.0.1:1".to_owned(),
                     chat_completions_path: "/v1/chat/completions".to_owned(),
                     api_key_env: None,
+                    credential_key: None,
                     static_headers: BTreeMap::new(),
                     timeout_seconds: 1,
                     ca_certificate_pem: None,
@@ -206,4 +207,20 @@ async fn provider_connection_refused_records_failed_attempt() {
         TurnError::Provider(ProviderError::Transport { .. })
     ));
     assert_attempt_failed_no_candidate(&mut store, created.branch.branch_id);
+}
+
+#[test]
+fn credential_failures_include_actionable_guidance() {
+    // Regression test: Credential Store failures must distinguish setup from service access.
+    let missing = ProviderError::MissingCredential("openrouter".to_owned()).to_string();
+    assert!(missing.contains("stcli credentials set openrouter"));
+    assert!(missing.contains("api_key_env"));
+
+    let unavailable = ProviderError::CredentialStoreError {
+        key: "openrouter".to_owned(),
+        error: "service is locked".to_owned(),
+    }
+    .to_string();
+    assert!(unavailable.contains("keyring/Secret Service is unlocked"));
+    assert!(unavailable.contains("api_key_env"));
 }

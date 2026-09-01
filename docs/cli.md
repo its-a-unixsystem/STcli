@@ -58,7 +58,7 @@ Clap also generates `-h`/`--help` at each command level. The top-level command p
 
 ## Provider profile commands
 
-Provider connection profiles are stored in `config.toml` under `[providers.<name>]`. They define HTTPS endpoints, model names, and authentication environment variable names.
+Provider connection profiles are stored in `config.toml` under `[providers.<name>]`. They define HTTPS endpoints, model names, and Credential References or authentication environment variable names.
 
 | Command | Canonical syntax | Argument behavior |
 | --- | --- | --- |
@@ -79,7 +79,7 @@ Provider profiles can be provided in JSON or TOML. Example in JSON:
   "model": "anthropic/claude-3.5-sonnet",
   "stream": true,
   "timeout_seconds": 120,
-  "api_key_env": "OPENROUTER_API_KEY"
+  "credential_key": "openrouter"
 }
 ```
 
@@ -92,12 +92,22 @@ chat_completions_path = "/api/v1/chat/completions"
 model = "anthropic/claude-3.5-sonnet"
 stream = true
 timeout_seconds = 120
-api_key_env = "OPENROUTER_API_KEY"
+credential_key = "openrouter"
 ```
 
-> **Security rule**: Provider profiles must specify `https://` URLs and may not contain literal passwords or secret API keys in `config.toml`. Use `api_key_env` to reference the environment variable storing your key.
+> **Security rule**: Provider profiles must specify `https://` URLs and may not contain literal passwords or secret API keys in `config.toml`. Use `credential_key` for the platform Credential Store or `api_key_env` for an environment variable.
 
 A provider profile can also select Text Completion mode. Set `format_mode` to `text-completion` and add the `completions_path`, `instruct_template`, and `context_formatting` fields. For the full field list, see [Text Completion prompts](text-completion.md).
+
+## Credential Store commands
+
+| Command | Canonical syntax | Argument behavior |
+| --- | --- | --- |
+| `credentials set` | `credentials set <alias>` | Reads a secret from the terminal without echo and stores it under service `stcli`. |
+| `credentials list` | `credentials list` | Audits provider-profile Credential References and reports `configured`, `missing`, or `unavailable`. |
+| `credentials delete` | `credentials delete <alias>` | Deletes the named entry from the platform Credential Store. |
+
+See [Configuration](configuration.md#provider-credentials) for precedence and headless-environment guidance.
 
 ## Session commands
 

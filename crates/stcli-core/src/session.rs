@@ -67,6 +67,8 @@ pub struct ProviderSettings {
     pub context_formatting: Option<ContextFormatting>,
     #[serde(default)]
     pub api_key_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_key: Option<String>,
     #[serde(default)]
     pub static_headers: BTreeMap<String, HeaderSetting>,
     pub timeout_seconds: u64,
@@ -2791,6 +2793,7 @@ mod tests {
                 base_url: "https://127.0.0.1:3443".to_owned(),
                 chat_completions_path: "/v1/chat/completions".to_owned(),
                 api_key_env: None,
+                credential_key: None,
                 static_headers: BTreeMap::new(),
                 timeout_seconds: 120,
                 ca_certificate_pem: None,

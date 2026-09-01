@@ -1,0 +1,75 @@
+use keyring::{Entry, Error};
+use thiserror::Error;
+
+const SERVICE_NAME: &str = "stcli";
+
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+pub enum CredentialError {
+    #[error("credential was not found")]
+    Missing,
+    #[error("Credential Store operation failed: {0}")]
+    Store(String),
+}
+
+pub trait CredentialResolver {
+    fn get(&self, key: &str) -> Result<String, CredentialError>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemCredentialStore;
+
+impl CredentialResolver for SystemCredentialStore {
+    fn get(&self, key: &str) -> Result<String, CredentialError> {
+        get_credential(key)
+    }
+}
+pub fn get_credential(key: &str) -> Result<String, CredentialError> {
+    get_from_entry(&entry(key)?)
+}
+
+pub fn set_credential(key: &str, secret: &str) -> Result<(), CredentialError> {
+    set_on_entry(&entry(key)?, secret)
+}
+
+pub fn delete_credential(key: &str) -> Result<(), CredentialError> {
+    delete_from_entry(&entry(key)?)
+}
+
+fn get_from_entry(entry: &Entry) -> Result<String, CredentialError> {
+    entry.get_password().map_err(map_keyring_error)
+}
+
+fn set_on_entry(entry: &Entry, secret: &str) -> Result<(), CredentialError> {
+    entry.set_password(secret).map_err(map_keyring_error)
+}
+
+fn delete_from_entry(entry: &Entry) -> Result<(), CredentialError> {
+    entry.delete_credential().map_err(map_keyring_error)
+}
+
+fn entry(key: &str) -> Result<Entry, CredentialError> {
+    Entry::new(SERVICE_NAME, key).map_err(map_keyring_error)
+}
+
+fn map_keyring_error(error: Error) -> CredentialError {
+    match error {
+        Error::NoEntry => CredentialError::Missing,
+        error => CredentialError::Store(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_namespace_supports_set_get_and_delete() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        let entry = Entry::new(SERVICE_NAME, "stcli-credential-round-trip").unwrap();
+
+        set_on_entry(&entry, "secret").unwrap();
+        assert_eq!(get_from_entry(&entry).unwrap(), "secret");
+        delete_from_entry(&entry).unwrap();
+        assert_eq!(get_from_entry(&entry), Err(CredentialError::Missing));
+    }
+}

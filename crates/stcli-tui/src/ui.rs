@@ -486,7 +486,7 @@ fn render_chat(frame: &mut Frame<'_>, app: &mut App) {
         "Enter send/respond  Shift+Enter newline  ↑/Esc/Tab history  Ctrl+C quit".to_owned()
     } else {
         let mut hints =
-            "Enter compose/respond  ↑/k ↓/j scroll  ←/→ select  x delete  b branch  B branches  p provider  P preset  c copy"
+            "Enter compose/respond  ↑/k ↓/j scroll  ←/→ select  x delete  b branch  B branches  s settings  p provider  P preset  c copy"
                 .to_owned();
         if history.turns.last().is_some() {
             hints.push_str("  r regenerate");
@@ -786,7 +786,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
         Popup::Help => {
             frame.render_widget(Clear, area);
             frame.render_widget(
-                    Paragraph::new("Sessions\n  n  new session · ↑/↓ or j/k  navigate\n  /  filter · s  sort · Enter  open\n  b  toggle branch tree · c  duplicate · x  delete · r  rename\n  p  providers · P  presets · u  personas\n\nChat composer\n  Enter  send or answer an unanswered user message · Shift+Enter  newline\n  Escape or Tab  focus history\n\nChat history\n  ↑/↓ or j/k  scroll · Tab  focus next message · c  copy\n  ←/→  select Greeting or Candidate\n  x  delete candidate (on user message: delete turn)\n  r  regenerate · e  continue · Enter  compose or answer selected user message\n  b  branch at focused Turn · B  open Branch list · p  providers · P  presets\n\nEvery action is available without a mouse. Escape closes this help.")
+                    Paragraph::new("Sessions\n  n  new session · ↑/↓ or j/k  navigate\n  /  filter · s  sort · Enter  open\n  b  toggle branch tree · c  duplicate · x  delete · r  rename\n  p  providers · P  presets · u  personas\n\nChat composer\n  Enter  send or answer an unanswered user message · Shift+Enter  newline\n  Escape or Tab  focus history\n\nChat history\n  ↑/↓ or j/k  scroll · Tab  focus next message · c  copy\n  ←/→  select Greeting or Candidate\n  x  delete candidate (on user message: delete turn)\n  r  regenerate · e  continue · Enter  compose or answer selected user message\n  b  branch at focused Turn · B  open Branch list · s  generation settings\n  p  providers · P  presets\n\nEvery action is available without a mouse. Escape closes this help.")
                     .wrap(Wrap { trim: false })
                     .block(Block::default().borders(Borders::ALL).title(" Help "))
                     .style(Style::default().bg(app.theme.background).fg(app.theme.foreground)),
@@ -1294,8 +1294,70 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 import_area,
             );
         }
+        Popup::GenerationSettings(state) => {
+            let settings_area = centered(frame.area(), 72, 11);
+            frame.render_widget(Clear, settings_area);
+            let field_style = |index: usize| {
+                if state.focused_field == index {
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(app.theme.foreground)
+                }
+            };
+            let marker = |index: usize| {
+                if state.focused_field == index {
+                    "> "
+                } else {
+                    "  "
+                }
+            };
+            let reasoning = if state.reasoning_effort.is_empty() {
+                "[Omit]"
+            } else {
+                &state.reasoning_effort
+            };
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(vec![
+                        Span::styled(format!("{}Reasoning effort: ", marker(0)), field_style(0)),
+                        Span::styled(reasoning, field_style(0)),
+                        Span::styled(
+                            "  (←/→: Omit, low, medium, high; type custom)",
+                            Style::default().fg(app.theme.muted),
+                        ),
+                    ]),
+                    Line::from(vec![
+                        Span::styled(format!("{}Temperature: ", marker(1)), field_style(1)),
+                        Span::styled(&state.temperature, field_style(1)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled(format!("{}Max tokens: ", marker(2)), field_style(2)),
+                        Span::styled(&state.max_tokens, field_style(2)),
+                    ]),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled(format!("{}[Save]", marker(3)), field_style(3)),
+                        Span::raw("    "),
+                        Span::styled(format!("{}[Cancel]", marker(4)), field_style(4)),
+                    ]),
+                ])
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Generation Settings · Ctrl+S save · Esc cancel "),
+                )
+                .style(
+                    Style::default()
+                        .bg(app.theme.background)
+                        .fg(app.theme.foreground),
+                ),
+                settings_area,
+            );
+        }
         Popup::ClonePreset(state) => {
-            let clone_area = centered(frame.area(), 72, 13);
+            let clone_area = centered(frame.area(), 72, 14);
             frame.render_widget(Clear, clone_area);
             let field_style = |index: usize| {
                 if state.focused_field == index {
@@ -1323,26 +1385,30 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                     Span::styled(&state.temperature, field_style(1)),
                 ]),
                 Line::from(vec![
-                    Span::styled(format!("{}Max Context Tokens: ", marker(2)), field_style(2)),
-                    Span::styled(&state.max_context, field_style(2)),
+                    Span::styled(format!("{}Reasoning Effort: ", marker(2)), field_style(2)),
+                    Span::styled(&state.reasoning_effort, field_style(2)),
                 ]),
                 Line::from(vec![
-                    Span::styled(format!("{}Max Tokens: ", marker(3)), field_style(3)),
-                    Span::styled(&state.max_tokens, field_style(3)),
+                    Span::styled(format!("{}Max Context Tokens: ", marker(3)), field_style(3)),
+                    Span::styled(&state.max_context, field_style(3)),
+                ]),
+                Line::from(vec![
+                    Span::styled(format!("{}Max Tokens: ", marker(4)), field_style(4)),
+                    Span::styled(&state.max_tokens, field_style(4)),
                 ]),
                 Line::from(Span::styled(
                     format!(
                         "{}System Prompt: {}",
-                        marker(4),
+                        marker(5),
                         if state.use_sysprompt { "On" } else { "Off" }
                     ),
-                    field_style(4),
+                    field_style(5),
                 )),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled(format!("{}[Save]", marker(5)), field_style(5)),
+                    Span::styled(format!("{}[Save]", marker(6)), field_style(6)),
                     Span::raw("    "),
-                    Span::styled(format!("{}[Cancel]", marker(6)), field_style(6)),
+                    Span::styled(format!("{}[Cancel]", marker(7)), field_style(7)),
                 ]),
             ];
             frame.render_widget(
@@ -1361,28 +1427,17 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
             );
         }
         Popup::ProviderProfile(state) => {
-            let profile_area = centered(frame.area(), 72, 20);
+            let profile_area = centered(frame.area(), 76, 24);
             frame.render_widget(Clear, profile_area);
             let template_name = if state.selected_template == 0 {
                 "Custom".to_owned()
-            } else if let Some(t) = state.templates.get(state.selected_template - 1) {
-                format!("{} ({})", t.name, t.id)
+            } else if let Some(template) = state.templates.get(state.selected_template - 1) {
+                format!("{} ({})", template.name, template.id)
             } else {
                 "Custom".to_owned()
             };
-            let env_status = if state.api_key_env.trim().is_empty() {
-                Span::styled(
-                    " (no key required/set)",
-                    Style::default().fg(app.theme.muted),
-                )
-            } else if std::env::var(state.api_key_env.trim()).is_ok() {
-                Span::styled(" [set]", Style::default().fg(Color::Green))
-            } else {
-                Span::styled(" [not set]", Style::default().fg(Color::Yellow))
-            };
-
-            let field_style = |idx: usize| {
-                if state.focused_field == idx {
+            let field_style = |index: usize| {
+                if state.focused_field == index {
                     Style::default()
                         .fg(app.theme.accent)
                         .add_modifier(Modifier::BOLD)
@@ -1390,8 +1445,15 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                     Style::default().fg(app.theme.foreground)
                 }
             };
-            let cursor = |idx: usize| {
-                if state.focused_field == idx {
+            let marker = |index: usize| {
+                if state.focused_field == index {
+                    "> "
+                } else {
+                    "  "
+                }
+            };
+            let cursor = |index: usize| {
+                if state.focused_field == index {
                     "█"
                 } else {
                     ""
@@ -1413,171 +1475,145 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 state.focused_field == 4,
                 state.cursor_position,
             );
-            let api_key_env = cursor_parts(
-                &state.api_key_env,
-                state.focused_field == 5,
-                state.cursor_position,
-            );
+            let credential_reference = if state.use_credential_store {
+                cursor_parts(
+                    &state.credential_key,
+                    state.focused_field == 6,
+                    state.cursor_position,
+                )
+            } else {
+                cursor_parts(
+                    &state.api_key_env,
+                    state.focused_field == 6,
+                    state.cursor_position,
+                )
+            };
             let timeout = cursor_parts(
                 &state.timeout_seconds,
-                state.focused_field == 7,
+                state.focused_field == 9,
                 state.cursor_position,
             );
-
+            let credential_status = if state.use_credential_store {
+                if !state.credential_secret.is_empty() {
+                    Span::styled(" [New secret]", Style::default().fg(Color::Green))
+                } else if state
+                    .original_settings
+                    .as_ref()
+                    .and_then(|settings| settings.credential_key.as_deref())
+                    .is_some()
+                {
+                    Span::styled(
+                        " [Configured in Keyring]",
+                        Style::default().fg(Color::Green),
+                    )
+                } else {
+                    Span::styled(" [Not configured]", Style::default().fg(Color::Yellow))
+                }
+            } else if state.api_key_env.trim().is_empty() {
+                Span::styled(
+                    " (no key required/set)",
+                    Style::default().fg(app.theme.muted),
+                )
+            } else if std::env::var(state.api_key_env.trim()).is_ok() {
+                Span::styled(" [set]", Style::default().fg(Color::Green))
+            } else {
+                Span::styled(" [not set]", Style::default().fg(Color::Yellow))
+            };
+            let secret_mask = "•".repeat(state.credential_secret.chars().count());
+            let credential_label = if state.use_credential_store {
+                "Credential Alias"
+            } else {
+                "API Key Env"
+            };
             let lines = vec![
                 Line::from(vec![
-                    Span::styled(
-                        if state.focused_field == 0 {
-                            "> Template:    < "
-                        } else {
-                            "  Template:    < "
-                        },
-                        field_style(0),
-                    ),
+                    Span::styled(format!("{}Template: < ", marker(0)), field_style(0)),
                     Span::styled(template_name, field_style(0)),
-                    Span::styled(
-                        " >  (Space/←/→ to cycle)",
-                        Style::default().fg(app.theme.muted),
-                    ),
+                    Span::styled(" >  (Space/←/→)", Style::default().fg(app.theme.muted)),
                 ]),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled(
-                        if state.focused_field == 1 {
-                            "> Name:        "
-                        } else {
-                            "  Name:        "
-                        },
-                        field_style(1),
-                    ),
+                    Span::styled(format!("{}Name: ", marker(1)), field_style(1)),
                     Span::styled(name.0, field_style(1)),
                     Span::styled(cursor(1), Style::default().fg(app.theme.accent)),
                     Span::styled(name.1, field_style(1)),
                 ]),
                 Line::from(vec![
-                    Span::styled(
-                        if state.focused_field == 2 {
-                            "> Base URL:    "
-                        } else {
-                            "  Base URL:    "
-                        },
-                        field_style(2),
-                    ),
+                    Span::styled(format!("{}Base URL: ", marker(2)), field_style(2)),
                     Span::styled(base_url.0, field_style(2)),
                     Span::styled(cursor(2), Style::default().fg(app.theme.accent)),
                     Span::styled(base_url.1, field_style(2)),
                 ]),
                 Line::from(vec![
-                    Span::styled(
-                        if state.focused_field == 3 {
-                            "> Model:       "
-                        } else {
-                            "  Model:       "
-                        },
-                        field_style(3),
-                    ),
+                    Span::styled(format!("{}Model: ", marker(3)), field_style(3)),
                     Span::styled(model.0, field_style(3)),
                     Span::styled(cursor(3), Style::default().fg(app.theme.accent)),
                     Span::styled(model.1, field_style(3)),
                 ]),
                 Line::from(vec![
-                    Span::styled(
-                        if state.focused_field == 4 {
-                            "> Chat Path:   "
-                        } else {
-                            "  Chat Path:   "
-                        },
-                        field_style(4),
-                    ),
+                    Span::styled(format!("{}Chat Path: ", marker(4)), field_style(4)),
                     Span::styled(chat_path.0, field_style(4)),
                     Span::styled(cursor(4), Style::default().fg(app.theme.accent)),
                     Span::styled(chat_path.1, field_style(4)),
                 ]),
-                Line::from(vec![
-                    Span::styled(
-                        if state.focused_field == 5 {
-                            "> API Key Env: "
+                Line::from(Span::styled(
+                    format!(
+                        "{}Credential Source: < {} >  (Space/←/→)",
+                        marker(5),
+                        if state.use_credential_store {
+                            "Credential Store"
                         } else {
-                            "  API Key Env: "
-                        },
-                        field_style(5),
+                            "Environment Variable"
+                        }
                     ),
-                    Span::styled(api_key_env.0, field_style(5)),
-                    Span::styled(cursor(5), Style::default().fg(app.theme.accent)),
-                    Span::styled(api_key_env.1, field_style(5)),
-                    env_status,
+                    field_style(5),
+                )),
+                Line::from(vec![
+                    Span::styled(format!("{}{credential_label}: ", marker(6)), field_style(6)),
+                    Span::styled(credential_reference.0, field_style(6)),
+                    Span::styled(cursor(6), Style::default().fg(app.theme.accent)),
+                    Span::styled(credential_reference.1, field_style(6)),
+                    credential_status,
                 ]),
                 Line::from(vec![
+                    Span::styled(format!("{}API Key (Secret): ", marker(7)), field_style(7)),
                     Span::styled(
-                        if state.focused_field == 6 {
-                            "> Stream:      < "
+                        if state.use_credential_store {
+                            secret_mask.as_str()
                         } else {
-                            "  Stream:      < "
-                        },
-                        field_style(6),
-                    ),
-                    Span::styled(if state.stream { "true" } else { "false" }, field_style(6)),
-                    Span::styled(
-                        " >  (Space to toggle)",
-                        Style::default().fg(app.theme.muted),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled(
-                        if state.focused_field == 7 {
-                            "> Timeout:     "
-                        } else {
-                            "  Timeout:     "
+                            "[Credential Store only]"
                         },
                         field_style(7),
                     ),
-                    Span::styled(timeout.0, field_style(7)),
                     Span::styled(cursor(7), Style::default().fg(app.theme.accent)),
-                    Span::styled(timeout.1, field_style(7)),
+                    Span::styled(
+                        "  (blank preserves stored secret)",
+                        Style::default().fg(app.theme.muted),
+                    ),
+                ]),
+                Line::from(Span::styled(
+                    format!("{}Stream: < {} >  (Space)", marker(8), state.stream),
+                    field_style(8),
+                )),
+                Line::from(vec![
+                    Span::styled(format!("{}Timeout: ", marker(9)), field_style(9)),
+                    Span::styled(timeout.0, field_style(9)),
+                    Span::styled(cursor(9), Style::default().fg(app.theme.accent)),
+                    Span::styled(timeout.1, field_style(9)),
                     Span::styled(" seconds", Style::default().fg(app.theme.muted)),
                 ]),
                 Line::from(""),
                 Line::from(vec![
+                    Span::styled(format!("{}[Save Profile]", marker(10)), field_style(10)),
                     Span::raw("    "),
-                    Span::styled(
-                        if state.focused_field == 8 {
-                            "[ Save Profile ]"
-                        } else {
-                            "  Save Profile  "
-                        },
-                        if state.focused_field == 8 {
-                            Style::default()
-                                .bg(app.theme.accent)
-                                .fg(app.theme.background)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(app.theme.muted)
-                        },
-                    ),
-                    Span::raw("     "),
-                    Span::styled(
-                        if state.focused_field == 9 {
-                            "[ Cancel ]"
-                        } else {
-                            "  Cancel  "
-                        },
-                        if state.focused_field == 9 {
-                            Style::default()
-                                .bg(app.theme.accent)
-                                .fg(app.theme.background)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(app.theme.muted)
-                        },
-                    ),
+                    Span::styled(format!("{}[Cancel]", marker(11)), field_style(11)),
                 ]),
                 Line::from(""),
-                Line::from(vec![Span::styled(
-                    "Tab/↓ next · Shift+Tab/↑ prev · Text ←/→ move · Space cycles · Enter/Ctrl+S save · Esc cancel",
+                Line::from(Span::styled(
+                    "Tab/↓ next · Shift+Tab/↑ prev · Enter/Ctrl+S save · Esc cancel",
                     Style::default().fg(app.theme.muted),
-                )]),
+                )),
             ];
-
             frame.render_widget(
                 Paragraph::new(lines)
                     .block(Block::default().borders(Borders::ALL).title(
@@ -1956,6 +1992,10 @@ fn render_preset_details(
             Line::from(format!(
                 "Temperature: {}",
                 summary.temperature.as_deref().unwrap_or("—")
+            )),
+            Line::from(format!(
+                "Reasoning effort: {}",
+                summary.reasoning_effort.as_deref().unwrap_or("—")
             )),
             Line::from(format!(
                 "top_p: {}",

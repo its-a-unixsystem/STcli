@@ -18,11 +18,18 @@ On the Sessions screen, highlight a Session and press `c` to duplicate its root 
 
 After duplication, the Sessions screen remains open and highlights the new Session. `Ctrl+c` keeps its global quit behavior.
 
+## Recover generation settings in Chat
+
+With Chat history focused, press `s` to edit the active Session's reasoning effort, temperature, and maximum response tokens. Reasoning effort can be omitted, set to `low`, `medium`, or `high` with `Left`/`Right`, or entered as a custom value. Press `Ctrl+S` to append a new Session Configuration Revision. Press `r` to regenerate the focused Turn with the updated settings.
+
 ## Manage provider profiles
 
 Press `p` to open the provider profile picker. Press `c` to copy the highlighted profile. The profile editor opens with the source settings and a non-conflicting name such as `<name>-copy`. Change the model or other fields, then press `Ctrl+S`. Saving creates a new `[providers.<name>]` entry in `config.toml`; it does not replace the source profile.
 
-The picker also supports `a` to add, `e` to edit, and `x` to delete a profile.
+Choose `Credential Store` to enter a Credential Alias and a masked API key. The secret is written to the operating-system Credential Store; only `credential_key` is written to `config.toml`. In edit mode, `[Configured in Keyring]` indicates that the profile already has a Credential Reference without retrieving the secret or opening the keyring. Leave the secret field blank to preserve the existing entry. Choose `Environment Variable` to configure `api_key_env` instead.
+
+The picker also supports `a` to add, `e` to edit, and `x` to delete a profile. Deleting a profile does not delete its Credential Store entry because another profile can reference the same alias.
+
 
 ## Manage prompt presets
 
@@ -46,7 +53,7 @@ Press `P` from the Sessions screen or Chat view to open the prompt preset picker
 | `Esc` | Clear an active filter; from details, return to the list; otherwise close the picker |
 | `n` | From Sessions, open New Session with the highlighted preset selected |
 
-The detail inspector shows the prompt count, selected order profile, system-prompt state, prompt order, and every prompt's identifier, role, and full content. It also shows Compatibility Warnings, `temperature`, `top_p`, `max_tokens`, and embedded regex scripts. Prompt Order Entries show their current enabled state. Toggling creates a new immutable Artifact Revision, selects it in the refreshed picker, and shows a toast naming the preset and short revision suffix. In Chat, the toast also says that the open Session was re-pinned. Rows show a short revision suffix only when multiple revisions share a preset label, and the open Session's revision is marked `pinned`. Script entries are marked `[inert — requires grant]`. When the content exceeds the pane, scroll it with `PgDn`/`PgUp` or `Shift+Down`/`Shift+Up`; the scroll position resets whenever you move to another preset. The mouse wheel scrolls the inspector while it is open.
+The detail inspector shows the prompt count, selected order profile, system-prompt state, prompt order, and every prompt's identifier, role, and full content. It also shows Compatibility Warnings, `temperature`, `reasoning_effort`, `top_p`, `max_tokens`, and embedded regex scripts. Prompt Order Entries show their current enabled state. Toggling creates a new immutable Artifact Revision, selects it in the refreshed picker, and shows a toast naming the preset and short revision suffix. In Chat, the toast also says that the open Session was re-pinned. Rows show a short revision suffix only when multiple revisions share a preset label, and the open Session's revision is marked `pinned`. Script entries are marked `[inert — requires grant]`. When the content exceeds the pane, scroll with `PgUp`/`PgDn` or `Shift+Up`/`Shift+Down`.
 
 For presets using the supported NemoPresetExt directives, enabling an exclusive entry auto-disables every enabled sibling in the same atomic update. The toast names the auto-disabled entries. `@conflicts-with`, `@warning`, `@deprecated`, and unresolved references appear as non-blocking Compatibility Warnings in the details and at flip time.
 
@@ -54,7 +61,7 @@ Disabling a structural marker such as `chatHistory`, `worldInfoBefore`, or `worl
 
 In Chat, `Ctrl+Space` sets a Prompt Order Override for the focused entry without editing the preset Artifact Revision. The list labels effective values as `preset` or `override`. Press `r` on an overridden entry to remove the override and inherit the preset default again.
 
-To duplicate a preset, highlight it and press `c`. Set the new name, temperature, maximum context tokens, maximum response tokens, and `use_sysprompt`. Press `Ctrl+S` to import the clone as a new immutable Artifact Revision. The picker reopens with the clone highlighted.
+To duplicate a preset, highlight it and press `c`. Set the new name, temperature, reasoning effort, maximum context tokens, maximum response tokens, and `use_sysprompt`. Clear reasoning effort to omit it from the clone. Press `Ctrl+S` to import the clone as a new immutable Artifact Revision. The picker reopens with the clone highlighted.
 
 ## Browse and import artifact files
 

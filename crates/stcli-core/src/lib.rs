@@ -1,6 +1,7 @@
 pub mod artifact;
 pub mod capsule;
 pub mod config;
+pub mod credential;
 pub mod ecma_regex;
 pub mod engine;
 pub mod fixture;
@@ -40,6 +41,10 @@ pub use capsule::{
     ReplayReport, SessionProjectionSnapshot, TurnCapsule,
 };
 pub use config::{Config, ConfigError, ProviderTemplate};
+pub use credential::{
+    CredentialError, CredentialResolver, SystemCredentialStore, delete_credential, get_credential,
+    set_credential,
+};
 pub use ecma_regex::{
     EcmaRegexError, EcmaRegexWorker, RegexMatch, RegexReplaceRequest, RegexReplaceResponse,
     RegexRequest, RegexResponse, run_replace_worker, run_worker,

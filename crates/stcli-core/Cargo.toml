@@ -15,6 +15,7 @@ parking_lot.workspace = true
 flate2.workspace = true
 reqwest.workspace = true
 handlebars.workspace = true
+keyring.workspace = true
 regress.workspace = true
 rquickjs = { workspace = true, optional = true }
 rusqlite.workspace = true

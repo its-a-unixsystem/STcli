@@ -531,6 +531,7 @@ fn dry_run_resolves_preset_settings_and_applies_assembly_behavior() {
                 "temperature": 0.8,
                 "top_p": 0.97,
                 "openai_max_tokens": 256,
+                "reasoning_effort": "auto",
                 "openai_max_context": 4096,
                 "squash_system_messages": true,
                 "use_sysprompt": true,
@@ -587,6 +588,11 @@ fn dry_run_resolves_preset_settings_and_applies_assembly_behavior() {
             .is_none()
     );
     assert_eq!(dry_run.provider_request["max_tokens"], 256);
+    assert_eq!(
+        dry_run.effective_generation_settings.values["reasoning_effort"],
+        "auto"
+    );
+    assert!(dry_run.provider_request.get("reasoning_effort").is_none());
     assert!(
         dry_run
             .provider_request

@@ -321,6 +321,7 @@ fn configuration_for_bench(
             base_url: "http://127.0.0.1:1".to_owned(),
             chat_completions_path: "/v1/chat/completions".to_owned(),
             api_key_env: None,
+            credential_key: None,
             static_headers: BTreeMap::new(),
             timeout_seconds: 1,
             ca_certificate_pem: None,

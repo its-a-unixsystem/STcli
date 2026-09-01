@@ -104,6 +104,7 @@ pub fn content_blob_hash(source: &[u8]) -> crate::ContentHash {
 pub struct PresetPatch {
     pub preset_name: String,
     pub temperature: f64,
+    pub reasoning_effort: Option<String>,
     pub max_context: u64,
     pub max_tokens: u64,
     pub use_sysprompt: bool,
@@ -126,6 +127,14 @@ pub fn clone_and_patch_preset(source: &[u8], patch: PresetPatch) -> Result<Vec<u
                 .ok_or(ArtifactError::InvalidPresetTemperature(patch.temperature))?,
         ),
     );
+    if let Some(reasoning_effort) = patch.reasoning_effort {
+        object.insert(
+            "reasoning_effort".to_owned(),
+            Value::String(reasoning_effort),
+        );
+    } else {
+        object.remove("reasoning_effort");
+    }
     object.insert(
         "max_context".to_owned(),
         Value::Number(patch.max_context.into()),
@@ -1450,6 +1459,7 @@ mod tests {
                 preset_name: "Source-copy".to_owned(),
                 temperature: 0.9,
                 max_context: 16_384,
+                reasoning_effort: Some("high".to_owned()),
                 max_tokens: 1_024,
                 use_sysprompt: false,
             },
@@ -1461,6 +1471,7 @@ mod tests {
         assert_eq!(clone["preset_name"], "Source-copy");
         assert_eq!(clone["temperature"], 0.9);
         assert_eq!(clone["max_context"], 16_384);
+        assert_eq!(clone["reasoning_effort"], "high");
         assert_eq!(clone["openai_max_tokens"], 1_024);
         assert_eq!(clone["openai_max_context"], 16_384);
         assert_eq!(clone["use_sysprompt"], false);

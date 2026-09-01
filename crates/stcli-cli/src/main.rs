@@ -15,11 +15,11 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use stcli_core::{
     AppPaths, ArtifactBundle, CapsuleKind, CliEnvelope, CliError, Config, ContentHash,
-    EngineCommand, EngineInspection, EngineQuery, EngineResult, EntityId, InstalledPlugin,
-    PluginCapability, PromptDiff, PromptSegmentChange, PromptSegmentInspection,
+    CredentialError, EngineCommand, EngineInspection, EngineQuery, EngineResult, EntityId,
+    InstalledPlugin, PluginCapability, PromptDiff, PromptSegmentChange, PromptSegmentInspection,
     PromptTextChangeKind, ProviderEvent, ProviderSettings, RegexReplaceRequest, RegexRequest,
-    SessionConfiguration, StcliEngine, TurnCapsule, run_replace_worker, run_worker,
-    verify_fixture_suite,
+    SessionConfiguration, StcliEngine, TurnCapsule, delete_credential, get_credential,
+    run_replace_worker, run_worker, set_credential, verify_fixture_suite,
 };
 
 #[derive(Debug, Parser)]
@@ -84,6 +84,10 @@ enum Command {
         #[command(subcommand)]
         command: ProfileCommand,
     },
+    Credentials {
+        #[command(subcommand)]
+        command: CredentialCommand,
+    },
     ProviderTest {
         #[command(subcommand)]
         command: ProviderTestCommand,
@@ -107,6 +111,7 @@ impl Command {
             Self::Plugin { command } => command.name(),
             Self::Prompt { command } => command.name(),
             Self::Profile { command } => command.name(),
+            Self::Credentials { command } => command.name(),
             Self::Compat { .. } => "compat.verify",
             Self::Tui { .. } => "tui",
             Self::ProviderTest { .. } => "provider-test.serve",
@@ -536,6 +541,23 @@ impl ProfileCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum CredentialCommand {
+    Set { alias: String },
+    List,
+    Delete { alias: String },
+}
+
+impl CredentialCommand {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Set { .. } => "credentials.set",
+            Self::List => "credentials.list",
+            Self::Delete { .. } => "credentials.delete",
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
 enum CompatCommand {
     Verify(VerifyArgs),
 }
@@ -594,6 +616,7 @@ async fn run(output: OutputFormat, command: Command) -> Result<()> {
         Command::Plugin { command } => plugin(output, command).await,
         Command::Prompt { command } => prompt(output, command),
         Command::Profile { command } => profile(output, command).await,
+        Command::Credentials { command } => credentials(output, command),
         Command::Compat {
             command: CompatCommand::Verify(args),
         } => verify(output, args).await,
@@ -749,6 +772,7 @@ fn configuration_from_args(
                 .provider_chat_path
                 .unwrap_or_else(|| "/v1/chat/completions".to_owned()),
             api_key_env: args.provider_api_key_env,
+            credential_key: None,
             static_headers: BTreeMap::new(),
             timeout_seconds: args.provider_timeout.unwrap_or(120),
             ca_certificate_pem,
@@ -848,11 +872,83 @@ async fn profile(output: OutputFormat, command: ProfileCommand) -> Result<()> {
     }
 }
 
+fn credentials(output: OutputFormat, command: CredentialCommand) -> Result<()> {
+    let command_name = command.name();
+    match command {
+        CredentialCommand::Set { alias } => {
+            let alias = alias.trim();
+            if alias.is_empty() {
+                anyhow::bail!("credential alias cannot be empty");
+            }
+            let secret = rpassword::prompt_password("API key: ")
+                .context("failed to read API key from terminal")?;
+            if secret.is_empty() {
+                anyhow::bail!("API key cannot be empty");
+            }
+            set_credential(alias, &secret).map_err(|error| anyhow::anyhow!("{error}"))?;
+            emit(
+                output,
+                command_name,
+                &json!({"credential_key": alias, "configured": true}),
+            )
+        }
+        CredentialCommand::List => {
+            let paths = AppPaths::discover()?;
+            paths.ensure_exists()?;
+            let config = Config::load(&paths.config)?;
+            let rows = config
+                .providers
+                .iter()
+                .filter_map(|(profile, settings)| {
+                    settings
+                        .credential_key
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|key| !key.is_empty())
+                        .map(|key| {
+                            let (status, error) = match get_credential(key) {
+                                Ok(_) => ("configured", None),
+                                Err(CredentialError::Missing) => ("missing", None),
+                                Err(CredentialError::Store(error)) => ("unavailable", Some(error)),
+                            };
+                            json!({
+                                "profile": profile,
+                                "credential_key": key,
+                                "status": status,
+                                "error": error,
+                            })
+                        })
+                })
+                .collect::<Vec<_>>();
+            emit(output, command_name, &rows)
+        }
+        CredentialCommand::Delete { alias } => {
+            let alias = alias.trim();
+            if alias.is_empty() {
+                anyhow::bail!("credential alias cannot be empty");
+            }
+            match delete_credential(alias) {
+                Ok(()) => emit(
+                    output,
+                    command_name,
+                    &json!({"credential_key": alias, "deleted": true}),
+                ),
+                Err(CredentialError::Missing) => {
+                    anyhow::bail!("Credential Store entry '{alias}' was not found")
+                }
+                Err(CredentialError::Store(error)) => Err(anyhow::anyhow!(
+                    "Credential Store operation failed: {error}"
+                )),
+            }
+        }
+    }
+}
 async fn session(output: OutputFormat, command: SessionCommand) -> Result<()> {
     let command_name = command.name();
     let paths = AppPaths::discover()?;
     paths.ensure_exists()?;
     let config = Config::load(&paths.config)?;
+
     let engine = StcliEngine::new(paths.database());
     match command {
         SessionCommand::Create(args) => {

@@ -11,7 +11,8 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::{
-    ContentHash, FormatMode, HeaderSetting, PromptPlan, ProviderSettings, canonical_json_hash,
+    ContentHash, CredentialError, CredentialResolver, FormatMode, HeaderSetting, PromptPlan,
+    ProviderSettings, SystemCredentialStore, canonical_json_hash,
 };
 
 const PROVIDER_REQUEST_DOMAIN: &str = "stcli:provider-request:v1";
@@ -96,6 +97,13 @@ pub(crate) fn validate_text_completion_settings(
 
 impl OpenAiProvider {
     pub fn new(settings: ProviderSettings) -> Result<Self, ProviderError> {
+        Self::new_with_credential_resolver(settings, &SystemCredentialStore)
+    }
+
+    pub fn new_with_credential_resolver(
+        settings: ProviderSettings,
+        credential_resolver: &impl CredentialResolver,
+    ) -> Result<Self, ProviderError> {
         validate_provider_settings(&settings)?;
         let mut redactions = Vec::new();
         let mut headers = HeaderMap::new();
@@ -115,9 +123,36 @@ impl OpenAiProvider {
                 .map_err(|error| ProviderError::InvalidHeader(error.to_string()))?;
             headers.insert(header_name, header_value);
         }
-        if let Some(environment_name) = &settings.api_key_env {
-            let secret = env::var(environment_name)
-                .map_err(|_| ProviderError::MissingApiKey(environment_name.clone()))?;
+        let configured_environment = settings
+            .api_key_env
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+        let environment_secret = configured_environment
+            .and_then(|name| env::var(name).ok())
+            .filter(|secret| !secret.is_empty());
+        let secret = if let Some(secret) = environment_secret {
+            Some(secret)
+        } else if let Some(key) = settings
+            .credential_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+        {
+            Some(credential_resolver.get(key).map_err(|error| match error {
+                CredentialError::Missing => ProviderError::MissingCredential(key.to_owned()),
+                CredentialError::Store(error) => ProviderError::CredentialStoreError {
+                    key: key.to_owned(),
+                    error,
+                },
+            })?)
+        } else {
+            if let Some(environment_name) = configured_environment {
+                return Err(ProviderError::MissingApiKey(environment_name.to_owned()));
+            }
+            None
+        };
+        if let Some(secret) = secret {
             redactions.push(secret.clone());
             redactions.push(format!("Bearer {secret}"));
             let value = HeaderValue::try_from(format!("Bearer {secret}"))
@@ -404,6 +439,14 @@ pub enum ProviderError {
     HttpsRequired(String),
     #[error("provider API key environment variable '{0}' is not set")]
     MissingApiKey(String),
+    #[error(
+        "Credential Store entry '{0}' is not configured; run `stcli credentials set {0}` or specify `api_key_env`"
+    )]
+    MissingCredential(String),
+    #[error(
+        "Credential Store entry '{key}' could not be accessed: {error}. Ensure your system keyring/Secret Service is unlocked, or specify `api_key_env` to use an environment variable instead."
+    )]
+    CredentialStoreError { key: String, error: String },
     #[error("provider header environment variable '{0}' is not set")]
     MissingHeaderValue(String),
     #[error("secret-valued provider header '{0}' must use an environment reference")]
@@ -451,7 +494,19 @@ pub enum ProviderError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential::{CredentialError, CredentialResolver};
+    use stcli_testkit::EnvironmentGuard;
     use std::collections::BTreeMap;
+
+    struct FakeCredentialResolver {
+        result: Result<String, CredentialError>,
+    }
+
+    impl CredentialResolver for FakeCredentialResolver {
+        fn get(&self, _key: &str) -> Result<String, CredentialError> {
+            self.result.clone()
+        }
+    }
 
     fn settings() -> ProviderSettings {
         ProviderSettings {
@@ -459,6 +514,7 @@ mod tests {
             base_url: "https://example.invalid".to_owned(),
             chat_completions_path: "/v1/chat/completions".to_owned(),
             api_key_env: None,
+            credential_key: None,
             static_headers: BTreeMap::new(),
             timeout_seconds: 1,
             ca_certificate_pem: None,
@@ -491,6 +547,88 @@ mod tests {
         assert!(matches!(
             OpenAiProvider::new(settings),
             Err(ProviderError::SecretHeaderMustUseEnvironment(_))
+        ));
+    }
+
+    #[test]
+    fn empty_environment_api_key_falls_back_to_credential_store() {
+        let mut environment = EnvironmentGuard::new();
+        environment.set("STCLI_PROVIDER_EMPTY_KEY", "");
+        let mut settings = settings();
+        settings.api_key_env = Some("STCLI_PROVIDER_EMPTY_KEY".to_owned());
+        settings.credential_key = Some("openrouter".to_owned());
+        let resolver = FakeCredentialResolver {
+            result: Ok("stored-secret".to_owned()),
+        };
+
+        let provider = OpenAiProvider::new_with_credential_resolver(settings, &resolver).unwrap();
+
+        assert!(provider.redactions.contains(&"stored-secret".to_owned()));
+    }
+
+    #[test]
+    fn credential_store_secret_is_applied_and_redacted() {
+        let mut settings = settings();
+        settings.credential_key = Some("openrouter".to_owned());
+        let resolver = FakeCredentialResolver {
+            result: Ok("stored-secret".to_owned()),
+        };
+
+        let provider = OpenAiProvider::new_with_credential_resolver(settings, &resolver).unwrap();
+
+        assert!(provider.redactions.contains(&"stored-secret".to_owned()));
+        assert!(
+            provider
+                .redactions
+                .contains(&"Bearer stored-secret".to_owned())
+        );
+    }
+
+    #[test]
+    fn environment_api_key_takes_precedence_over_credential_store() {
+        let mut environment = EnvironmentGuard::new();
+        environment.set("STCLI_PROVIDER_TEST_KEY", "environment-secret");
+        let mut settings = settings();
+        settings.api_key_env = Some("STCLI_PROVIDER_TEST_KEY".to_owned());
+        settings.credential_key = Some("openrouter".to_owned());
+        let resolver = FakeCredentialResolver {
+            result: Err(CredentialError::Store("must not be read".to_owned())),
+        };
+
+        let provider = OpenAiProvider::new_with_credential_resolver(settings, &resolver).unwrap();
+
+        assert!(
+            provider
+                .redactions
+                .contains(&"environment-secret".to_owned())
+        );
+        assert!(
+            !provider
+                .redactions
+                .iter()
+                .any(|value| value == "stored-secret")
+        );
+    }
+
+    #[test]
+    fn credential_failures_are_classified_for_provider_diagnostics() {
+        let mut settings = settings();
+        settings.credential_key = Some("missing".to_owned());
+        let missing = FakeCredentialResolver {
+            result: Err(CredentialError::Missing),
+        };
+        assert!(matches!(
+            OpenAiProvider::new_with_credential_resolver(settings.clone(), &missing),
+            Err(ProviderError::MissingCredential(key)) if key == "missing"
+        ));
+
+        let unavailable = FakeCredentialResolver {
+            result: Err(CredentialError::Store("locked".to_owned())),
+        };
+        assert!(matches!(
+            OpenAiProvider::new_with_credential_resolver(settings, &unavailable),
+            Err(ProviderError::CredentialStoreError { key, error })
+                if key == "missing" && error == "locked"
         ));
     }
 }

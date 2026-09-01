@@ -12,7 +12,7 @@ use stcli_core::{
     DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID, EngineCommand, EngineInspection, EngineQuery, EngineResult,
     EntityId, Persona, PersonaStore, PresetPatch, PromptPreset, ProviderEvent, ProviderSettings,
     ProviderTemplate, RegexPlacement, SessionConfiguration, SessionSummary, StcliEngine,
-    available_duplicated_session_name, clone_and_patch_preset, decode_artifact,
+    available_duplicated_session_name, clone_and_patch_preset, decode_artifact, set_credential,
     transform_preset_content, validate_provider_settings,
 };
 
@@ -107,6 +107,7 @@ pub struct PresetSummary {
     pub prompt_order: Vec<PromptOrderOption>,
     pub prompts: Vec<PresetPromptOption>,
     pub temperature: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub top_p: Option<String>,
     pub max_tokens: Option<String>,
     pub scripts: Vec<PresetScriptSummary>,
@@ -241,6 +242,7 @@ impl PresetSummary {
             prompt_order,
             prompts,
             temperature: summary_value(value.get("temperature")),
+            reasoning_effort: summary_value(value.get("reasoning_effort")),
             top_p: summary_value(value.get("top_p")),
             max_tokens: summary_value(
                 value
@@ -660,11 +662,20 @@ pub struct ClonePresetState {
     pub source_revision: ContentHash,
     pub name: String,
     pub temperature: String,
+    pub reasoning_effort: String,
     pub max_context: String,
     pub max_tokens: String,
     pub use_sysprompt: bool,
     pub focused_field: usize,
     pub picker: Box<PresetPickerState>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GenerationSettingsState {
+    pub reasoning_effort: String,
+    pub temperature: String,
+    pub max_tokens: String,
+    pub focused_field: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -703,6 +714,9 @@ pub struct ProviderProfileState {
     pub model: String,
     pub chat_path: String,
     pub api_key_env: String,
+    pub use_credential_store: bool,
+    pub credential_key: String,
+    pub credential_secret: String,
     pub stream: bool,
     pub timeout_seconds: String,
     pub focused_field: usize,
@@ -744,6 +758,7 @@ pub enum Popup {
     ImportArtifact(ImportArtifactState),
     ProviderProfile(Box<ProviderProfileState>),
     ClonePreset(Box<ClonePresetState>),
+    GenerationSettings(GenerationSettingsState),
     Personas(Box<PersonasState>),
     PersonaEditor(Box<PersonaEditorState>),
     ImportPersonas(Box<ImportPersonasState>),
@@ -838,6 +853,7 @@ pub struct App {
     pending_override_message: Option<String>,
     pending_preset_toggle: Option<(String, bool)>,
     pending_directive_warnings: Vec<String>,
+    pending_generation_settings_update: bool,
     pending_branch_creation: bool,
 }
 
@@ -878,6 +894,7 @@ impl App {
             pending_auto_disabled: Vec::new(),
             pending_directive_warnings: Vec::new(),
             pending_override_message: None,
+            pending_generation_settings_update: false,
             pending_preset_toggle: None,
             pending_branch_creation: false,
         };
@@ -1279,6 +1296,7 @@ impl App {
             }
             KeyCode::Char('b') => return self.create_branch_from_focus(),
             KeyCode::Char('B') => self.open_branch_popup(),
+            KeyCode::Char('s') => self.open_generation_settings(),
             KeyCode::Char('p') => self.open_provider_popup(ModalTarget::Chat),
             KeyCode::Char('P') => self.open_preset_popup(ModalTarget::Chat),
             KeyCode::Char('c') => {
@@ -2024,27 +2042,91 @@ impl App {
                 }
                 _ => {}
             },
+            Popup::GenerationSettings(state) => {
+                if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return self.submit_generation_settings(state.clone());
+                }
+                match key.code {
+                    KeyCode::Tab | KeyCode::Down => {
+                        state.focused_field = (state.focused_field + 1) % 5;
+                    }
+                    KeyCode::BackTab | KeyCode::Up => {
+                        state.focused_field = (state.focused_field + 4) % 5;
+                    }
+                    _ => match state.focused_field {
+                        0 => match key.code {
+                            KeyCode::Left => {
+                                Self::cycle_reasoning_effort(&mut state.reasoning_effort, false);
+                            }
+                            KeyCode::Right | KeyCode::Char(' ') => {
+                                Self::cycle_reasoning_effort(&mut state.reasoning_effort, true);
+                            }
+                            KeyCode::Backspace => {
+                                state.reasoning_effort.pop();
+                            }
+                            KeyCode::Enter => state.focused_field = 1,
+                            KeyCode::Char(character)
+                                if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.reasoning_effort.push(character);
+                            }
+                            _ => {}
+                        },
+                        1 | 2 => {
+                            if key.code == KeyCode::Enter {
+                                state.focused_field += 1;
+                            } else {
+                                let value = if state.focused_field == 1 {
+                                    &mut state.temperature
+                                } else {
+                                    &mut state.max_tokens
+                                };
+                                match key.code {
+                                    KeyCode::Backspace => {
+                                        value.pop();
+                                    }
+                                    KeyCode::Char(character)
+                                        if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                    {
+                                        value.push(character);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        3 if key.code == KeyCode::Enter => {
+                            return self.submit_generation_settings(state.clone());
+                        }
+                        4 if key.code == KeyCode::Enter => {
+                            self.popup = None;
+                            return Effect::None;
+                        }
+                        _ => {}
+                    },
+                }
+            }
             Popup::ClonePreset(state) => {
                 if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     return self.submit_cloned_preset(state.as_ref().clone());
                 }
                 match key.code {
                     KeyCode::Tab | KeyCode::Down => {
-                        state.focused_field = (state.focused_field + 1) % 7;
+                        state.focused_field = (state.focused_field + 1) % 8;
                     }
                     KeyCode::BackTab | KeyCode::Up => {
-                        state.focused_field = (state.focused_field + 6) % 7;
+                        state.focused_field = (state.focused_field + 7) % 8;
                     }
                     _ => match state.focused_field {
-                        0..=3 => {
+                        0..=4 => {
                             if key.code == KeyCode::Enter {
                                 state.focused_field += 1;
                             } else {
                                 let value = match state.focused_field {
                                     0 => &mut state.name,
                                     1 => &mut state.temperature,
-                                    2 => &mut state.max_context,
-                                    3 => &mut state.max_tokens,
+                                    2 => &mut state.reasoning_effort,
+                                    3 => &mut state.max_context,
+                                    4 => &mut state.max_tokens,
                                     _ => unreachable!(),
                                 };
                                 match key.code {
@@ -2060,22 +2142,22 @@ impl App {
                                 }
                             }
                         }
-                        4 => match key.code {
+                        5 => match key.code {
                             KeyCode::Left
                             | KeyCode::Right
                             | KeyCode::Char(' ')
                             | KeyCode::Enter => {
                                 state.use_sysprompt = !state.use_sysprompt;
                                 if key.code == KeyCode::Enter {
-                                    state.focused_field = 5;
+                                    state.focused_field = 6;
                                 }
                             }
                             _ => {}
                         },
-                        5 if key.code == KeyCode::Enter => {
+                        6 if key.code == KeyCode::Enter => {
                             return self.submit_cloned_preset(state.as_ref().clone());
                         }
-                        6 if key.code == KeyCode::Enter => {
+                        7 if key.code == KeyCode::Enter => {
                             self.popup = Some(Popup::Presets(state.picker.clone()));
                             return Effect::None;
                         }
@@ -2089,20 +2171,32 @@ impl App {
                 }
                 match key.code {
                     KeyCode::Tab | KeyCode::Down => {
-                        Self::focus_profile_field(state, (state.focused_field + 1) % 10);
+                        let mut next = (state.focused_field + 1) % 12;
+                        if next == 7 && !state.use_credential_store {
+                            next = 8;
+                        }
+                        Self::focus_profile_field(state, next);
                     }
-                    KeyCode::Char('j')
-                        if !(1..=5).contains(&state.focused_field) && state.focused_field != 7 =>
-                    {
-                        Self::focus_profile_field(state, (state.focused_field + 1) % 10);
+                    KeyCode::Char('j') if !matches!(state.focused_field, 1..=4 | 6 | 7 | 9) => {
+                        let mut next = (state.focused_field + 1) % 12;
+                        if next == 7 && !state.use_credential_store {
+                            next = 8;
+                        }
+                        Self::focus_profile_field(state, next);
                     }
                     KeyCode::BackTab | KeyCode::Up => {
-                        Self::focus_profile_field(state, (state.focused_field + 9) % 10);
+                        let mut next = (state.focused_field + 11) % 12;
+                        if next == 7 && !state.use_credential_store {
+                            next = 6;
+                        }
+                        Self::focus_profile_field(state, next);
                     }
-                    KeyCode::Char('k')
-                        if !(1..=5).contains(&state.focused_field) && state.focused_field != 7 =>
-                    {
-                        Self::focus_profile_field(state, (state.focused_field + 9) % 10);
+                    KeyCode::Char('k') if !matches!(state.focused_field, 1..=4 | 6 | 7 | 9) => {
+                        let mut next = (state.focused_field + 11) % 12;
+                        if next == 7 && !state.use_credential_store {
+                            next = 6;
+                        }
+                        Self::focus_profile_field(state, next);
                     }
                     _ => match state.focused_field {
                         0 => match key.code {
@@ -2118,33 +2212,38 @@ impl App {
                             KeyCode::Enter => Self::focus_profile_field(state, 1),
                             _ => {}
                         },
-                        1..=5 => {
+                        1..=4 | 6 | 7 | 9 => {
                             if key.code == KeyCode::Enter {
                                 Self::focus_profile_field(state, state.focused_field + 1);
                             } else {
                                 Self::handle_profile_text_input(state, key);
                             }
                         }
-                        6 => match key.code {
+                        5 => match key.code {
+                            KeyCode::Left
+                            | KeyCode::Right
+                            | KeyCode::Char(' ')
+                            | KeyCode::Enter => {
+                                state.use_credential_store = !state.use_credential_store;
+                                if key.code == KeyCode::Enter {
+                                    Self::focus_profile_field(state, 6);
+                                }
+                            }
+                            _ => {}
+                        },
+                        8 => match key.code {
                             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') => {
                                 state.stream = !state.stream;
                             }
-                            KeyCode::Enter => Self::focus_profile_field(state, 7),
+                            KeyCode::Enter => Self::focus_profile_field(state, 9),
                             _ => {}
                         },
-                        7 => {
-                            if key.code == KeyCode::Enter {
-                                Self::focus_profile_field(state, 8);
-                            } else {
-                                Self::handle_profile_text_input(state, key);
-                            }
-                        }
-                        8 => {
+                        10 => {
                             if key.code == KeyCode::Enter {
                                 return self.submit_provider_profile(state.as_ref().clone());
                             }
                         }
-                        9 => {
+                        11 => {
                             if key.code == KeyCode::Enter {
                                 self.restore_modal(state.return_to.clone());
                                 return Effect::None;
@@ -2951,6 +3050,11 @@ impl App {
             .as_ref()
             .and_then(|name| self.config.core.providers.get(name))
             .cloned();
+        let credential_key = original_settings
+            .as_ref()
+            .and_then(|settings| settings.credential_key.clone())
+            .unwrap_or_default();
+        let use_credential_store = !credential_key.is_empty();
         let (name, base_url, model, chat_path, api_key_env, stream, timeout_seconds) =
             if let (Some(name), Some(settings)) = (&original_name, &original_settings) {
                 (
@@ -2984,6 +3088,9 @@ impl App {
             model,
             chat_path,
             api_key_env,
+            use_credential_store,
+            credential_key,
+            credential_secret: String::new(),
             stream,
             timeout_seconds,
             focused_field: 1,
@@ -2999,8 +3106,15 @@ impl App {
             2 => state.base_url.chars().count(),
             3 => state.model.chars().count(),
             4 => state.chat_path.chars().count(),
-            5 => state.api_key_env.chars().count(),
-            7 => state.timeout_seconds.chars().count(),
+            6 => {
+                if state.use_credential_store {
+                    state.credential_key.chars().count()
+                } else {
+                    state.api_key_env.chars().count()
+                }
+            }
+            7 => state.credential_secret.chars().count(),
+            9 => state.timeout_seconds.chars().count(),
             _ => 0,
         };
     }
@@ -3011,8 +3125,10 @@ impl App {
             2 => &mut state.base_url,
             3 => &mut state.model,
             4 => &mut state.chat_path,
-            5 => &mut state.api_key_env,
-            7 => &mut state.timeout_seconds,
+            6 if state.use_credential_store => &mut state.credential_key,
+            6 => &mut state.api_key_env,
+            7 => &mut state.credential_secret,
+            9 => &mut state.timeout_seconds,
             _ => return,
         };
         let mut cursor = state.cursor_position.min(value.chars().count());
@@ -3053,6 +3169,8 @@ impl App {
             state.chat_path = template.chat_completions_path.clone();
             state.model = template.default_model.clone();
             state.api_key_env = template.api_key_env.clone().unwrap_or_default();
+            state.credential_key = template.credential_key.clone().unwrap_or_default();
+            state.use_credential_store = !state.credential_key.is_empty();
             state.stream = template.stream;
             state.timeout_seconds = template.timeout_seconds.to_string();
             if state.name.is_empty() {
@@ -3085,11 +3203,17 @@ impl App {
                 return Effect::None;
             }
         };
+        if state.use_credential_store && state.credential_key.trim().is_empty() {
+            self.show_error("Credential Alias cannot be empty");
+            self.popup = Some(Popup::ProviderProfile(Box::new(state)));
+            return Effect::None;
+        }
         let mut settings = state.original_settings.clone().unwrap_or(ProviderSettings {
             id: String::new(),
             base_url: String::new(),
             chat_completions_path: String::new(),
             api_key_env: None,
+            credential_key: None,
             static_headers: BTreeMap::new(),
             timeout_seconds,
             ca_certificate_pem: None,
@@ -3105,8 +3229,14 @@ impl App {
         }
         settings.base_url = state.base_url.trim().to_owned();
         settings.chat_completions_path = state.chat_path.trim().to_owned();
-        settings.api_key_env =
-            (!state.api_key_env.trim().is_empty()).then(|| state.api_key_env.trim().to_owned());
+        if state.use_credential_store {
+            settings.api_key_env = None;
+            settings.credential_key = Some(state.credential_key.trim().to_owned());
+        } else {
+            settings.api_key_env =
+                (!state.api_key_env.trim().is_empty()).then(|| state.api_key_env.trim().to_owned());
+            settings.credential_key = None;
+        }
         settings.timeout_seconds = timeout_seconds;
         settings.model = state.model.trim().to_owned();
         settings.stream = state.stream;
@@ -3115,11 +3245,28 @@ impl App {
             self.popup = Some(Popup::ProviderProfile(Box::new(state)));
             return Effect::None;
         }
+        if state.use_credential_store
+            && !state.credential_secret.is_empty()
+            && let Err(error) =
+                set_credential(state.credential_key.trim(), &state.credential_secret)
+        {
+            self.show_error(format!("Failed to store credential: {error}"));
+            self.popup = Some(Popup::ProviderProfile(Box::new(state)));
+            return Effect::None;
+        }
         let active_profile = state.original_settings.as_ref().is_some_and(|original| {
             self.history
                 .as_ref()
                 .is_some_and(|history| &history.configuration.configuration.provider == original)
         });
+        if state.use_credential_store
+            && state.original_settings.is_none()
+            && state.credential_secret.is_empty()
+        {
+            self.show_error("Enter an API key for a new Credential Store profile");
+            self.popup = Some(Popup::ProviderProfile(Box::new(state)));
+            return Effect::None;
+        }
         let config_dir = self.profile_config_dir();
         if let Err(error) = stcli_core::Config::save_provider_profile(
             &config_dir,
@@ -3229,6 +3376,127 @@ impl App {
         })
     }
 
+    fn open_generation_settings(&mut self) {
+        let Some(history) = &self.history else {
+            return;
+        };
+        let session = history
+            .configuration
+            .configuration
+            .generation_settings
+            .as_object();
+        let preset = history
+            .configuration
+            .configuration
+            .prompt_preset_revision
+            .as_ref()
+            .and_then(|revision_hash| {
+                self.engine
+                    .inspect(EngineQuery::ArtifactSource {
+                        revision_hash: revision_hash.clone(),
+                    })
+                    .ok()
+            })
+            .and_then(|inspection| match inspection {
+                EngineInspection::ArtifactSource(source) => decode_artifact(&source).ok(),
+                _ => None,
+            });
+        let preset = preset
+            .as_ref()
+            .and_then(|preset| preset.semantic.as_object());
+        let resolve = |name: &str, preset_name: &str, default: Option<&str>| {
+            session
+                .and_then(|settings| settings.get(name))
+                .or_else(|| preset.and_then(|settings| settings.get(preset_name)))
+                .and_then(|value| summary_value(Some(value)))
+                .or_else(|| default.map(str::to_owned))
+                .unwrap_or_default()
+        };
+        self.popup = Some(Popup::GenerationSettings(GenerationSettingsState {
+            reasoning_effort: resolve("reasoning_effort", "reasoning_effort", None),
+            temperature: resolve("temperature", "temperature", None),
+            max_tokens: resolve("max_tokens", "openai_max_tokens", Some("512")),
+            focused_field: 0,
+        }));
+    }
+
+    fn cycle_reasoning_effort(value: &mut String, forward: bool) {
+        const VALUES: [&str; 4] = ["", "low", "medium", "high"];
+        let current = VALUES
+            .iter()
+            .position(|candidate| candidate.eq_ignore_ascii_case(value.trim()))
+            .unwrap_or(0);
+        let next = if forward {
+            (current + 1) % VALUES.len()
+        } else {
+            (current + VALUES.len() - 1) % VALUES.len()
+        };
+        *value = VALUES[next].to_owned();
+    }
+
+    fn submit_generation_settings(&mut self, state: GenerationSettingsState) -> Effect {
+        let Some(history) = &self.history else {
+            self.popup = None;
+            return Effect::None;
+        };
+        let temperature = if state.temperature.trim().is_empty() {
+            None
+        } else {
+            match state.temperature.trim().parse::<f64>() {
+                Ok(value) if value.is_finite() => Some(value),
+                _ => {
+                    self.show_error("Temperature must be a finite number");
+                    self.popup = Some(Popup::GenerationSettings(state));
+                    return Effect::None;
+                }
+            }
+        };
+        let max_tokens = if state.max_tokens.trim().is_empty() {
+            None
+        } else {
+            match state.max_tokens.trim().parse::<u64>() {
+                Ok(value) => Some(value),
+                Err(_) => {
+                    self.show_error("Max tokens must be a non-negative whole number");
+                    self.popup = Some(Popup::GenerationSettings(state));
+                    return Effect::None;
+                }
+            }
+        };
+        let mut configuration = history.configuration.configuration.clone();
+        let Some(settings) = configuration.generation_settings.as_object_mut() else {
+            self.show_error("Generation settings must be a JSON object");
+            self.popup = Some(Popup::GenerationSettings(state));
+            return Effect::None;
+        };
+        if state.reasoning_effort.trim().is_empty() {
+            settings.remove("reasoning_effort");
+        } else {
+            settings.insert(
+                "reasoning_effort".to_owned(),
+                serde_json::Value::String(state.reasoning_effort.trim().to_owned()),
+            );
+        }
+        if let Some(temperature) = temperature {
+            let value = serde_json::Number::from_f64(temperature)
+                .expect("finite temperature has a JSON number representation");
+            settings.insert("temperature".to_owned(), serde_json::Value::Number(value));
+        } else {
+            settings.remove("temperature");
+        }
+        if let Some(max_tokens) = max_tokens {
+            settings.insert("max_tokens".to_owned(), max_tokens.into());
+        } else {
+            settings.remove("max_tokens");
+        }
+        self.pending_generation_settings_update = true;
+        self.popup = None;
+        Effect::Execute(EngineCommand::UpdateConfiguration {
+            session_id: history.session.session_id,
+            configuration: Box::new(configuration),
+        })
+    }
+
     fn open_clone_preset(&mut self, picker: PresetPickerState) {
         let Some(source_revision) = picker.selected_revision() else {
             self.popup = Some(Popup::Presets(Box::new(picker)));
@@ -3270,6 +3538,8 @@ impl App {
         };
         let temperature =
             summary_value(decoded.semantic.get("temperature")).unwrap_or_else(|| "1".to_owned());
+        let reasoning_effort =
+            summary_value(decoded.semantic.get("reasoning_effort")).unwrap_or_default();
         let max_context = summary_value(
             decoded
                 .semantic
@@ -3293,6 +3563,7 @@ impl App {
             source_revision,
             name,
             temperature,
+            reasoning_effort,
             max_context,
             max_tokens,
             use_sysprompt,
@@ -3347,6 +3618,8 @@ impl App {
             PresetPatch {
                 preset_name: state.name.trim().to_owned(),
                 temperature,
+                reasoning_effort: (!state.reasoning_effort.trim().is_empty())
+                    .then(|| state.reasoning_effort.trim().to_owned()),
                 max_context,
                 max_tokens,
                 use_sysprompt: state.use_sysprompt,
@@ -3804,6 +4077,16 @@ impl App {
                 }
                 true
             }
+            Ok(EngineResult::Configuration(_)) if self.pending_generation_settings_update => {
+                self.pending_generation_settings_update = false;
+                if let Err(error) = self.reload_history() {
+                    self.show_error(error.to_string());
+                } else {
+                    self.show_info("Updated generation settings");
+                }
+                self.popup = None;
+                true
+            }
             Ok(EngineResult::Configuration(_)) if self.pending_override_message.is_some() => {
                 let Some(Popup::Presets(mut picker)) = self.popup.take() else {
                     self.pending_override_message = None;
@@ -3929,6 +4212,7 @@ impl App {
             }
             Err(error) => {
                 self.pending_branch_creation = false;
+                self.pending_generation_settings_update = false;
                 self.show_error(error);
                 false
             }
@@ -4095,6 +4379,7 @@ impl App {
                 | Popup::ImportArtifact(_)
                 | Popup::ProviderProfile(_)
                 | Popup::ClonePreset(_)
+                | Popup::GenerationSettings(_)
                 | Popup::PersonaEditor(_)
                 | Popup::ImportPersonas(_),
             ) => return,
@@ -5773,6 +6058,7 @@ timeout_seconds = 45
             base_url: "https://api.example.com".to_owned(),
             chat_completions_path: "/v1/chat/completions".to_owned(),
             api_key_env: None,
+            credential_key: None,
             static_headers: BTreeMap::new(),
             timeout_seconds: 60,
             ca_certificate_pem: None,

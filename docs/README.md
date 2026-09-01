@@ -10,6 +10,7 @@ This index maps every document to its audience and purpose.
 |---|---|
 | [Root README](../README.md) | What STcli is, quick start, and the documentation map |
 | [Usage guide](guide.md) | Task guide: import, sessions, generation, editing, capsules, plugins |
+| [Configuration](configuration.md) | Provider profiles, Credential References, and secure credential management |
 | [Terminal user interface](tui.md) | TUI navigation, preset management, and in-TUI imports |
 | [CLI reference](cli.md) | Every command, argument, and value format |
 | [Chat Completion presets](presets.md) | Preset semantics, settings precedence, and field classification |
