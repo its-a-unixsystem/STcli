@@ -18,6 +18,7 @@ use crate::{
 pub struct ScriptOutcome {
     pub effects: Vec<PluginEffect>,
     pub logs: Vec<ScriptLog>,
+    pub prng_seed: Option<u64>,
 }
 
 struct Sink {
@@ -112,6 +113,7 @@ pub fn execute(
     Ok(ScriptOutcome {
         effects: sink.effects.clone(),
         logs: sink.logs.clone(),
+        prng_seed: None,
     })
 }
 

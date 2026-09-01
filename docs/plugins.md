@@ -11,6 +11,7 @@ This page is the complete guide. It has an introduction, two tutorials, a packag
 - [What a plugin is](#what-a-plugin-is)
 - [How a plugin runs](#how-a-plugin-runs)
 - [Choose a runtime](#choose-a-runtime)
+- [st-bridge deterministic globals](#st-bridge-deterministic-globals)
 - [The manifest](#the-manifest)
 - [Tutorial: a script plugin](#tutorial-a-script-plugin)
 - [Tutorial: a Wasm plugin](#tutorial-a-wasm-plugin)
@@ -82,6 +83,25 @@ Use this table to pick a runtime.
 Start with a script plugin for narrative logic, such as a counter, a clock, or an ambient prompt line. Move to a Wasm plugin when you need a macro, a command, an abort, or heavy computation.
 
 The Script runtime needs the `scripting` build feature. This feature is on by default. When STcli is built without it, a script plugin returns an error.
+
+### st-bridge deterministic globals
+
+The `st-bridge` runtime keeps one QuickJS context for each Session, Extension, and component
+digest. It provides these deterministic browser-compatible globals:
+
+- `Math.random()` uses a seeded Xoshiro128++ generator. The Turn Trace records the seed in the
+  plugin receipt as `prng_seed`.
+- `setTimeout(callback, 0)` and `setInterval(callback, 0)` enqueue the callback as a microtask.
+  The returned numeric handle is informational. `clearTimeout` and `clearInterval` are no-ops.
+- A positive timer delay is unsupported. The call throws and records one Compatibility Warning
+  per Extension context. The callback is not scheduled.
+
+Promise settlement is bounded to 64 microtasks by default. If a handler remains pending after the
+bound, STcli abandons the Extension context, discards its effects, and records a Compatibility
+Warning. Later calls to the abandoned context produce no effects.
+
+Replay does not initialize the PRNG or run timer callbacks. It reads the recorded seed and effects
+from the Turn Trace and reapplies the effects.
 
 ## The manifest
 

@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 use stcli_core::{
-    EngineCommand, EngineResult, EntityId, PluginEffect, PluginEvent, PluginGrant, PluginHost,
-    PluginInput, PluginLimits, PluginPin, PluginRegistry, StcliEngine, Store, plugin_digest,
+    EngineCommand, EngineResult, EntityId, InstalledPlugin, PluginEffect, PluginEvent, PluginGrant,
+    PluginHost, PluginInput, PluginLimits, PluginPin, PluginReceipt, PluginRegistry, StcliEngine,
+    Store, plugin_digest,
 };
 use stcli_testkit::{MockProvider, configuration as base_configuration, fixtures};
 use tempfile::tempdir;
@@ -130,6 +131,61 @@ fn write_bridge_plugin(directory: &Path) -> PathBuf {
     )
     .unwrap();
     directory.to_owned()
+}
+
+fn write_test_bridge_plugin(directory: &Path, id: &str, source: &str) -> PathBuf {
+    std::fs::create_dir_all(directory).unwrap();
+    std::fs::write(directory.join("extension.js"), source).unwrap();
+    let manifest = json!({
+        "schema": "stcli.plugin-manifest/v1",
+        "id": id,
+        "version": "0.1.0",
+        "engine": ">=0.1.0, <0.2.0",
+        "runtime": "st-bridge",
+        "component": "extension.js",
+        "component_sha256": plugin_digest(source.as_bytes()),
+        "dependencies": [],
+        "license": "MIT",
+        "subscriptions": ["generate-interceptor"],
+        "prompt_slots": [],
+        "commands": [],
+        "macros": [],
+        "settings_schema": null,
+        "requested_capabilities": ["contribute-prompt"],
+        "before": [],
+        "after": [],
+        "generate_interceptor": "namedInterceptor"
+    });
+    std::fs::write(
+        directory.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    directory.to_owned()
+}
+
+fn authorize(installed: &InstalledPlugin) -> PluginGrant {
+    PluginGrant {
+        id: installed.manifest.id.clone(),
+        version: installed.manifest.version.clone(),
+        component_sha256: installed.manifest.component_sha256.clone(),
+        capabilities: installed.manifest.requested_capabilities.clone(),
+        settings: json!({}),
+        enabled: true,
+    }
+}
+
+fn interceptor_input(installed: &InstalledPlugin, session_id: EntityId) -> PluginInput {
+    PluginInput {
+        event: PluginEvent::GenerateInterceptor,
+        plugin_id: installed.manifest.id.clone(),
+        settings: json!({}),
+        context: json!({}),
+        payload: json!({"chat": [], "has_user_message": false}),
+        artifact: json!(null),
+        state: json!(null),
+        session: json!({"session_id": session_id, "branch_id": EntityId::new()}),
+    }
 }
 
 #[test]
@@ -415,4 +471,150 @@ async fn live_attempt_records_lifecycle_and_rerun_reuses_recorded_prompt() {
     let rerun = store.dry_run_rerun(attempt_id).unwrap();
     assert_eq!(rerun.prompt_plan, original_plan);
     assert_eq!(rerun.provider_request, original_request);
+}
+
+#[test]
+fn prng_seed_is_recorded_in_replayed_receipt() {
+    let source = r#"
+function namedInterceptor(chat) {
+  const values = Array.from({ length: 5 }, () => Math.random());
+  chat.push({ is_user: false, is_system: false, mes: JSON.stringify(values) });
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+    let directory = tempdir().unwrap();
+    let plugin = write_test_bridge_plugin(
+        &directory.path().join("plugin"),
+        "org.stcli.seeded-prng-test",
+        source,
+    );
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&plugin)
+        .unwrap();
+    let receipt = PluginHost::new(PluginLimits::default())
+        .execute(
+            &installed,
+            &authorize(&installed),
+            interceptor_input(&installed, EntityId::new()),
+        )
+        .unwrap();
+
+    assert_ne!(receipt.prng_seed, Some(0));
+    let values = match &receipt.effects[0] {
+        PluginEffect::PromptRewrite { messages } => {
+            serde_json::from_str::<Vec<f64>>(&messages[0].content).unwrap()
+        }
+        effect => panic!("expected PromptRewrite, got {effect:?}"),
+    };
+    assert_eq!(values.len(), 5);
+    assert!(values.iter().all(|value| (0.0..1.0).contains(value)));
+    let replayed: PluginReceipt =
+        serde_json::from_value(serde_json::to_value(&receipt).unwrap()).unwrap();
+    assert_eq!(replayed.prng_seed, receipt.prng_seed);
+    assert_eq!(replayed.effects, receipt.effects);
+}
+
+#[test]
+fn immediate_timer_resolves_as_microtask() {
+    let source = r#"
+function namedInterceptor(chat) {
+  setTimeout(() => {
+    chat.push({ is_user: false, is_system: false, mes: "42" });
+  }, 0);
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+    let directory = tempdir().unwrap();
+    let plugin = write_test_bridge_plugin(
+        &directory.path().join("plugin"),
+        "org.stcli.immediate-timer-test",
+        source,
+    );
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&plugin)
+        .unwrap();
+    let receipt = PluginHost::new(PluginLimits::default())
+        .execute(
+            &installed,
+            &authorize(&installed),
+            interceptor_input(&installed, EntityId::new()),
+        )
+        .unwrap();
+
+    match &receipt.effects[0] {
+        PluginEffect::PromptRewrite { messages } => assert_eq!(messages[0].content, "42"),
+        effect => panic!("expected PromptRewrite, got {effect:?}"),
+    }
+}
+
+#[test]
+fn delayed_timer_rejected_with_warning() {
+    let source = r#"
+for (let attempt = 0; attempt < 2; attempt += 1) {
+  try {
+    setTimeout(() => {}, 100);
+  } catch {}
+}
+function namedInterceptor() {}
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+    let directory = tempdir().unwrap();
+    let plugin = write_test_bridge_plugin(
+        &directory.path().join("plugin"),
+        "org.stcli.delayed-timer-test",
+        source,
+    );
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&plugin)
+        .unwrap();
+    let receipt = PluginHost::new(PluginLimits::default())
+        .execute(
+            &installed,
+            &authorize(&installed),
+            interceptor_input(&installed, EntityId::new()),
+        )
+        .unwrap();
+
+    assert_eq!(receipt.script_logs.len(), 1);
+    assert_eq!(receipt.script_logs[0].level, "warn");
+    assert!(
+        receipt.script_logs[0]
+            .message
+            .contains("`setTimeout` with delay is unsupported")
+    );
+}
+
+#[test]
+fn abandoned_async_work_records_warning_and_no_effect() {
+    let source = r#"
+function namedInterceptor() {
+  return new Promise(() => {});
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+    let directory = tempdir().unwrap();
+    let plugin = write_test_bridge_plugin(
+        &directory.path().join("plugin"),
+        "org.stcli.async-timeout-test",
+        source,
+    );
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&plugin)
+        .unwrap();
+    let receipt = PluginHost::new(PluginLimits::default())
+        .execute(
+            &installed,
+            &authorize(&installed),
+            interceptor_input(&installed, EntityId::new()),
+        )
+        .unwrap();
+
+    assert!(receipt.effects.is_empty());
+    assert_ne!(receipt.prng_seed, Some(0));
+    assert_eq!(receipt.script_logs.len(), 1);
+    assert!(
+        receipt.script_logs[0]
+            .message
+            .contains("async callback exceeded 64 microtasks")
+    );
 }

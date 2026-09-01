@@ -1,6 +1,21 @@
+//! SillyTavern Extension compatibility runtime.
+//!
+//! ## Determinism and async bounds
+//!
+//! The st-bridge runtime provides bounded nondeterminism to maintain STcli's Replay guarantee:
+//! - `Math.random()` uses a seeded Xoshiro128++ PRNG whose seed is recorded in the Turn Trace.
+//! - Promises drain through a bounded microtask loop; unsettled work is abandoned with a
+//!   Compatibility Warning.
+//! - Zero-delay `setTimeout` and `setInterval` calls resolve as microtasks; delayed timers are
+//!   rejected with a one-time warning.
+//! - Memory, stack, and execution step budgets apply to the persistent context.
+//!
+//! Replay re-applies recorded effects without re-executing the JavaScript.
+
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
     rc::Rc,
     sync::{OnceLock, mpsc},
 };
@@ -26,6 +41,28 @@ struct ContextKey {
     component_sha256: ContentHash,
 }
 
+impl ContextKey {
+    fn from_request(installed: &InstalledPlugin, input: &PluginInput) -> Result<Self, PluginError> {
+        let session_id = input
+            .session
+            .get("session_id")
+            .and_then(JsonValue::as_str)
+            .and_then(|value| value.parse::<EntityId>().ok())
+            .ok_or(PluginError::StBridgeSessionIdentity)?;
+        Ok(Self {
+            session_id,
+            plugin_id: installed.manifest.id.clone(),
+            component_sha256: installed.manifest.component_sha256.clone(),
+        })
+    }
+
+    fn prng_seed(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish().max(1)
+    }
+}
+
 struct BridgeContext {
     context: Context,
     listeners: Rc<RefCell<HashMap<String, Vec<Listener>>>>,
@@ -34,6 +71,48 @@ struct BridgeContext {
     last_branch_id: Rc<RefCell<Option<EntityId>>>,
     app_ready_emitted: Rc<Cell<bool>>,
     abandoned: Rc<Cell<bool>>,
+    prng_seed: u64,
+    logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
+}
+
+struct Xoshiro128PlusPlus {
+    state: [u32; 4],
+}
+
+impl Xoshiro128PlusPlus {
+    fn from_seed(seed: u64) -> Self {
+        let lower = seed as u32;
+        let upper = (seed >> 32) as u32;
+        Self {
+            state: [
+                lower,
+                upper,
+                lower.wrapping_add(0x9E37_79B9),
+                upper.wrapping_add(0x9E37_79B9),
+            ],
+        }
+    }
+
+    fn next(&mut self) -> u32 {
+        let result = self.state[0]
+            .wrapping_add(self.state[3])
+            .rotate_left(7)
+            .wrapping_add(self.state[0]);
+        let t = self.state[1] << 9;
+        self.state[2] ^= self.state[0];
+        self.state[3] ^= self.state[1];
+        self.state[1] ^= self.state[2];
+        self.state[0] ^= self.state[3];
+        self.state[2] ^= t;
+        self.state[3] = self.state[3].rotate_left(11);
+        result
+    }
+
+    fn next_f64(&mut self) -> f64 {
+        let upper = (self.next() >> 5) as u64;
+        let lower = (self.next() >> 6) as u64;
+        ((upper << 26) | lower) as f64 / (1_u64 << 53) as f64
+    }
 }
 
 struct Request {
@@ -91,6 +170,9 @@ pub(crate) fn execute(
 impl Worker {
     fn run(&mut self, receiver: mpsc::Receiver<Request>) {
         while let Ok(request) = receiver.recv() {
+            let timeout_seed = ContextKey::from_request(&request.installed, &request.input)
+                .ok()
+                .map(|key| key.prng_seed());
             let result = self.execute(
                 request.installed,
                 request.input,
@@ -104,6 +186,7 @@ impl Worker {
                         level: "warn".to_owned(),
                         message: "st-bridge async callback exceeded 64 microtasks; dispatch effects were discarded".to_owned(),
                     }],
+                    prng_seed: timeout_seed,
                 }),
                 other => other,
             };
@@ -118,20 +201,10 @@ impl Worker {
         source: &str,
         limits: ScriptLimits,
     ) -> Result<ScriptOutcome, PluginError> {
-        let session_id = input
-            .session
-            .get("session_id")
-            .and_then(JsonValue::as_str)
-            .and_then(|value| value.parse::<EntityId>().ok())
-            .ok_or(PluginError::StBridgeSessionIdentity)?;
-        let key = ContextKey {
-            session_id,
-            plugin_id: installed.manifest.id.clone(),
-            component_sha256: installed.manifest.component_sha256.clone(),
-        };
+        let key = ContextKey::from_request(&installed, &input)?;
         if !self.contexts.contains_key(&key) {
             let context =
-                BridgeContext::new(&installed.manifest.id, source, &input.context, limits)?;
+                BridgeContext::new(&key, &installed.manifest.id, source, &input.context, limits)?;
             self.contexts.insert(key.clone(), context);
         }
 
@@ -142,7 +215,8 @@ impl Worker {
         if context.abandoned.get() {
             return Ok(ScriptOutcome {
                 effects: Vec::new(),
-                logs: Vec::new(),
+                logs: context.take_logs(),
+                prng_seed: Some(context.prng_seed),
             });
         }
 
@@ -261,20 +335,9 @@ impl Worker {
                             map_caught(&ctx, &installed.manifest.id, &context.ticks, error, false)
                         })?;
 
-                    // Settle Promise; the mutable chat argument is authoritative.
-                    if let Some(promise) = result_value.as_promise() {
-                        let mut jobs = 0;
-                        loop {
-                            if jobs >= limits.microtask_jobs {
-                                context.abandoned.set(true);
-                                return Err(PluginError::StBridgeAsyncTimeout);
-                            }
-                            if ctx.execute_pending_job() {
-                                jobs += 1;
-                            } else {
-                                break;
-                            }
-                        }
+                    let promise = result_value.as_promise();
+                    drain_pending_jobs(&ctx, limits.microtask_jobs, &context.abandoned)?;
+                    if let Some(promise) = promise {
                         match promise.state() {
                             PromiseState::Resolved => {
                                 let result = promise.result::<Value>().ok_or_else(|| {
@@ -330,7 +393,8 @@ impl Worker {
 
                 Ok(ScriptOutcome {
                     effects: vec![PluginEffect::PromptRewrite { messages }],
-                    logs: Vec::new(),
+                    logs: context.take_logs(),
+                    prng_seed: Some(context.prng_seed),
                 })
             }
             PluginEvent::ChatCompletionPromptReady => {
@@ -347,7 +411,8 @@ impl Worker {
                 if original == modified {
                     Ok(ScriptOutcome {
                         effects: Vec::new(),
-                        logs: Vec::new(),
+                        logs: context.take_logs(),
+                        prng_seed: Some(context.prng_seed),
                     })
                 } else {
                     Ok(ScriptOutcome {
@@ -360,7 +425,8 @@ impl Worker {
                                 })
                                 .collect(),
                         }],
-                        logs: Vec::new(),
+                        logs: context.take_logs(),
+                        prng_seed: Some(context.prng_seed),
                     })
                 }
             }
@@ -385,7 +451,8 @@ impl Worker {
                     effects: vec![PluginEffect::Observe {
                         value: serde_json::json!({}),
                     }],
-                    logs: Vec::new(),
+                    logs: context.take_logs(),
+                    prng_seed: Some(context.prng_seed),
                 })
             }
             _ => Err(PluginError::UnsupportedStBridgeEvent),
@@ -395,6 +462,7 @@ impl Worker {
 
 impl BridgeContext {
     fn new(
+        context_key: &ContextKey,
         plugin_id: &str,
         source: &str,
         initial_snapshot: &JsonValue,
@@ -428,16 +496,25 @@ impl BridgeContext {
         let last_branch_id = Rc::new(RefCell::new(None));
         let app_ready_emitted = Rc::new(Cell::new(false));
         let abandoned = Rc::new(Cell::new(false));
+        let prng_seed = context_key.prng_seed();
+        let prng = Rc::new(RefCell::new(Xoshiro128PlusPlus::from_seed(prng_seed)));
+        let next_timer_id = Rc::new(Cell::new(1));
+        let logs = Rc::new(RefCell::new(Vec::new()));
+        let warned_delayed_timer = Rc::new(Cell::new(false));
         context.with(|ctx| {
-            install_globals(&ctx, Rc::clone(&listeners), Rc::clone(&snapshot))
-                .map_err(|error| PluginError::ScriptRuntime(error.to_string()))?;
+            install_globals(
+                &ctx,
+                Rc::clone(&listeners),
+                Rc::clone(&snapshot),
+                prng,
+                next_timer_id,
+                Rc::clone(&logs),
+                warned_delayed_timer,
+            )
+            .map_err(|error| PluginError::ScriptRuntime(error.to_string()))?;
             let globals = ctx.globals();
             globals
                 .remove("eval")
-                .map_err(|error| PluginError::ScriptRuntime(error.to_string()))?;
-            globals
-                .get::<_, Object>("Math")
-                .and_then(|math| math.remove("random"))
                 .map_err(|error| PluginError::ScriptRuntime(error.to_string()))?;
             let promise = Module::evaluate(ctx.clone(), plugin_id, source).map_err(|error| {
                 PluginError::StBridgeInitialization {
@@ -464,7 +541,13 @@ impl BridgeContext {
             last_branch_id,
             app_ready_emitted,
             abandoned,
+            prng_seed,
+            logs,
         })
+    }
+
+    fn take_logs(&self) -> Vec<crate::ScriptLog> {
+        std::mem::take(&mut *self.logs.borrow_mut())
     }
 
     fn dispatch(
@@ -520,23 +603,21 @@ impl BridgeContext {
                         .catch(&ctx)
                         .map_err(|error| map_caught(&ctx, plugin_id, &self.ticks, error, false))?
                 };
-                if let Some(promise) = result.as_promise() {
-                    let mut jobs = 0;
-                    loop {
-                        if promise.state() != PromiseState::Pending {
-                            break;
+                let promise = result.as_promise();
+                drain_pending_jobs(&ctx, limits.microtask_jobs, &self.abandoned)?;
+                if let Some(promise) = promise {
+                    match promise.state() {
+                        PromiseState::Resolved => {}
+                        PromiseState::Rejected => {
+                            return Err(PluginError::StBridgeHandler {
+                                plugin: plugin_id.to_owned(),
+                                message: "listener promise rejected".to_owned(),
+                            });
                         }
-                        if jobs >= limits.microtask_jobs || !ctx.execute_pending_job() {
+                        PromiseState::Pending => {
                             self.abandoned.set(true);
                             return Err(PluginError::StBridgeAsyncTimeout);
                         }
-                        jobs += 1;
-                    }
-                    if promise.state() == PromiseState::Rejected {
-                        return Err(PluginError::StBridgeHandler {
-                            plugin: plugin_id.to_owned(),
-                            message: "listener promise rejected".to_owned(),
-                        });
                     }
                 }
             }
@@ -551,10 +632,67 @@ impl BridgeContext {
     }
 }
 
+fn drain_pending_jobs(
+    ctx: &Ctx<'_>,
+    max_jobs: usize,
+    abandoned: &Cell<bool>,
+) -> Result<(), PluginError> {
+    let mut jobs = 0;
+    while ctx.execute_pending_job() {
+        jobs += 1;
+        if jobs >= max_jobs {
+            abandoned.set(true);
+            return Err(PluginError::StBridgeAsyncTimeout);
+        }
+    }
+    Ok(())
+}
+
+fn install_timer<'js>(
+    ctx: &Ctx<'js>,
+    globals: &Object<'js>,
+    name: &'static str,
+    next_timer_id: Rc<Cell<u32>>,
+    logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
+    warned_delayed_timer: Rc<Cell<bool>>,
+) -> rquickjs::Result<()> {
+    let schedule: Function = ctx.eval("(callback) => Promise.resolve().then(callback)")?;
+    globals.set(
+        name,
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, callback: Function<'js>, delay: Option<i32>| {
+                if delay.unwrap_or(0) > 0 {
+                    if !warned_delayed_timer.replace(true) {
+                        logs.borrow_mut().push(crate::ScriptLog {
+                            level: "warn".to_owned(),
+                            message: format!(
+                                "`{name}` with delay is unsupported; use `Promise.resolve()` for deferred work"
+                            ),
+                        });
+                    }
+                    return Err(Exception::throw_type(
+                        &ctx,
+                        &format!("{name} with delay is unsupported"),
+                    ));
+                }
+                let _: Value = schedule.call((callback,))?;
+                let id = next_timer_id.get();
+                next_timer_id.set(id.wrapping_add(1));
+                Ok(id)
+            },
+        )?,
+    )
+}
+
 fn install_globals<'js>(
     ctx: &Ctx<'js>,
     listeners: Rc<RefCell<HashMap<String, Vec<Listener>>>>,
     snapshot: Rc<RefCell<JsonValue>>,
+    prng: Rc<RefCell<Xoshiro128PlusPlus>>,
+    next_timer_id: Rc<Cell<u32>>,
+    logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
+    warned_delayed_timer: Rc<Cell<bool>>,
 ) -> rquickjs::Result<()> {
     let globals = ctx.globals();
     let event_types = Object::new(ctx.clone())?;
@@ -602,7 +740,6 @@ fn install_globals<'js>(
                         .push(Persistent::save(&ctx, listener));
                     Ok(())
                 } else if render_events.contains(&event.as_str()) {
-                    // Accept render events but discard their listeners (headless no-op)
                     Ok(())
                 } else {
                     Err(Exception::throw_type(&ctx, "unsupported event type"))
@@ -627,6 +764,32 @@ fn install_globals<'js>(
     globals.set("event_types", event_types)?;
     globals.set("eventSource", event_source)?;
     globals.set("SillyTavern", silly_tavern)?;
+
+    let math: Object = globals.get("Math")?;
+    math.set(
+        "random",
+        Function::new(ctx.clone(), move || prng.borrow_mut().next_f64())?,
+    )?;
+
+    install_timer(
+        ctx,
+        &globals,
+        "setTimeout",
+        Rc::clone(&next_timer_id),
+        Rc::clone(&logs),
+        Rc::clone(&warned_delayed_timer),
+    )?;
+    install_timer(
+        ctx,
+        &globals,
+        "setInterval",
+        next_timer_id,
+        logs,
+        warned_delayed_timer,
+    )?;
+
+    globals.set("clearTimeout", Function::new(ctx.clone(), || ())?)?;
+    globals.set("clearInterval", Function::new(ctx.clone(), || ())?)?;
     Ok(())
 }
 
@@ -707,5 +870,21 @@ fn map_caught<'js>(
             plugin: plugin_id.to_owned(),
             message,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Xoshiro128PlusPlus;
+
+    #[test]
+    fn seeded_prng_replays_to_same_values() {
+        let recorded_seed = 0x0123_4567_89ab_cdef;
+        let mut original = Xoshiro128PlusPlus::from_seed(recorded_seed);
+        let expected = (0..5).map(|_| original.next_f64()).collect::<Vec<_>>();
+        let mut replay = Xoshiro128PlusPlus::from_seed(recorded_seed);
+        let actual = (0..5).map(|_| replay.next_f64()).collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
     }
 }

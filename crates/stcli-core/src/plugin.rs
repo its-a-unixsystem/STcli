@@ -218,6 +218,8 @@ pub struct PluginReceipt {
     pub fuel_consumed: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub script_logs: Vec<ScriptLog>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prng_seed: Option<u64>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ScriptLog {
@@ -315,7 +317,7 @@ impl PluginHost {
         if digest != installed.manifest.component_sha256 || digest != grant.component_sha256 {
             return Err(PluginError::DigestMismatch);
         }
-        let (effects, fuel_consumed, script_logs) = match installed.manifest.runtime {
+        let (effects, fuel_consumed, script_logs, prng_seed) = match installed.manifest.runtime {
             PluginRuntime::Wasm => {
                 let (output_json, fuel_consumed) =
                     self.execute_wasm(&component_bytes, &input_json)?;
@@ -323,7 +325,7 @@ impl PluginHost {
                     return Err(PluginError::OutputLimit);
                 }
                 let output = serde_json::from_str::<PluginOutput>(&output_json)?;
-                (output.effects, fuel_consumed, Vec::new())
+                (output.effects, fuel_consumed, Vec::new(), None)
             }
             PluginRuntime::Script => {
                 #[cfg(feature = "scripting")]
@@ -343,7 +345,7 @@ impl PluginHost {
                     if output_json.len() > self.limits.output_bytes {
                         return Err(PluginError::OutputLimit);
                     }
-                    (outcome.effects, 0, outcome.logs)
+                    (outcome.effects, 0, outcome.logs, outcome.prng_seed)
                 }
                 #[cfg(not(feature = "scripting"))]
                 return Err(PluginError::ScriptingUnavailable(
@@ -363,7 +365,7 @@ impl PluginHost {
                     if output_json.len() > self.limits.output_bytes {
                         return Err(PluginError::OutputLimit);
                     }
-                    (outcome.effects, 0, outcome.logs)
+                    (outcome.effects, 0, outcome.logs, outcome.prng_seed)
                 }
                 #[cfg(not(feature = "scripting"))]
                 return Err(PluginError::ScriptingUnavailable(
@@ -383,6 +385,7 @@ impl PluginHost {
             effects,
             fuel_consumed,
             script_logs,
+            prng_seed,
         })
     }
 
