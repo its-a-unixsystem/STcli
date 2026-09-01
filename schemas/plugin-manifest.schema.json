@@ -27,7 +27,7 @@
     "id": { "type": "string", "pattern": "^[a-z0-9-]+(?:\\.[a-z0-9-]+)*$" },
     "version": { "type": "string", "minLength": 1 },
     "engine": { "type": "string", "minLength": 1 },
-    "runtime": { "enum": ["wasm", "script"] },
+    "runtime": { "enum": ["wasm", "script", "st-bridge"] },
     "component": { "type": "string", "minLength": 1 },
     "component_sha256": { "$ref": "#/$defs/hash" },
     "dependencies": {
@@ -46,7 +46,7 @@
     "subscriptions": {
       "type": "array",
       "uniqueItems": true,
-      "items": { "enum": ["pre-lore", "pre-prompt", "pre-request", "post-commit", "inspect-artifact"] }
+      "items": { "enum": ["pre-lore", "pre-prompt", "pre-request", "post-commit", "chat-completion-prompt-ready", "inspect-artifact", "generate-interceptor", "st-bridge-lifecycle"] }
     },
     "prompt_slots": {
       "type": "array",
@@ -85,7 +85,8 @@
       }
     },
     "before": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
-    "after": { "type": "array", "uniqueItems": true, "items": { "type": "string" } }
+    "after": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+    "generate_interceptor": { "type": "string", "minLength": 1 }
   },
   "$defs": {
     "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }

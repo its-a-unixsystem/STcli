@@ -266,6 +266,8 @@ fn hook_name(event: PluginEvent) -> &'static str {
         PluginEvent::Command => "command",
         PluginEvent::ChatCompletionPromptReady => "chatCompletionPromptReady",
         PluginEvent::InspectArtifact => "inspectArtifact",
+        PluginEvent::GenerateInterceptor => "generateInterceptor",
+        PluginEvent::StBridgeLifecycle => "stBridgeLifecycle",
     }
 }
 

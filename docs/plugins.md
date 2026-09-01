@@ -22,12 +22,13 @@ This page is the complete guide. It has an introduction, two tutorials, a packag
 
 A plugin is a directory. The directory holds a `manifest.json` file and one component file. The component file is the code the engine runs.
 
-STcli supports two runtimes for the component:
+STcli supports three runtimes for the component:
 
 - **Wasm**: A WebAssembly Component Model binary (`.wasm`). This is the default runtime. It has access to every effect type.
 - **Script**: A JavaScript file (`.js`) that runs in a sandboxed QuickJS engine. It is quick to write and needs no build step. It can contribute to the prompt, write its own state, and log messages.
+- **st-bridge Extension**: A SillyTavern-compatible JavaScript Extension (`.js`) run headlessly in a persistent QuickJS context. It is an **Extension**, not a Plugin: it uses the normalized Plugin manifest and grants, but its sanctioned mutable surfaces are the ST-shaped `generate_interceptor` chat array and `CHAT_COMPLETION_PROMPT_READY` payload. `getContext()` remains a frozen snapshot.
 
-Both runtimes use the same manifest, the same capability model, and the same effect types. The runtime only changes how you write the code.
+Both Plugin runtimes use the same manifest, capability model, and effect types. The `st-bridge` runtime is an Extension compatibility surface with recorded prompt rewrites; Replay and Rerun reuse those recorded effects without executing JavaScript.
 
 A plugin can do these things when its manifest requests them and the session grants them:
 
@@ -91,9 +92,8 @@ Every plugin has a `manifest.json` file. The [manifest schema](../schemas/plugin
 | `schema` | Always `stcli.plugin-manifest/v1`. |
 | `id` | The plugin identifier. Lowercase letters, digits, and `-`, with `.` between parts. For example `org.example.my-plugin`. |
 | `version` | A semantic version, such as `1.0.0`. |
-| `engine` | A semantic version requirement for the engine, such as `>=0.1.0, <0.2.0`. |
-| `runtime` | `wasm` (default) or `script`. Omit it for a Wasm plugin. |
-| `component` | The component filename. A `.wasm` file for Wasm, or a `.js` file for Script. |
+| `runtime` | `wasm` (default), `script`, or `st-bridge`. The latter runs a SillyTavern Extension headlessly. |
+| `component` | The component filename. A `.wasm` file for Wasm, or a `.js` file for Script/st-bridge. |
 | `component_sha256` | The SHA-256 digest of the component file, as `sha256:<64 hex digits>`. |
 | `dependencies` | Other plugins this one needs. An empty array when there are none. |
 | `license` | An SPDX license expression, such as `MIT`. |
@@ -105,6 +105,7 @@ Every plugin has a `manifest.json` file. The [manifest schema](../schemas/plugin
 | `requested_capabilities` | The capabilities the plugin asks for. See [Capabilities](#capabilities). |
 | `before` | Plugin identifiers this plugin must run before. |
 | `after` | Plugin identifiers this plugin must run after. |
+| `generate_interceptor` | Optional JavaScript global function name for an `st-bridge` Extension. It requires the `generate-interceptor` subscription and `contribute-prompt` grant. |
 
 The engine validates the component digest before it runs the component. When the file and the digest do not match, the engine rejects the plugin.
 
@@ -362,9 +363,12 @@ The engine runs a hook only when the plugin subscribes to its event in the manif
 | `pre-request` | `preRequest` | Before the provider request is built. Only here can a Wasm plugin abort. |
 | `post-commit` | `postCommit` | After the turn is committed. Read-only: only `observe` effects are allowed. |
 | `inspect-artifact` | `inspectArtifact` | Outside a Session, with a decoded Artifact Revision in `input.artifact`. Only one `output` effect is allowed. |
+| `chat-completion-prompt-ready` | `chatCompletionPromptReady` | `st-bridge` only: receives mutable `{chat, dryRun}` and its read-back becomes the prompt. |
+| `generate-interceptor` | `generateInterceptor` | `st-bridge` only: the manifest-named global receives the ST-shaped mutable chat array. |
+| `st-bridge-lifecycle` | `stBridgeLifecycle` | `st-bridge` only: observes ordered lifecycle batches. |
 | (command) | `command` | When a user runs a plugin command. Only `observe` and `state-write` effects are allowed. |
 
-When a script plugin subscribes to an event but does not export its function, the engine returns an error.
+The bridge exposes the verified SillyTavern event literals through `event_types`: `APP_READY`, `CHAT_CHANGED`, `GENERATION_STARTED`, `MESSAGE_SENT`, `MESSAGE_RECEIVED`, `GENERATION_ENDED`, and `CHAT_COMPLETION_PROMPT_READY`. Render events (`USER_MESSAGE_RENDERED`, `CHARACTER_MESSAGE_RENDERED`, and `TOOL_CALLS_RENDERED`) accept registrations but are headless no-ops. Bridge callbacks run sequentially; Promise callbacks are drained for at most 64 QuickJS microtask jobs. A still-pending callback is abandoned and its effects discarded.
 
 ### The plugin input
 

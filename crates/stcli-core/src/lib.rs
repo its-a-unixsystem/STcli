@@ -79,7 +79,8 @@ pub use plugin::{
     ArtifactInspectorRegistration, InstalledPlugin, PluginCapability, PluginDependency,
     PluginEffect, PluginError, PluginEvent, PluginGrant, PluginHost, PluginInput, PluginLimits,
     PluginManifest, PluginOutput, PluginReceipt, PluginRegistry, PluginRuntime, PromptContribution,
-    PromptSlot, ScriptLimits, ScriptLog, order_plugins, plugin_digest, validate_recorded_receipt,
+    PromptRewriteMessage, PromptSlot, ScriptLimits, ScriptLog, order_plugins, plugin_digest,
+    validate_recorded_receipt,
 };
 pub use profile::{
     CompatibilityOutcome, CompatibilityProfile, CompatibilitySubject, CompatibilitySubjectKind,

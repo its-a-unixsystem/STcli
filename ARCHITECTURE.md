@@ -154,6 +154,8 @@ Both Dry Run and live Generation Attempts go through a unified preparation path 
 
 6. **Output formatting**: The provider client formats the assembled prompt for the target endpoint. Chat Completion sends role-tagged messages. Text Completion joins the segments into one flat string with instruct sequences and a story block (`text_completion.rs`). The provider profile `format_mode` field selects the path.
 
+7. **SillyTavern Extension bridge**: For Chat Completion preparation, each adopted `st-bridge` Extension runs in topological order. The persistent context emits `APP_READY` once, then `CHAT_CHANGED` when the Branch changes. Immediately before the provider request it emits `GENERATION_STARTED`, optional `MESSAGE_SENT`, invokes the named `generate_interceptor`, and emits `CHAT_COMPLETION_PROMPT_READY`; mutable chat read-back from both surfaces is applied before pruning and request construction. After successful generation, the bridge emits `MESSAGE_RECEIVED` followed by `GENERATION_ENDED` and records the lifecycle receipt atomically with `attempt.completed`. `USER_MESSAGE_RENDERED`, `CHARACTER_MESSAGE_RENDERED`, and `TOOL_CALLS_RENDERED` are registration-safe headless no-ops. Replay and Rerun preparation consume recorded prompt/effect receipts and do not execute Extension JavaScript.
+
 See [`docs/presets.md`](docs/presets.md) for full details on preset semantics and field classifications. See [`docs/text-completion.md`](docs/text-completion.md) for the Text Completion format.
 
 ## Plugin system

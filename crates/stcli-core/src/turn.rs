@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     sync::Arc,
 };
 
@@ -15,11 +15,11 @@ use crate::{
     LoreEngine, LoreError, LorePosition, LoreResult, LoreSettings, MacroContext, MacroEngine,
     MacroError, MacroEvaluation, MacroWarning, OpenAiProvider, PluginEffect, PluginError,
     PluginEvent, PluginGrant, PluginHost, PluginInput, PluginReceipt, PluginRegistry,
-    PluginRuntime, PromptContribution, PromptError, PromptPreset, PromptPruning, PromptSegment,
-    PromptSlot, ProviderError, ProviderEvent, ProviderResult, RegexPlacement, RegexScript,
-    RegexScriptApplication, RenderedPromptContent, SessionConfigurationRecord, SessionError,
-    StateError, StateMutation, StateTransaction, Store, TokenizerError, TokenizerId,
-    apply_prompt_preset,
+    PluginRuntime, PromptContribution, PromptError, PromptPreset, PromptPruning,
+    PromptRewriteMessage, PromptSegment, PromptSlot, ProviderError, ProviderEvent, ProviderResult,
+    RegexPlacement, RegexScript, RegexScriptApplication, RenderedPromptContent,
+    SessionConfigurationRecord, SessionError, StateError, StateMutation, StateTransaction, Store,
+    TokenizerError, TokenizerId, apply_prompt_preset,
     artifact::ArtifactError,
     canonical_json, insert_in_chat_segments,
     lore::parse_lore_entries,
@@ -302,6 +302,7 @@ impl Store {
         generation_type: GenerationType,
         excluded_turn_id: Option<EntityId>,
         parent_candidate: Option<(EntityId, String)>,
+        dry_run: bool,
     ) -> Result<TurnPreparation, TurnError> {
         let preset = configuration
             .configuration
@@ -374,6 +375,7 @@ impl Store {
             &effective_generation_settings,
             &regex_scripts,
             text_prefill,
+            dry_run,
         )?;
         if let Some((candidate_id, content)) = parent_candidate {
             prompt_plan.parent_candidate_id = Some(candidate_id);
@@ -525,6 +527,7 @@ impl Store {
             GenerationType::Normal,
             None,
             None,
+            true,
         )?;
         Ok(Self::dry_run_result(
             session_id,
@@ -551,6 +554,7 @@ impl Store {
             GenerationType::Normal,
             None,
             None,
+            false,
         )?;
         let (turn, attempt) = self.begin_turn(
             session_id,
@@ -586,19 +590,22 @@ impl Store {
             .prompt_plan
             .parent_candidate_id
             .zip(previous.prompt_plan.continuation_prefix.clone());
+        let user = if previous.prompt_plan.generation_type == GenerationType::Continue {
+            ""
+        } else {
+            &turn.user_content
+        };
+        let excluded = (previous.prompt_plan.generation_type != GenerationType::Continue)
+            .then_some(turn.turn_id);
         let preparation = self.prepare_turn(
             turn.session_id,
             turn.branch_id,
             &configuration,
-            if previous.prompt_plan.generation_type == GenerationType::Continue {
-                ""
-            } else {
-                &turn.user_content
-            },
+            user,
             previous.prompt_plan.generation_type,
-            (previous.prompt_plan.generation_type != GenerationType::Continue)
-                .then_some(turn.turn_id),
+            excluded,
             parent_candidate,
+            false,
         )?;
         let attempt = self.begin_attempt(
             &turn,
@@ -678,6 +685,7 @@ impl Store {
             GenerationType::Regenerate,
             Some(turn_id),
             None,
+            true,
         )?;
         Ok(Self::dry_run_result(
             turn.session_id,
@@ -700,6 +708,7 @@ impl Store {
             GenerationType::Swipe,
             Some(turn_id),
             None,
+            true,
         )?;
         Ok(Self::dry_run_result(
             turn.session_id,
@@ -728,6 +737,7 @@ impl Store {
             GenerationType::Continue,
             None,
             Some((parent_id, parent.content)),
+            true,
         )?;
         Ok(Self::dry_run_result(
             turn.session_id,
@@ -745,7 +755,6 @@ impl Store {
         self.generate_alternative(turn_id, GenerationType::Regenerate, on_event)
             .await
     }
-
     pub async fn swipe_turn(
         &mut self,
         turn_id: EntityId,
@@ -778,6 +787,7 @@ impl Store {
             GenerationType::Continue,
             None,
             Some((parent_id, parent.content)),
+            false,
         )?;
         let attempt = self.begin_attempt(&turn, config_hash, None, preparation)?;
         self.execute_attempt(turn, attempt, configuration, &mut on_event)
@@ -967,6 +977,7 @@ impl Store {
             generation_type,
             Some(turn_id),
             None,
+            false,
         )?;
         let attempt = self.begin_attempt(&turn, config_hash, None, preparation)?;
         self.execute_attempt(turn, attempt, configuration, &mut on_event)
@@ -1438,7 +1449,8 @@ impl Store {
                         PluginEffect::Observe { .. }
                         | PluginEffect::Output { .. }
                         | PluginEffect::RegisterCommand { .. }
-                        | PluginEffect::Prompt { .. } => {}
+                        | PluginEffect::Prompt { .. }
+                        | PluginEffect::PromptRewrite { .. } => {}
                     }
                 }
                 context.plugins.insert(installed.manifest.id.clone());
@@ -1459,6 +1471,7 @@ impl Store {
         session_chat: &[ChatMessage],
         tokenizer: TokenizerId,
         segments: &mut Vec<PromptSegment>,
+        dry_run: bool,
     ) -> Result<Vec<PluginReceipt>, TurnError> {
         if configuration.configuration.plugins.is_empty() {
             return Ok(Vec::new());
@@ -1467,61 +1480,86 @@ impl Store {
         let host = PluginHost::new(Default::default());
         let mut receipts = Vec::new();
         for installed in ordered {
-            if installed.manifest.runtime != PluginRuntime::StBridge
-                || !installed
-                    .manifest
-                    .subscriptions
-                    .contains(&PluginEvent::ChatCompletionPromptReady)
-            {
+            if installed.manifest.runtime != PluginRuntime::StBridge {
                 continue;
             }
             let grant = &grants[&installed.manifest.id];
-            let bridge_context = if grant
+            let context = if grant
                 .capabilities
                 .contains(&crate::PluginCapability::ReadSession)
             {
-                json!({
-                    "name2": character_name,
-                    "chat": session_chat,
-                })
+                json!({"name2": character_name, "chat": session_chat})
             } else {
                 Value::Null
             };
-            let current_messages = segments
-                .iter()
-                .map(|segment| ChatMessage {
-                    role: segment.role,
-                    content: segment.content.clone(),
-                })
-                .collect::<Vec<_>>();
-            let receipt = host.execute(
-                &installed,
-                grant,
-                PluginInput {
-                    event: PluginEvent::ChatCompletionPromptReady,
-                    plugin_id: installed.manifest.id.clone(),
-                    settings: grant.settings.clone(),
-                    context: bridge_context,
-                    payload: json!({"chat": current_messages}),
-                    artifact: Value::Null,
-                    state: Value::Null,
-                    session: json!({
-                        "session_id": session_id,
-                        "branch_id": branch_id,
-                        "generation_type": generation_type,
-                    }),
-                },
-            )?;
-            let contributions = receipt
-                .effects
-                .iter()
-                .filter_map(|effect| match effect {
-                    PluginEffect::Prompt { contribution } => Some(contribution.clone()),
-                    _ => None,
-                })
-                .collect();
-            inject_plugin_contributions(tokenizer, segments, contributions)?;
-            receipts.push(receipt);
+            let session = json!({"session_id": session_id, "branch_id": branch_id, "generation_type": generation_type, "dry_run": dry_run});
+            if installed
+                .manifest
+                .subscriptions
+                .contains(&PluginEvent::GenerateInterceptor)
+            {
+                let chat = segments.iter().enumerate().map(|(index, segment)| json!({
+                    "name": if segment.role == ChatRole::User { "User" } else { character_name },
+                    "is_user": segment.role == ChatRole::User, "is_system": segment.role == ChatRole::System,
+                    "mes": segment.content, "extra": {}, "index": index
+                })).collect::<Vec<_>>();
+                let receipt = host.execute(
+                    &installed,
+                    grant,
+                    PluginInput {
+                        event: PluginEvent::GenerateInterceptor,
+                        plugin_id: installed.manifest.id.clone(),
+                        settings: grant.settings.clone(),
+                        context: context.clone(),
+                        payload: json!({"chat": chat, "has_user_message": true}),
+                        artifact: Value::Null,
+                        state: Value::Null,
+                        session: session.clone(),
+                    },
+                )?;
+                if let Some(PluginEffect::PromptRewrite { messages }) = receipt.effects.first() {
+                    apply_st_bridge_rewrite(
+                        tokenizer,
+                        segments,
+                        &installed.manifest.id,
+                        messages.clone(),
+                    );
+                }
+                receipts.push(receipt);
+            }
+            if installed
+                .manifest
+                .subscriptions
+                .contains(&PluginEvent::ChatCompletionPromptReady)
+            {
+                let current = segments
+                    .iter()
+                    .map(|segment| json!({"role": segment.role, "content": segment.content}))
+                    .collect::<Vec<_>>();
+                let receipt = host.execute(
+                    &installed,
+                    grant,
+                    PluginInput {
+                        event: PluginEvent::ChatCompletionPromptReady,
+                        plugin_id: installed.manifest.id.clone(),
+                        settings: grant.settings.clone(),
+                        context: context.clone(),
+                        payload: json!({"chat": current, "dryRun": dry_run}),
+                        artifact: Value::Null,
+                        state: Value::Null,
+                        session: session.clone(),
+                    },
+                )?;
+                if let Some(PluginEffect::PromptRewrite { messages }) = receipt.effects.first() {
+                    apply_st_bridge_rewrite(
+                        tokenizer,
+                        segments,
+                        &installed.manifest.id,
+                        messages.clone(),
+                    );
+                }
+                receipts.push(receipt);
+            }
         }
         Ok(receipts)
     }
@@ -1588,6 +1626,60 @@ impl Store {
         }
         Ok(receipts)
     }
+    fn run_st_bridge_lifecycle(
+        &self,
+        attempt: &AttemptProjection,
+        session_id: EntityId,
+        branch_id: EntityId,
+        content: &str,
+    ) -> Result<Vec<PluginReceipt>, TurnError> {
+        let configuration = self
+            .configuration(&attempt.config_hash)?
+            .ok_or_else(|| TurnError::ConfigurationNotFound(attempt.config_hash.clone()))?;
+        if configuration.configuration.plugins.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (ordered, grants) = self.configured_runtime_plugins(&configuration)?;
+        let host = PluginHost::new(Default::default());
+        let mut receipts = Vec::new();
+        let mut chat = attempt.prompt_plan.messages.clone();
+        chat.push(ChatMessage {
+            role: ChatRole::Assistant,
+            content: content.to_owned(),
+        });
+        let message_index = chat.len().saturating_sub(1);
+        for installed in ordered {
+            if installed.manifest.runtime != PluginRuntime::StBridge
+                || !installed
+                    .manifest
+                    .subscriptions
+                    .contains(&PluginEvent::StBridgeLifecycle)
+            {
+                continue;
+            }
+            let grant = &grants[&installed.manifest.id];
+            let context = if grant
+                .capabilities
+                .contains(&crate::PluginCapability::ReadSession)
+            {
+                json!({"chat": chat})
+            } else {
+                Value::Null
+            };
+            receipts.push(host.execute(&installed, grant, PluginInput {
+                event: PluginEvent::StBridgeLifecycle,
+                plugin_id: installed.manifest.id.clone(), settings: grant.settings.clone(), context,
+                payload: json!({"events": [
+                    {"name": "message_received", "args": [message_index, attempt.prompt_plan.generation_type]},
+                    {"name": "generation_ended", "args": [chat.len()]}
+                ]}),
+                artifact: Value::Null, state: Value::Null,
+                session: json!({"session_id": session_id, "branch_id": branch_id, "attempt_id": attempt.attempt_id}),
+            })?);
+        }
+        Ok(receipts)
+    }
+
     pub fn invoke_plugin_command(
         &mut self,
         session_id: EntityId,
@@ -1718,6 +1810,7 @@ impl Store {
         effective_generation_settings: &EffectiveGenerationSettings,
         regex_scripts: &[RegexScript],
         text_prefill: Option<&str>,
+        dry_run: bool,
     ) -> Result<PromptPlan, TurnError> {
         let branch = self
             .branch(branch_id)?
@@ -2350,6 +2443,7 @@ impl Store {
                 &session_chat,
                 tokenizer,
                 &mut segments,
+                dry_run,
             )?);
         }
         let context_limit = effective
@@ -2673,13 +2767,16 @@ impl Store {
         if attempt.provider_request_hash.as_ref() != Some(&result.request_hash) {
             return Err(TurnError::ProviderRequestHashMismatch);
         }
+        let lifecycle_receipts =
+            self.run_st_bridge_lifecycle(&attempt, turn.session_id, turn.branch_id, &content)?;
         let post_commit_receipts =
             self.run_post_commit_plugins(&attempt, turn.session_id, turn.branch_id, &content)?;
-        if !post_commit_receipts.is_empty() {
+        if !lifecycle_receipts.is_empty() || !post_commit_receipts.is_empty() {
             let effect_receipt = attempt
                 .effect_receipt
                 .as_mut()
                 .ok_or(TurnError::AttemptEffectReceiptMissing(attempt.attempt_id))?;
+            effect_receipt.plugins.extend(lifecycle_receipts);
             effect_receipt.plugins.extend(post_commit_receipts);
         }
         let receipt_bytes = canonical_json(&result.receipt)?;
@@ -2911,6 +3008,39 @@ impl Store {
         Ok(TurnError::AttemptNotRunning { attempt_id, status })
     }
 }
+fn apply_st_bridge_rewrite(
+    tokenizer: TokenizerId,
+    segments: &mut Vec<PromptSegment>,
+    plugin_id: &str,
+    messages: Vec<PromptRewriteMessage>,
+) {
+    let original = std::mem::take(segments);
+    let mut available: HashMap<(ChatRole, &str), VecDeque<usize>> = HashMap::new();
+    for (index, segment) in original.iter().enumerate() {
+        available
+            .entry((segment.role, segment.content.as_str()))
+            .or_default()
+            .push_back(index);
+    }
+    let mut rewritten = Vec::with_capacity(messages.len());
+    for (ordinal, message) in messages.iter().enumerate() {
+        let preserved = available
+            .get_mut(&(message.role, message.content.as_str()))
+            .and_then(VecDeque::pop_front);
+        match preserved {
+            Some(index) => rewritten.push(original[index].clone()),
+            None => rewritten.push(PromptSegment::new(
+                tokenizer,
+                format!("runtime-plugin:{plugin_id}#rewrite-{}", ordinal + 1),
+                "pluginInChat",
+                message.role,
+                message.content.clone(),
+            )),
+        }
+    }
+    *segments = rewritten;
+}
+
 fn inject_plugin_contributions(
     tokenizer: TokenizerId,
     segments: &mut Vec<PromptSegment>,

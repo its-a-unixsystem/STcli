@@ -19,7 +19,7 @@ use thiserror::Error;
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 
-use crate::{ContentHash, StateKey, decode_unique_json};
+use crate::{ChatRole, ContentHash, StateKey, decode_unique_json};
 
 const MANIFEST_SCHEMA: &str = "stcli.plugin-manifest/v1";
 const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -64,6 +64,8 @@ pub enum PluginEvent {
     Command,
     ChatCompletionPromptReady,
     InspectArtifact,
+    GenerateInterceptor,
+    StBridgeLifecycle,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -100,7 +102,6 @@ pub struct PluginDependency {
     pub id: String,
     pub version: VersionReq,
 }
-
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PluginManifest {
     pub schema: String,
@@ -123,6 +124,8 @@ pub struct PluginManifest {
     pub before: BTreeSet<String>,
     #[serde(default)]
     pub after: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generate_interceptor: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -178,6 +181,12 @@ pub struct PromptContribution {
     pub outlet: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PromptRewriteMessage {
+    pub role: ChatRole,
+    pub content: String,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "effect", rename_all = "kebab-case")]
 pub enum PluginEffect {
@@ -186,6 +195,7 @@ pub enum PluginEffect {
     RegisterMacro { name: String, value: String },
     RegisterCommand { name: String, description: String },
     Prompt { contribution: PromptContribution },
+    PromptRewrite { messages: Vec<PromptRewriteMessage> },
     StateWrite { key: StateKey, value: Value },
     Abort { code: String, message: String },
 }
@@ -222,6 +232,7 @@ pub struct ScriptLimits {
     pub interrupt_ticks: u64,
     pub log_entries: usize,
     pub log_message_bytes: usize,
+    pub microtask_jobs: usize,
 }
 
 impl Default for ScriptLimits {
@@ -232,6 +243,7 @@ impl Default for ScriptLimits {
             interrupt_ticks: 200,
             log_entries: 64,
             log_message_bytes: 2048,
+            microtask_jobs: 64,
         }
     }
 }
@@ -660,6 +672,41 @@ fn validate_manifest(manifest: &PluginManifest, directory: &Path) -> Result<(), 
         let source = fs::read(&path).map_err(|source| PluginError::Read { path, source })?;
         decode_unique_json(&source).map_err(PluginError::Artifact)?;
     }
+
+    // Validate generate_interceptor field
+    if let Some(interceptor_name) = &manifest.generate_interceptor {
+        if manifest.runtime != PluginRuntime::StBridge {
+            return Err(PluginError::InvalidManifest(
+                "generate_interceptor is only valid for st-bridge runtime".to_owned(),
+            ));
+        }
+        if interceptor_name.is_empty()
+            || !interceptor_name
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+        {
+            return Err(PluginError::InvalidManifest(format!(
+                "generate_interceptor must be a valid JavaScript identifier, got: {}",
+                interceptor_name
+            )));
+        }
+        if !manifest
+            .subscriptions
+            .contains(&PluginEvent::GenerateInterceptor)
+        {
+            return Err(PluginError::InvalidManifest(
+                "generate_interceptor requires generate-interceptor subscription".to_owned(),
+            ));
+        }
+    } else if manifest
+        .subscriptions
+        .contains(&PluginEvent::GenerateInterceptor)
+    {
+        return Err(PluginError::InvalidManifest(
+            "generate-interceptor subscription requires generate_interceptor field".to_owned(),
+        ));
+    }
+
     Ok(())
 }
 
@@ -738,6 +785,11 @@ fn validate_effects(
         if event == PluginEvent::PostCommit && !matches!(effect, PluginEffect::Observe { .. }) {
             return Err(PluginError::PostCommitMutationDenied);
         }
+        if event == PluginEvent::StBridgeLifecycle
+            && !matches!(effect, PluginEffect::Observe { .. })
+        {
+            return Err(PluginError::LifecycleObservationOnly);
+        }
         let capability = match effect {
             PluginEffect::Output { .. } => PluginCapability::InspectArtifact,
             PluginEffect::Observe { .. } => PluginCapability::ObserveLifecycle,
@@ -756,6 +808,17 @@ fn validate_effects(
             PluginEffect::Prompt { contribution } => {
                 if !installed.manifest.prompt_slots.contains(&contribution.slot) {
                     return Err(PluginError::ClosedPromptSlot(contribution.slot));
+                }
+                PluginCapability::ContributePrompt
+            }
+            PluginEffect::PromptRewrite { .. } => {
+                if installed.manifest.runtime != PluginRuntime::StBridge {
+                    return Err(PluginError::PromptRewriteDenied);
+                }
+                if event != PluginEvent::GenerateInterceptor
+                    && event != PluginEvent::ChatCompletionPromptReady
+                {
+                    return Err(PluginError::PromptRewritePhaseDenied);
                 }
                 PluginCapability::ContributePrompt
             }
@@ -960,4 +1023,20 @@ pub enum PluginError {
     UnsupportedStBridgeMutation,
     #[error("QuickJS runtime setup failed: {0}")]
     ScriptRuntime(String),
+    #[error("invalid plugin manifest: {0}")]
+    InvalidManifest(String),
+    #[error("st-bridge lifecycle events are observation-only")]
+    LifecycleObservationOnly,
+    #[error("PromptRewrite effect is only valid for st-bridge runtime")]
+    PromptRewriteDenied,
+    #[error(
+        "PromptRewrite is only valid during generate-interceptor or chat-completion-prompt-ready"
+    )]
+    PromptRewritePhaseDenied,
+    #[error("st-bridge async callback exceeded the microtask bound")]
+    StBridgeAsyncTimeout,
+    #[error(
+        "st-bridge Extension '{plugin}' manifest declares generate_interceptor '{name}' but it was not found"
+    )]
+    StBridgeInterceptorMissing { plugin: String, name: String },
 }

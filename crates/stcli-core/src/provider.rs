@@ -23,7 +23,7 @@ pub struct ChatMessage {
     pub content: String,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChatRole {
     System,

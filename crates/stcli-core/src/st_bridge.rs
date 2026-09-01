@@ -7,14 +7,14 @@ use std::{
 
 use rquickjs::{
     CatchResultExt, CaughtError, Context, Ctx, Exception, Function, Module, Object, Persistent,
-    Runtime, Value, context::intrinsic, promise::PromiseState,
+    Runtime, Value, context::intrinsic, function::Args, promise::PromiseState,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 use crate::{
     ChatMessage, ChatRole, ContentHash, EntityId, InstalledPlugin, PluginEffect, PluginError,
-    PluginEvent, PluginInput, PromptContribution, PromptSlot, ScriptLimits, ScriptOutcome,
+    PluginEvent, PluginInput, PromptRewriteMessage, ScriptLimits, ScriptOutcome,
 };
 
 type Listener = Persistent<Function<'static>>;
@@ -28,9 +28,12 @@ struct ContextKey {
 
 struct BridgeContext {
     context: Context,
-    listeners: Rc<RefCell<Vec<Listener>>>,
+    listeners: Rc<RefCell<HashMap<String, Vec<Listener>>>>,
     snapshot: Rc<RefCell<JsonValue>>,
     ticks: Rc<Cell<u64>>,
+    last_branch_id: Rc<RefCell<Option<EntityId>>>,
+    app_ready_emitted: Rc<Cell<bool>>,
+    abandoned: Rc<Cell<bool>>,
 }
 
 struct Request {
@@ -94,6 +97,16 @@ impl Worker {
                 &request.source,
                 request.limits,
             );
+            let result = match result {
+                Err(PluginError::StBridgeAsyncTimeout) => Ok(ScriptOutcome {
+                    effects: Vec::new(),
+                    logs: vec![crate::ScriptLog {
+                        level: "warn".to_owned(),
+                        message: "st-bridge async callback exceeded 64 microtasks; dispatch effects were discarded".to_owned(),
+                    }],
+                }),
+                other => other,
+            };
             let _ = request.response.send(result);
         }
     }
@@ -105,9 +118,6 @@ impl Worker {
         source: &str,
         limits: ScriptLimits,
     ) -> Result<ScriptOutcome, PluginError> {
-        if input.event != PluginEvent::ChatCompletionPromptReady {
-            return Err(PluginError::UnsupportedStBridgeEvent);
-        }
         let session_id = input
             .session
             .get("session_id")
@@ -119,45 +129,267 @@ impl Worker {
             plugin_id: installed.manifest.id.clone(),
             component_sha256: installed.manifest.component_sha256.clone(),
         };
-        let original = decode_chat(&input.payload)?;
         if !self.contexts.contains_key(&key) {
             let context =
                 BridgeContext::new(&installed.manifest.id, source, &input.context, limits)?;
             self.contexts.insert(key.clone(), context);
         }
+
         let context = self
             .contexts
             .get_mut(&key)
             .ok_or(PluginError::StBridgeWorkerStopped)?;
-        let updated = context.dispatch(
-            &installed.manifest.id,
-            &input.context,
-            &input.payload,
-            limits,
-        )?;
-        let chat = decode_chat(&updated)?;
-        if chat.len() < original.len() || chat[..original.len()] != original {
-            return Err(PluginError::UnsupportedStBridgeMutation);
+        if context.abandoned.get() {
+            return Ok(ScriptOutcome {
+                effects: Vec::new(),
+                logs: Vec::new(),
+            });
         }
-        let effects = chat[original.len()..]
-            .iter()
-            .enumerate()
-            .map(|(index, message)| PluginEffect::Prompt {
-                contribution: PromptContribution {
-                    slot: PromptSlot::InChat,
-                    name: format!("{}#{}", installed.manifest.id, index + 1),
-                    role: role_name(message.role).to_owned(),
-                    content: message.content.clone(),
-                    depth: None,
-                    order: index + 1,
-                    outlet: None,
-                },
-            })
-            .collect();
-        Ok(ScriptOutcome {
-            effects,
-            logs: Vec::new(),
-        })
+
+        // Emit APP_READY once after initialization
+        if !context.app_ready_emitted.get() {
+            context.dispatch(
+                &installed.manifest.id,
+                "app_ready",
+                &input.context,
+                &serde_json::json!({}),
+                limits,
+            )?;
+            context.app_ready_emitted.set(true);
+        }
+
+        match input.event {
+            PluginEvent::GenerateInterceptor => {
+                if let Some(branch_id) = input
+                    .session
+                    .get("branch_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<EntityId>().ok())
+                    && context.last_branch_id.borrow().as_ref() != Some(&branch_id)
+                {
+                    context.dispatch(
+                        &installed.manifest.id,
+                        "chat_id_changed",
+                        &input.context,
+                        &serde_json::json!([branch_id.to_string()]),
+                        limits,
+                    )?;
+                    *context.last_branch_id.borrow_mut() = Some(branch_id);
+                }
+                context.dispatch(
+                    &installed.manifest.id,
+                    "generation_started",
+                    &input.context,
+                    &serde_json::json!([
+                        input
+                            .session
+                            .get("generation_type")
+                            .cloned()
+                            .unwrap_or(JsonValue::Null),
+                        input
+                            .session
+                            .get("options")
+                            .cloned()
+                            .unwrap_or(JsonValue::Null),
+                        input
+                            .session
+                            .get("dry_run")
+                            .cloned()
+                            .unwrap_or(JsonValue::Bool(false)),
+                    ]),
+                    limits,
+                )?;
+                if input
+                    .payload
+                    .get("has_user_message")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    context.dispatch(
+                        &installed.manifest.id,
+                        "message_sent",
+                        &input.context,
+                        &serde_json::json!([input
+                            .payload
+                            .get("message_index")
+                            .cloned()
+                            .unwrap_or(JsonValue::Null)]),
+                        limits,
+                    )?;
+                }
+
+                // Call named interceptor
+                let interceptor_name = installed
+                    .manifest
+                    .generate_interceptor
+                    .as_ref()
+                    .ok_or_else(|| PluginError::StBridgeInterceptorMissing {
+                        plugin: installed.manifest.id.clone(),
+                        name: "<none>".to_owned(),
+                    })?;
+
+                let result = context.context.with(|ctx| {
+                    *context.snapshot.borrow_mut() = input.context.clone();
+                    context.ticks.set(limits.interrupt_ticks);
+
+                    let globals = ctx.globals();
+                    let interceptor: Function =
+                        globals.get(interceptor_name.as_str()).map_err(|_| {
+                            PluginError::StBridgeInterceptorMissing {
+                                plugin: installed.manifest.id.clone(),
+                                name: interceptor_name.clone(),
+                            }
+                        })?;
+
+                    let chat_array = input.payload.get("chat").ok_or_else(|| {
+                        PluginError::StBridgePayload("payload missing 'chat' array".to_owned())
+                    })?;
+                    let chat_json = serde_json::to_string(chat_array)?;
+                    let chat_arg = ctx
+                        .json_parse(chat_json)
+                        .map_err(|e| PluginError::StBridgePayload(e.to_string()))?;
+                    let undefined = Value::new_undefined(ctx.clone());
+                    let result_value = interceptor
+                        .call::<_, Value>((
+                            chat_arg.clone(),
+                            undefined.clone(),
+                            undefined.clone(),
+                            undefined,
+                        ))
+                        .catch(&ctx)
+                        .map_err(|error| {
+                            map_caught(&ctx, &installed.manifest.id, &context.ticks, error, false)
+                        })?;
+
+                    // Settle Promise; the mutable chat argument is authoritative.
+                    if let Some(promise) = result_value.as_promise() {
+                        let mut jobs = 0;
+                        loop {
+                            if jobs >= limits.microtask_jobs {
+                                context.abandoned.set(true);
+                                return Err(PluginError::StBridgeAsyncTimeout);
+                            }
+                            if ctx.execute_pending_job() {
+                                jobs += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        match promise.state() {
+                            PromiseState::Resolved => {
+                                let result = promise.result::<Value>().ok_or_else(|| {
+                                    PluginError::StBridgePayload(
+                                        "interceptor promise has no result".to_owned(),
+                                    )
+                                })?;
+                                result.map_err(|error| PluginError::StBridgeHandler {
+                                    plugin: installed.manifest.id.clone(),
+                                    message: error.to_string(),
+                                })?;
+                            }
+                            PromiseState::Rejected => {
+                                return Err(PluginError::StBridgeHandler {
+                                    plugin: installed.manifest.id.clone(),
+                                    message: "interceptor promise rejected".to_owned(),
+                                });
+                            }
+                            PromiseState::Pending => {
+                                context.abandoned.set(true);
+                                return Err(PluginError::StBridgeAsyncTimeout);
+                            }
+                        }
+                    }
+
+                    let json_str = ctx
+                        .json_stringify(chat_arg)
+                        .map_err(|e| PluginError::StBridgePayload(e.to_string()))?
+                        .ok_or_else(|| {
+                            PluginError::StBridgePayload("interceptor chat is not JSON".to_owned())
+                        })?
+                        .to_string()
+                        .map_err(|e| PluginError::StBridgePayload(e.to_string()))?;
+                    Ok::<_, PluginError>(json_str)
+                })?;
+                let st_messages: Vec<StMessage> = serde_json::from_str(&result)?;
+                let messages: Vec<PromptRewriteMessage> = st_messages
+                    .into_iter()
+                    .map(|msg| {
+                        let role = if msg.is_system {
+                            ChatRole::System
+                        } else if msg.is_user {
+                            ChatRole::User
+                        } else {
+                            ChatRole::Assistant
+                        };
+                        PromptRewriteMessage {
+                            role,
+                            content: msg.mes,
+                        }
+                    })
+                    .collect();
+
+                Ok(ScriptOutcome {
+                    effects: vec![PluginEffect::PromptRewrite { messages }],
+                    logs: Vec::new(),
+                })
+            }
+            PluginEvent::ChatCompletionPromptReady => {
+                let updated = context.dispatch(
+                    &installed.manifest.id,
+                    "chat_completion_prompt_ready",
+                    &input.context,
+                    &input.payload,
+                    limits,
+                )?;
+                let original = decode_chat(&input.payload)?;
+                let modified = decode_chat(&updated)?;
+
+                if original == modified {
+                    Ok(ScriptOutcome {
+                        effects: Vec::new(),
+                        logs: Vec::new(),
+                    })
+                } else {
+                    Ok(ScriptOutcome {
+                        effects: vec![PluginEffect::PromptRewrite {
+                            messages: modified
+                                .into_iter()
+                                .map(|msg| PromptRewriteMessage {
+                                    role: msg.role,
+                                    content: msg.content,
+                                })
+                                .collect(),
+                        }],
+                        logs: Vec::new(),
+                    })
+                }
+            }
+            PluginEvent::StBridgeLifecycle => {
+                // Dispatch batch of lifecycle events
+                if let Some(events) = input.payload.get("events").and_then(|v| v.as_array()) {
+                    for event_obj in events {
+                        if let Some(event_name) = event_obj.get("name").and_then(|v| v.as_str()) {
+                            let empty_args = serde_json::json!([]);
+                            let args = event_obj.get("args").unwrap_or(&empty_args);
+                            context.dispatch(
+                                &installed.manifest.id,
+                                event_name,
+                                &input.context,
+                                args,
+                                limits,
+                            )?;
+                        }
+                    }
+                }
+                Ok(ScriptOutcome {
+                    effects: vec![PluginEffect::Observe {
+                        value: serde_json::json!({}),
+                    }],
+                    logs: Vec::new(),
+                })
+            }
+            _ => Err(PluginError::UnsupportedStBridgeEvent),
+        }
     }
 }
 
@@ -191,8 +423,11 @@ impl BridgeContext {
             intrinsic::Promise,
         )>(&runtime)
         .map_err(|error| PluginError::ScriptRuntime(error.to_string()))?;
-        let listeners = Rc::new(RefCell::new(Vec::new()));
+        let listeners = Rc::new(RefCell::new(HashMap::new()));
         let snapshot = Rc::new(RefCell::new(initial_snapshot.clone()));
+        let last_branch_id = Rc::new(RefCell::new(None));
+        let app_ready_emitted = Rc::new(Cell::new(false));
+        let abandoned = Rc::new(Cell::new(false));
         context.with(|ctx| {
             install_globals(&ctx, Rc::clone(&listeners), Rc::clone(&snapshot))
                 .map_err(|error| PluginError::ScriptRuntime(error.to_string()))?;
@@ -226,59 +461,116 @@ impl BridgeContext {
             listeners,
             snapshot,
             ticks,
+            last_branch_id,
+            app_ready_emitted,
+            abandoned,
         })
     }
 
     fn dispatch(
         &mut self,
         plugin_id: &str,
+        event_name: &str,
         snapshot: &JsonValue,
         payload: &JsonValue,
         limits: ScriptLimits,
     ) -> Result<JsonValue, PluginError> {
         *self.snapshot.borrow_mut() = snapshot.clone();
         self.ticks.set(limits.interrupt_ticks);
+        let event_listeners = self
+            .listeners
+            .borrow()
+            .get(event_name)
+            .cloned()
+            .unwrap_or_default();
         self.context.with(|ctx| {
-            let json = serde_json::to_string(payload)
-                .map_err(|error| PluginError::StBridgePayload(error.to_string()))?;
             let argument = ctx
-                .json_parse(json)
-                .map_err(|error| PluginError::StBridgePayload(error.to_string()))?;
-            for listener in self.listeners.borrow().iter() {
-                let listener = listener.clone().restore(&ctx).map_err(|error| {
-                    PluginError::StBridgeHandler {
+                .json_parse(
+                    serde_json::to_string(payload)
+                        .map_err(|e| PluginError::StBridgePayload(e.to_string()))?,
+                )
+                .map_err(|e| PluginError::StBridgePayload(e.to_string()))?;
+            for saved in event_listeners {
+                let listener = saved
+                    .restore(&ctx)
+                    .map_err(|e| PluginError::StBridgeHandler {
                         plugin: plugin_id.to_owned(),
-                        message: error.to_string(),
+                        message: e.to_string(),
+                    })?;
+                let result = if event_name == "chat_completion_prompt_ready" {
+                    listener
+                        .call::<_, Value>((argument.clone(),))
+                        .catch(&ctx)
+                        .map_err(|error| map_caught(&ctx, plugin_id, &self.ticks, error, false))?
+                } else {
+                    let values = payload.as_array().cloned().unwrap_or_default();
+                    let mut args = Args::new(ctx.clone(), values.len());
+                    for value in values {
+                        let parsed = ctx
+                            .json_parse(
+                                serde_json::to_string(&value)
+                                    .map_err(|e| PluginError::StBridgePayload(e.to_string()))?,
+                            )
+                            .map_err(|e| PluginError::StBridgePayload(e.to_string()))?;
+                        args.push_arg(parsed)
+                            .map_err(|e| PluginError::StBridgePayload(e.to_string()))?;
                     }
-                })?;
-                listener
-                    .call::<_, Value>((argument.clone(),))
-                    .catch(&ctx)
-                    .map_err(|error| map_caught(&ctx, plugin_id, &self.ticks, error, false))?;
+                    listener
+                        .call_arg::<Value>(args)
+                        .catch(&ctx)
+                        .map_err(|error| map_caught(&ctx, plugin_id, &self.ticks, error, false))?
+                };
+                if let Some(promise) = result.as_promise() {
+                    let mut jobs = 0;
+                    loop {
+                        if promise.state() != PromiseState::Pending {
+                            break;
+                        }
+                        if jobs >= limits.microtask_jobs || !ctx.execute_pending_job() {
+                            self.abandoned.set(true);
+                            return Err(PluginError::StBridgeAsyncTimeout);
+                        }
+                        jobs += 1;
+                    }
+                    if promise.state() == PromiseState::Rejected {
+                        return Err(PluginError::StBridgeHandler {
+                            plugin: plugin_id.to_owned(),
+                            message: "listener promise rejected".to_owned(),
+                        });
+                    }
+                }
             }
             let text = ctx
                 .json_stringify(argument)
-                .map_err(|error| PluginError::StBridgePayload(error.to_string()))?
+                .map_err(|e| PluginError::StBridgePayload(e.to_string()))?
                 .ok_or_else(|| PluginError::StBridgePayload("payload is not JSON".to_owned()))?
                 .to_string()
-                .map_err(|error| PluginError::StBridgePayload(error.to_string()))?;
-            serde_json::from_str(&text)
-                .map_err(|error| PluginError::StBridgePayload(error.to_string()))
+                .map_err(|e| PluginError::StBridgePayload(e.to_string()))?;
+            serde_json::from_str(&text).map_err(|e| PluginError::StBridgePayload(e.to_string()))
         })
     }
 }
 
 fn install_globals<'js>(
     ctx: &Ctx<'js>,
-    listeners: Rc<RefCell<Vec<Listener>>>,
+    listeners: Rc<RefCell<HashMap<String, Vec<Listener>>>>,
     snapshot: Rc<RefCell<JsonValue>>,
 ) -> rquickjs::Result<()> {
     let globals = ctx.globals();
     let event_types = Object::new(ctx.clone())?;
+    event_types.set("APP_READY", "app_ready")?;
+    event_types.set("CHAT_CHANGED", "chat_id_changed")?;
+    event_types.set("GENERATION_STARTED", "generation_started")?;
+    event_types.set("MESSAGE_SENT", "message_sent")?;
+    event_types.set("MESSAGE_RECEIVED", "message_received")?;
+    event_types.set("GENERATION_ENDED", "generation_ended")?;
     event_types.set(
         "CHAT_COMPLETION_PROMPT_READY",
-        "chat-completion-prompt-ready",
+        "chat_completion_prompt_ready",
     )?;
+    event_types.set("USER_MESSAGE_RENDERED", "user_message_rendered")?;
+    event_types.set("CHARACTER_MESSAGE_RENDERED", "character_message_rendered")?;
+    event_types.set("TOOL_CALLS_RENDERED", "tool_calls_rendered")?;
     freeze(ctx, event_types.clone())?;
 
     let event_source = Object::new(ctx.clone())?;
@@ -287,13 +579,34 @@ fn install_globals<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, event: String, listener: Function<'js>| {
-                if event != "chat-completion-prompt-ready" {
-                    return Err(Exception::throw_type(&ctx, "unsupported event type"));
+                let valid_lifecycle = [
+                    "app_ready",
+                    "chat_id_changed",
+                    "generation_started",
+                    "message_sent",
+                    "message_received",
+                    "generation_ended",
+                    "chat_completion_prompt_ready",
+                ];
+                let render_events = [
+                    "user_message_rendered",
+                    "character_message_rendered",
+                    "tool_calls_rendered",
+                ];
+
+                if valid_lifecycle.contains(&event.as_str()) {
+                    listeners
+                        .borrow_mut()
+                        .entry(event)
+                        .or_default()
+                        .push(Persistent::save(&ctx, listener));
+                    Ok(())
+                } else if render_events.contains(&event.as_str()) {
+                    // Accept render events but discard their listeners (headless no-op)
+                    Ok(())
+                } else {
+                    Err(Exception::throw_type(&ctx, "unsupported event type"))
                 }
-                listeners
-                    .borrow_mut()
-                    .push(Persistent::save(&ctx, listener));
-                Ok(())
             },
         )?,
     )?;
@@ -332,6 +645,15 @@ fn deep_freeze<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Value
 }
 
 #[derive(Deserialize)]
+struct StMessage {
+    #[serde(default)]
+    is_user: bool,
+    #[serde(default)]
+    is_system: bool,
+    mes: String,
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BridgeChatMessage {
     role: ChatRole,
@@ -353,14 +675,6 @@ fn decode_chat(payload: &JsonValue) -> Result<Vec<ChatMessage>, PluginError> {
             content: message.content,
         })
         .collect())
-}
-
-fn role_name(role: ChatRole) -> &'static str {
-    match role {
-        ChatRole::System => "system",
-        ChatRole::User => "user",
-        ChatRole::Assistant => "assistant",
-    }
 }
 
 fn map_caught<'js>(
