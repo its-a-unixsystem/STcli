@@ -570,11 +570,24 @@ struct NativeExtensionManifest {
     #[serde(default)]
     loading_order: Option<i64>,
     #[serde(default)]
-    css: Option<Value>,
+    css: NativeExtensionIgnoredField,
     #[serde(default)]
-    html: Option<Value>,
+    html: NativeExtensionIgnoredField,
     #[serde(default)]
-    i18n: Option<Value>,
+    i18n: NativeExtensionIgnoredField,
+}
+
+#[derive(Default)]
+struct NativeExtensionIgnoredField(bool);
+
+impl<'de> Deserialize<'de> for NativeExtensionIgnoredField {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Value::deserialize(deserializer)?;
+        Ok(Self(true))
+    }
 }
 
 #[derive(Deserialize)]
@@ -669,9 +682,17 @@ impl PluginRegistry {
             path: directory.to_owned(),
             source,
         })?;
-        let manifest_path = source_root.join("manifest.json");
-        let source = fs::read(&manifest_path).map_err(|source| PluginError::Read {
-            path: manifest_path,
+        let manifest_path = safe_child(&source_root, "manifest.json")?;
+        let canonical_manifest =
+            fs::canonicalize(&manifest_path).map_err(|source| PluginError::Read {
+                path: manifest_path,
+                source,
+            })?;
+        if !canonical_manifest.starts_with(&source_root) {
+            return Err(PluginError::UnsafePath("manifest.json".to_owned()));
+        }
+        let source = fs::read(&canonical_manifest).map_err(|source| PluginError::Read {
+            path: canonical_manifest,
             source,
         })?;
         let value = decode_unique_json(&source).map_err(PluginError::Artifact)?;
@@ -785,8 +806,8 @@ impl PluginRegistry {
             ("i18n", native.i18n),
         ]
         .into_iter()
-        .filter_map(|(field, value)| {
-            value.map(|_| crate::CompatibilityWarning {
+        .filter_map(|(field, declared)| {
+            declared.0.then(|| crate::CompatibilityWarning {
                 code: "extension-import-field-ignored".to_owned(),
                 profile_id: "sillytavern-1.18-core".to_owned(),
                 non_blocking: true,

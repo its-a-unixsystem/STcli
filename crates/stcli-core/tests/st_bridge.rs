@@ -1635,6 +1635,7 @@ globalThis.rewrite = function (chat) {
 };
 "#;
     std::fs::write(source.join("scripts").join("index.js"), script).unwrap();
+    // Regression: declared visual fields warn even when their value is JSON null.
     std::fs::write(
         source.join("manifest.json"),
         serde_json::to_vec_pretty(&json!({
@@ -1644,7 +1645,7 @@ globalThis.rewrite = function (chat) {
             "optional": ["optional-module"],
             "generate_interceptor": "rewrite",
             "js": ["scripts/index.js"],
-            "css": "style.css",
+            "css": null,
             "html": "panel.html",
             "i18n": "i18n",
             "author": "Fixture Author",
@@ -1969,6 +1970,29 @@ fn native_extension_import_rejects_invalid_component_declarations() {
                 .unwrap_err()
                 .to_string(),
             "unsafe plugin-relative path 'index.js'"
+        );
+
+        let outside_manifest = directory.path().join("outside-manifest.json");
+        std::fs::write(
+            &outside_manifest,
+            serde_json::to_vec(&json!({
+                "version": "1.0.0",
+                "js": "index.js"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let source = directory.path().join("manifest-symlink");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("index.js"), b"").unwrap();
+        symlink(&outside_manifest, source.join("manifest.json")).unwrap();
+        // Regression: importing an Extension must never read a manifest outside its directory.
+        assert_eq!(
+            registry
+                .import_native_extension(&source)
+                .unwrap_err()
+                .to_string(),
+            "unsafe plugin-relative path 'manifest.json'"
         );
     }
 }
