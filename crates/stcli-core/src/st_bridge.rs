@@ -515,6 +515,7 @@ impl BridgeContext {
             intrinsic::RegExpCompiler,
             intrinsic::MapSet,
             intrinsic::Promise,
+            intrinsic::Proxy,
         )>(&runtime)
         .map_err(|error| PluginError::ScriptRuntime(error.to_string()))?;
         let listeners = Rc::new(RefCell::new(HashMap::new()));
@@ -747,6 +748,7 @@ fn install_globals<'js>(
     freeze(ctx, event_types.clone())?;
 
     let event_source = Object::new(ctx.clone())?;
+    let on_listeners = Rc::clone(&listeners);
     event_source.set(
         "on",
         Function::new(
@@ -768,7 +770,7 @@ fn install_globals<'js>(
                 ];
 
                 if valid_lifecycle.contains(&event.as_str()) {
-                    listeners
+                    on_listeners
                         .borrow_mut()
                         .entry(event)
                         .or_default()
@@ -782,23 +784,222 @@ fn install_globals<'js>(
             },
         )?,
     )?;
+    let off_listeners = Rc::clone(&listeners);
+    event_source.set(
+        "off",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, event: String, listener: Function<'js>| {
+                let valid_lifecycle = [
+                    "app_ready",
+                    "chat_id_changed",
+                    "generation_started",
+                    "message_sent",
+                    "message_received",
+                    "generation_ended",
+                    "chat_completion_prompt_ready",
+                ];
+                if valid_lifecycle.contains(&event.as_str()) {
+                    let mut map = off_listeners.borrow_mut();
+                    if let Some(handlers) = map.get_mut(event.as_str()) {
+                        let target = Persistent::save(&ctx, listener);
+                        handlers.retain(|saved| {
+                            let saved_fn = saved.clone().restore(&ctx);
+                            let target_fn = target.clone().restore(&ctx);
+                            match (saved_fn, target_fn) {
+                                (Ok(a), Ok(b)) => a != b,
+                                _ => true,
+                            }
+                        });
+                    }
+                }
+                Ok::<(), rquickjs::Error>(())
+            },
+        )?,
+    )?;
+    event_source.set(
+        "emit",
+        Function::new(ctx.clone(), |_: String| {
+            // Extensions should not emit events directly; no-op with warning.
+            Ok::<(), rquickjs::Error>(())
+        })?,
+    )?;
     freeze(ctx, event_source.clone())?;
 
     let silly_tavern = Object::new(ctx.clone())?;
-    silly_tavern.set(
-        "getContext",
+    globals.set(
+        "__stcliGetContextSnapshot",
         Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
             let json = serde_json::to_string(&*snapshot.borrow())
                 .map_err(|_| Exception::throw_type(&ctx, "context snapshot is not JSON"))?;
-            let value = ctx.json_parse(json)?;
+            let value: Value = ctx.json_parse(json)?;
             deep_freeze(&ctx, value)
         })?,
     )?;
+    globals.set(
+        "__stcliWarnFrozenWrite",
+        Function::new(ctx.clone(), {
+            let warn_logs = Rc::clone(&logs);
+            move || {
+                warn_logs.borrow_mut().push(crate::ScriptLog {
+                    level: "warn".to_owned(),
+                    message: "write to frozen getContext() snapshot ignored".to_owned(),
+                });
+            }
+        })?,
+    )?;
+    let get_context_fn: Function = ctx.eval::<Function, _>(
+        r#"
+(function() {
+    const rawSnapshot = globalThis.__stcliGetContextSnapshot;
+    const warnFrozen = globalThis.__stcliWarnFrozenWrite;
+    delete globalThis.__stcliGetContextSnapshot;
+    delete globalThis.__stcliWarnFrozenWrite;
+    return function getContext() {
+        const target = rawSnapshot();
+        if (typeof Proxy === 'undefined') return target;
+        let warned = false;
+        return new Proxy(target, {
+            set() { if (!warned) { warned = true; warnFrozen(); } return true; },
+            deleteProperty() { if (!warned) { warned = true; warnFrozen(); } return true; }
+        });
+    };
+})();
+"#,
+    )?;
+    silly_tavern.set("getContext", get_context_fn)?;
+
+    // Helper: create a no-op stub that warns once.
+    let make_stub = {
+        let stub_logs = Rc::clone(&logs);
+        move |ctx: &Ctx<'js>, name: &'static str| -> rquickjs::Result<Function<'js>> {
+            let warned = Rc::new(Cell::new(false));
+            let stub_logs = Rc::clone(&stub_logs);
+            Function::new(ctx.clone(), move |_ctx: Ctx<'js>| {
+                if !warned.replace(true) {
+                    stub_logs.borrow_mut().push(crate::ScriptLog {
+                        level: "warn".to_owned(),
+                        message: format!("`{name}` is not yet supported in this runtime"),
+                    });
+                }
+                Ok::<Value<'js>, rquickjs::Error>(Value::new_undefined(_ctx.clone()))
+            })
+        }
+    };
+
+    silly_tavern.set("setExtensionPrompt", make_stub(ctx, "setExtensionPrompt")?)?;
+    silly_tavern.set(
+        "registerSlashCommand",
+        make_stub(ctx, "registerSlashCommand")?,
+    )?;
+    silly_tavern.set(
+        "executeSlashCommands",
+        make_stub(ctx, "executeSlashCommands")?,
+    )?;
+    silly_tavern.set(
+        "substituteParams",
+        Function::new(ctx.clone(), {
+            let warned = Rc::new(Cell::new(false));
+            let logs = Rc::clone(&logs);
+            move |_ctx: Ctx<'js>, text: String| {
+                if !warned.replace(true) {
+                    logs.borrow_mut().push(crate::ScriptLog {
+                        level: "warn".to_owned(),
+                        message:
+                            "`substituteParams` is not yet supported in this runtime; returning input unchanged"
+                                .to_owned(),
+                    });
+                }
+                Ok::<String, rquickjs::Error>(text)
+            }
+        })?,
+    )?;
+    silly_tavern.set(
+        "getTokenCount",
+        Function::new(ctx.clone(), {
+            let warned = Rc::new(Cell::new(false));
+            let logs = Rc::clone(&logs);
+            move |_ctx: Ctx<'js>, _text: String| {
+                if !warned.replace(true) {
+                    logs.borrow_mut().push(crate::ScriptLog {
+                        level: "warn".to_owned(),
+                        message:
+                            "`getTokenCount` is not yet supported in this runtime; returning 0"
+                                .to_owned(),
+                    });
+                }
+                Ok::<i64, rquickjs::Error>(0)
+            }
+        })?,
+    )?;
+    silly_tavern.set(
+        "saveSettingsDebounced",
+        make_stub(ctx, "saveSettingsDebounced")?,
+    )?;
+    silly_tavern.set("saveMetadata", make_stub(ctx, "saveMetadata")?)?;
+    silly_tavern.set("updateChatMetadata", make_stub(ctx, "updateChatMetadata")?)?;
+    silly_tavern.set(
+        "generateQuietPrompt",
+        make_stub(ctx, "generateQuietPrompt")?,
+    )?;
+    silly_tavern.set("generateRaw", make_stub(ctx, "generateRaw")?)?;
+
     freeze(ctx, silly_tavern.clone())?;
 
     globals.set("event_types", event_types)?;
     globals.set("eventSource", event_source)?;
     globals.set("SillyTavern", silly_tavern)?;
+
+    // Wrap SillyTavern in a Proxy so unknown members are control-flow-safe
+    // no-op stubs that warn once per property name.
+    globals.set(
+        "__stcliWarnUnknownMember",
+        Function::new(ctx.clone(), {
+            let member_logs = Rc::clone(&logs);
+            move |name: String| {
+                member_logs.borrow_mut().push(crate::ScriptLog {
+                    level: "warn".to_owned(),
+                    message: format!(
+                        "`SillyTavern.{name}` is not supported in this runtime; no-op"
+                    ),
+                });
+            }
+        })?,
+    )?;
+    ctx.eval::<Value, _>(
+        r#"
+(function() {
+    if (typeof Proxy === 'undefined') {
+        delete globalThis.__stcliWarnUnknownMember;
+        return;
+    }
+    const warnUnknown = globalThis.__stcliWarnUnknownMember;
+    delete globalThis.__stcliWarnUnknownMember;
+    const target = globalThis.SillyTavern;
+    const warned = new Set();
+    let warnedWrite = false;
+    globalThis.SillyTavern = new Proxy(target, {
+        get(t, prop) {
+            if (typeof prop === 'string' && !(prop in t)) {
+                if (!warned.has(prop)) {
+                    warned.add(prop);
+                    warnUnknown(String(prop));
+                }
+                return function() { return undefined; };
+            }
+            return t[prop];
+        },
+        set() {
+            if (!warnedWrite) {
+                warnedWrite = true;
+                warnUnknown("<assignment>");
+            }
+            return true;
+        }
+    });
+})();
+"#,
+    )?;
 
     let math: Object = globals.get("Math")?;
     math.set(

@@ -1473,6 +1473,7 @@ impl Store {
         tokenizer: TokenizerId,
         segments: &mut Vec<PromptSegment>,
         dry_run: bool,
+        effective_generation_settings: &EffectiveGenerationSettings,
     ) -> Result<Vec<PluginReceipt>, TurnError> {
         if configuration.configuration.plugins.is_empty() {
             return Ok(Vec::new());
@@ -1489,7 +1490,14 @@ impl Store {
                 .capabilities
                 .contains(&crate::PluginCapability::ReadSession)
             {
-                json!({"name2": character_name, "chat": session_chat})
+                bridge_context_snapshot(
+                    configuration,
+                    session_id,
+                    branch_id,
+                    character_name,
+                    session_chat,
+                    effective_generation_settings,
+                )
             } else {
                 Value::Null
             };
@@ -1663,7 +1671,24 @@ impl Store {
                 .capabilities
                 .contains(&crate::PluginCapability::ReadSession)
             {
-                json!({"chat": chat})
+                let character =
+                    self.decoded_artifact(&configuration.configuration.character_revision)?;
+                let character_name = character
+                    .semantic
+                    .get("data")
+                    .and_then(|d| d.get("name"))
+                    .and_then(Value::as_str)
+                    .or_else(|| character.semantic.get("name").and_then(Value::as_str))
+                    .unwrap_or("Character");
+                let effective = resolve_effective_generation_settings(&configuration, None);
+                bridge_context_snapshot(
+                    &configuration,
+                    session_id,
+                    branch_id,
+                    character_name,
+                    &chat,
+                    &effective,
+                )
             } else {
                 Value::Null
             };
@@ -2446,6 +2471,7 @@ impl Store {
                 tokenizer,
                 &mut segments,
                 dry_run,
+                effective_generation_settings,
             )?);
         }
         let context_limit = effective
@@ -3125,6 +3151,30 @@ fn empty_effective_generation_settings() -> EffectiveGenerationSettings {
         values: json!({}),
         provenance: BTreeMap::new(),
     }
+}
+
+fn bridge_context_snapshot(
+    configuration: &SessionConfigurationRecord,
+    session_id: EntityId,
+    branch_id: EntityId,
+    character_name: &str,
+    session_chat: &[ChatMessage],
+    effective_generation_settings: &EffectiveGenerationSettings,
+) -> Value {
+    let character_id = configuration.configuration.character_revision.to_string();
+    json!({
+        "name1": configuration.configuration.persona_name,
+        "name2": character_name,
+        "chatId": branch_id.to_string(),
+        "sessionId": session_id.to_string(),
+        "chat": session_chat,
+        "characters": [{"name": character_name, "id": character_id}],
+        "characterId": character_id,
+        "groups": [],
+        "chatMetadata": {},
+        "worldInfo": [],
+        "generationSettings": effective_generation_settings.values,
+    })
 }
 
 fn resolve_effective_generation_settings(

@@ -1021,3 +1021,419 @@ async fn secret_is_injected_out_of_band() {
     let receipt_json = serde_json::to_string(receipt).unwrap();
     assert!(!receipt_json.contains("s3cr3t"), "{receipt_json}");
 }
+
+#[test]
+fn get_context_returns_full_snapshot_fields() {
+    let directory = tempdir().unwrap();
+    let session_id = EntityId::new();
+    let branch_id = EntityId::new();
+    let source = r#"
+globalThis.namedInterceptor = function(chat) {
+    const ctx = SillyTavern.getContext();
+    chat.push({
+        name: 'System',
+        is_user: false,
+        is_system: true,
+        mes: [
+            'name1=' + ctx.name1,
+            'name2=' + ctx.name2,
+            'chatId=' + ctx.chatId,
+            'characterId=' + ctx.characterId,
+            'chatLen=' + ctx.chat.length,
+            'groupsLen=' + ctx.groups.length,
+            'hasChatMetadata=' + (typeof ctx.chatMetadata === 'object'),
+            'worldInfoLen=' + ctx.worldInfo.length,
+            'temperature=' + ctx.generationSettings.temperature,
+        ].join(' '),
+        extra: {},
+        index: chat.length
+    });
+};
+"#;
+    let plugin = write_test_bridge_plugin(
+        &directory.path().join("plugin"),
+        "org.stcli.ctx-test",
+        source,
+    );
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&plugin)
+        .unwrap();
+    let grant = authorize(&installed);
+
+    let receipt = PluginHost::new(PluginLimits::default())
+        .execute(
+            &installed,
+            &grant,
+            PluginInput {
+                event: PluginEvent::GenerateInterceptor,
+                plugin_id: installed.manifest.id.clone(),
+                settings: json!({}),
+                context: json!({
+                    "name1": "User",
+                    "name2": "Alice",
+                    "chatId": branch_id.to_string(),
+                    "sessionId": session_id.to_string(),
+                    "chat": [{"role": "assistant", "content": "Hello"}],
+                    "characters": [{"name": "Alice", "id": "abc123"}],
+                    "characterId": "abc123",
+                    "groups": [],
+                    "chatMetadata": {},
+                    "worldInfo": [],
+                    "generationSettings": {"temperature": 0.7},
+                }),
+                payload: json!({
+                    "chat": [{"name": "Alice", "is_user": false, "is_system": false, "mes": "Hello", "extra": {}, "index": 0}],
+                    "has_user_message": false,
+                }),
+                artifact: json!(null),
+                state: json!(null),
+                session: json!({"session_id": session_id, "branch_id": branch_id}),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(receipt.effects.len(), 1);
+    match &receipt.effects[0] {
+        PluginEffect::PromptRewrite { messages } => {
+            let content = &messages.last().unwrap().content;
+            assert!(content.contains("name1=User"), "missing name1: {content}");
+            assert!(content.contains("name2=Alice"), "missing name2: {content}");
+            assert!(
+                content.contains(&format!("chatId={branch_id}")),
+                "missing chatId: {content}"
+            );
+            assert!(
+                content.contains("characterId=abc123"),
+                "missing characterId: {content}"
+            );
+            assert!(
+                content.contains("chatLen=1"),
+                "missing chat length: {content}"
+            );
+            assert!(content.contains("groupsLen=0"), "missing groups: {content}");
+            assert!(
+                content.contains("hasChatMetadata=true"),
+                "missing chatMetadata: {content}"
+            );
+            assert!(
+                content.contains("worldInfoLen=0"),
+                "missing worldInfo: {content}"
+            );
+            assert!(
+                content.contains("temperature=0.7"),
+                "missing generationSettings: {content}"
+            );
+        }
+        effect => panic!("expected PromptRewrite, got {effect:?}"),
+    }
+    assert!(receipt.script_logs.is_empty());
+}
+
+#[test]
+fn frozen_write_warns_and_does_not_throw() {
+    let directory = tempdir().unwrap();
+    let source = r#"
+let writeResult = null;
+globalThis.namedInterceptor = function(chat) {
+    const ctx = SillyTavern.getContext();
+    try {
+        ctx.name2 = "Modified";
+        writeResult = "no-throw";
+    } catch (e) {
+        writeResult = "threw: " + e.message;
+    }
+};
+"#;
+    let plugin = write_test_bridge_plugin(
+        &directory.path().join("plugin"),
+        "org.stcli.frozen-test",
+        source,
+    );
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&plugin)
+        .unwrap();
+    let grant = authorize(&installed);
+    let session_id = EntityId::new();
+
+    let receipt = PluginHost::new(PluginLimits::default())
+        .execute(
+            &installed,
+            &grant,
+            PluginInput {
+                event: PluginEvent::GenerateInterceptor,
+                plugin_id: installed.manifest.id.clone(),
+                settings: json!({}),
+                context: json!({"name2": "Alice", "chat": []}),
+                payload: json!({
+                    "chat": [{"name": "Alice", "is_user": false, "is_system": false, "mes": "Hi", "extra": {}, "index": 0}],
+                    "has_user_message": false,
+                }),
+                artifact: json!(null),
+                state: json!(null),
+                session: json!({"session_id": session_id, "branch_id": EntityId::new()}),
+            },
+        )
+        .unwrap();
+
+    // Write should not throw; a warning should be logged.
+    let warnings: Vec<_> = receipt
+        .script_logs
+        .iter()
+        .filter(|l| l.level == "warn")
+        .collect();
+    assert!(
+        warnings.iter().any(|l| l.message.contains("frozen")),
+        "expected frozen-write warning, got: {:?}",
+        receipt.script_logs
+    );
+}
+
+#[test]
+fn stub_methods_warn_once() {
+    let directory = tempdir().unwrap();
+    let source = r#"
+globalThis.namedInterceptor = function(chat) {
+    SillyTavern.setExtensionPrompt("test", "prompt", 0, 0, false, "system");
+    SillyTavern.setExtensionPrompt("test", "prompt", 0, 0, false, "system");
+    const tokens = SillyTavern.getTokenCount("hello");
+    const substituted = SillyTavern.substituteParams("hello {{user}}");
+    chat.push({
+        name: 'System',
+        is_user: false,
+        is_system: true,
+        mes: 'tokens=' + tokens + ' substituted=' + substituted,
+        extra: {},
+        index: chat.length
+    });
+    SillyTavern.generateQuietPrompt("test");
+};
+"#;
+    let plugin = write_test_bridge_plugin(
+        &directory.path().join("plugin"),
+        "org.stcli.stub-test",
+        source,
+    );
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&plugin)
+        .unwrap();
+    let grant = authorize(&installed);
+    let session_id = EntityId::new();
+
+    let receipt = PluginHost::new(PluginLimits::default())
+        .execute(
+            &installed,
+            &grant,
+            PluginInput {
+                event: PluginEvent::GenerateInterceptor,
+                plugin_id: installed.manifest.id.clone(),
+                settings: json!({}),
+                context: json!({}),
+                payload: json!({
+                    "chat": [{"name": "Alice", "is_user": false, "is_system": false, "mes": "Hi", "extra": {}, "index": 0}],
+                    "has_user_message": false,
+                }),
+                artifact: json!(null),
+                state: json!(null),
+                session: json!({"session_id": session_id, "branch_id": EntityId::new()}),
+            },
+        )
+        .unwrap();
+
+    // Verify return values are control-flow-safe.
+    match &receipt.effects[0] {
+        PluginEffect::PromptRewrite { messages } => {
+            let content = &messages.last().unwrap().content;
+            assert!(
+                content.contains("tokens=0"),
+                "getTokenCount should return 0: {content}"
+            );
+            assert!(
+                content.contains("substituted=hello {{user}}"),
+                "substituteParams should return input: {content}"
+            );
+        }
+        effect => panic!("expected PromptRewrite, got {effect:?}"),
+    }
+
+    let warnings: Vec<_> = receipt
+        .script_logs
+        .iter()
+        .filter(|l| l.level == "warn")
+        .collect();
+    // setExtensionPrompt called twice → 1 warning; getTokenCount → 1; generateQuietPrompt → 1.
+    assert!(
+        warnings
+            .iter()
+            .any(|l| l.message.contains("setExtensionPrompt")),
+        "expected setExtensionPrompt warning, got: {:?}",
+        receipt.script_logs
+    );
+    assert!(
+        warnings.iter().any(|l| l.message.contains("getTokenCount")),
+        "expected getTokenCount warning, got: {:?}",
+        receipt.script_logs
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|l| l.message.contains("generateQuietPrompt")),
+        "expected generateQuietPrompt warning, got: {:?}",
+        receipt.script_logs
+    );
+}
+
+#[test]
+fn event_source_off_removes_listener() {
+    let directory = tempdir().unwrap();
+    let source = r#"
+let callCount = 0;
+function handler() { callCount += 1; }
+eventSource.on(event_types.APP_READY, handler);
+eventSource.off(event_types.APP_READY, handler);
+globalThis.namedInterceptor = function(chat) {
+    chat.push({
+        name: 'System',
+        is_user: false,
+        is_system: true,
+        mes: 'callCount=' + callCount,
+        extra: {},
+        index: chat.length
+    });
+};
+"#;
+    let plugin = write_test_bridge_plugin(
+        &directory.path().join("plugin"),
+        "org.stcli.off-test",
+        source,
+    );
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&plugin)
+        .unwrap();
+    let grant = authorize(&installed);
+    let session_id = EntityId::new();
+
+    let receipt = PluginHost::new(PluginLimits::default())
+        .execute(
+            &installed,
+            &grant,
+            PluginInput {
+                event: PluginEvent::GenerateInterceptor,
+                plugin_id: installed.manifest.id.clone(),
+                settings: json!({}),
+                context: json!({}),
+                payload: json!({
+                    "chat": [{"name": "Alice", "is_user": false, "is_system": false, "mes": "Hi", "extra": {}, "index": 0}],
+                    "has_user_message": false,
+                }),
+                artifact: json!(null),
+                state: json!(null),
+                session: json!({"session_id": session_id, "branch_id": EntityId::new()}),
+            },
+        )
+        .unwrap();
+
+    // APP_READY was removed by off, so the handler should not have been called.
+    match &receipt.effects[0] {
+        PluginEffect::PromptRewrite { messages } => {
+            let content = &messages.last().unwrap().content;
+            assert!(
+                content.contains("callCount=0"),
+                "handler was called despite off(): {content}"
+            );
+        }
+        effect => panic!("expected PromptRewrite, got {effect:?}"),
+    }
+}
+
+#[test]
+fn unknown_sillytavern_member_is_control_flow_safe_noop() {
+    let directory = tempdir().unwrap();
+    let source = r#"
+globalThis.namedInterceptor = function(chat) {
+    let threw = false;
+    try {
+        SillyTavern.getVariables({ type: 'chat' });
+        SillyTavern.callPopup('hello');
+        SillyTavern.getVariables({ type: 'chat' });
+    } catch (e) {
+        threw = true;
+    }
+    chat.push({
+        name: 'System',
+        is_user: false,
+        is_system: true,
+        mes: 'threw=' + threw,
+        extra: {},
+        index: chat.length
+    });
+};
+"#;
+    let plugin = write_test_bridge_plugin(
+        &directory.path().join("plugin"),
+        "org.stcli.noop-test",
+        source,
+    );
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&plugin)
+        .unwrap();
+    let grant = authorize(&installed);
+    let session_id = EntityId::new();
+
+    let receipt = PluginHost::new(PluginLimits::default())
+        .execute(
+            &installed,
+            &grant,
+            PluginInput {
+                event: PluginEvent::GenerateInterceptor,
+                plugin_id: installed.manifest.id.clone(),
+                settings: json!({}),
+                context: json!({}),
+                payload: json!({
+                    "chat": [{"name": "Alice", "is_user": false, "is_system": false, "mes": "Hi", "extra": {}, "index": 0}],
+                    "has_user_message": false,
+                }),
+                artifact: json!(null),
+                state: json!(null),
+                session: json!({"session_id": session_id, "branch_id": EntityId::new()}),
+            },
+        )
+        .unwrap();
+
+    match &receipt.effects[0] {
+        PluginEffect::PromptRewrite { messages } => {
+            let content = &messages.last().unwrap().content;
+            assert!(
+                content.contains("threw=false"),
+                "unknown members threw: {content}"
+            );
+        }
+        effect => panic!("expected PromptRewrite, got {effect:?}"),
+    }
+
+    let warnings: Vec<_> = receipt
+        .script_logs
+        .iter()
+        .filter(|l| l.level == "warn")
+        .collect();
+    assert!(
+        warnings.iter().any(|l| l.message.contains("getVariables")),
+        "expected getVariables warning, got: {:?}",
+        receipt.script_logs
+    );
+    assert!(
+        warnings.iter().any(|l| l.message.contains("callPopup")),
+        "expected callPopup warning, got: {:?}",
+        receipt.script_logs
+    );
+    // One-time: getVariables called twice but only one warning.
+    let get_vars_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|l| l.message.contains("getVariables"))
+        .collect();
+    assert_eq!(
+        get_vars_warnings.len(),
+        1,
+        "expected one-time warning, got: {:?}",
+        receipt.script_logs
+    );
+}

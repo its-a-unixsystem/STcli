@@ -13,6 +13,7 @@ This page is the complete guide. It has an introduction, two tutorials, a packag
 - [Choose a runtime](#choose-a-runtime)
 - [st-bridge deterministic globals](#st-bridge-deterministic-globals)
 - [Brokered HTTPS egress](#brokered-https-egress)
+- [SillyTavern.getContext() read-only surface](#sillytaverngetcontext-read-only-surface)
 - [The manifest](#the-manifest)
 - [Tutorial: a script plugin](#tutorial-a-script-plugin)
 - [Tutorial: a Wasm plugin](#tutorial-a-wasm-plugin)
@@ -156,6 +157,48 @@ Dry Runs exercise egress without touching the network: a live broker answers a c
 response, and a broker configured with a stub transport forwards to the stub. Native Plugin hosts
 can reuse the same boundary through `EgressBroker`, `EgressTransport`, and `StubTransport` in
 `stcli-core`.
+
+### `SillyTavern.getContext()` read-only surface
+
+`SillyTavern.getContext()` returns a frozen, deep-copied snapshot of the active session. The
+snapshot is rebuilt for every call; writes to it warn without effect. The frozen fields are:
+
+| Field | Content |
+|---|---|
+| `name1` | The active persona name (the "user" name). |
+| `name2` | The active character name. |
+| `chatId` | The active branch ID. |
+| `sessionId` | The active session ID. |
+| `chat` | The full chat history as `[{role, content}]` turns. |
+| `characters` | One-element array with the active character's name and revision hash. |
+| `characterId` | The active character's content-addressed revision hash. |
+| `groups` | Empty array (group chat is not yet supported). |
+| `chatMetadata` | Empty object placeholder. |
+| `worldInfo` | Empty array (lorebook exposure is not yet supported). |
+| `generationSettings` | The effective generation settings (session + preset + profile defaults). |
+
+The following methods are present as stubs that emit a one-time warn-level script log on
+first call. They exist so that unmodified Extensions do not throw; they do not yet mutate engine
+state. Return values are control-flow-safe so Extensions can chain calls without crashing.
+
+| Method | Return value | Planned ticket |
+|---|---|---|
+| `setExtensionPrompt` | `undefined` | Prompt slot injection |
+| `registerSlashCommand` | `undefined` | Ticket 04 (slash commands) |
+| `executeSlashCommands` | `undefined` | Ticket 04 |
+| `substituteParams(text)` | `text` unchanged | Macro expansion |
+| `getTokenCount(text)` | `0` | Token counting |
+| `saveSettingsDebounced` | `undefined` | Ticket 05 (settings) |
+| `saveMetadata` | `undefined` | Ticket 05 |
+| `updateChatMetadata` | `undefined` | Ticket 05 |
+| `generateQuietPrompt` | `undefined` | Ticket 09 (secondary inference) |
+| `generateRaw` | `undefined` | Ticket 09 |
+
+Any other `SillyTavern.X` member access returns a no-op function that warns once per property
+name. Writes to `SillyTavern` properties warn once and are ignored.
+
+`eventSource` supports `on(event, listener)`, `off(event, listener)`, and `emit(event)` (no-op).
+`off` removes a previously registered listener; `emit` is a control-flow-safe no-op.
 
 ## The manifest
 
