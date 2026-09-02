@@ -568,19 +568,20 @@ impl StcliEngine {
                 if !capabilities.is_subset(&installed.manifest.requested_capabilities) {
                     return Err(EngineError::PluginGrantExceeded);
                 }
-                let mut configuration = selected_session_configuration(&store, session_id)?;
-                configuration.plugins.retain(|pin| pin.id != id);
-                configuration.plugins.push(PluginPin {
-                    id,
-                    version: installed.manifest.version.to_string(),
-                    component_hash: installed.manifest.component_sha256,
-                    capabilities,
-                    settings,
-                    egress_allow_list: egress,
-                    enabled: true,
-                });
                 Ok(EngineResult::Configuration(Box::new(
-                    store.update_session_configuration(session_id, configuration)?,
+                    adopt_plugin_configuration(
+                        &mut store,
+                        session_id,
+                        PluginPin {
+                            id,
+                            version: installed.manifest.version.to_string(),
+                            component_hash: installed.manifest.component_sha256,
+                            capabilities,
+                            settings,
+                            egress_allow_list: egress,
+                            enabled: true,
+                        },
+                    )?,
                 )))
             }
             EngineCommand::AdoptExtension {
@@ -599,19 +600,20 @@ impl StcliEngine {
                 if !capabilities.is_subset(&installed.manifest.requested_capabilities) {
                     return Err(EngineError::PluginGrantExceeded);
                 }
-                let mut configuration = selected_session_configuration(&store, session_id)?;
-                configuration.plugins.retain(|pin| pin.id != id);
-                configuration.plugins.push(PluginPin {
-                    id,
-                    version: installed.manifest.version.to_string(),
-                    component_hash: installed.manifest.component_sha256,
-                    capabilities,
-                    settings,
-                    egress_allow_list: egress,
-                    enabled: true,
-                });
                 Ok(EngineResult::Configuration(Box::new(
-                    store.update_session_configuration(session_id, configuration)?,
+                    adopt_plugin_configuration(
+                        &mut store,
+                        session_id,
+                        PluginPin {
+                            id,
+                            version: installed.manifest.version.to_string(),
+                            component_hash: installed.manifest.component_sha256,
+                            capabilities,
+                            settings,
+                            egress_allow_list: egress,
+                            enabled: true,
+                        },
+                    )?,
                 )))
             }
             EngineCommand::UpgradePlugin {
@@ -1370,6 +1372,19 @@ fn selected_session_configuration(
         .configuration(&session.current_config_hash)?
         .map(|record| record.configuration)
         .ok_or(EngineError::SelectedSessionConfigurationMissing)
+}
+
+fn adopt_plugin_configuration(
+    store: &mut Store,
+    session_id: EntityId,
+    pin: PluginPin,
+) -> Result<SessionConfigurationRecord, EngineError> {
+    let mut configuration = selected_session_configuration(store, session_id)?;
+    configuration
+        .plugins
+        .retain(|existing| existing.id != pin.id);
+    configuration.plugins.push(pin);
+    Ok(store.update_session_configuration(session_id, configuration)?)
 }
 
 fn session_summaries(store: &Store) -> Result<Vec<SessionSummary>, EngineError> {
