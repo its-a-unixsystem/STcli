@@ -233,7 +233,7 @@ Every plugin has a `manifest.json` file. The [manifest schema](../schemas/plugin
 | `requested_capabilities` | The capabilities the plugin asks for. See [Capabilities](#capabilities). |
 | `before` | Plugin identifiers this plugin must run before. |
 | `after` | Plugin identifiers this plugin must run after. |
-| `generate_interceptor` | Optional JavaScript global function name for an `st-bridge` Extension. It requires the `generate-interceptor` subscription and `contribute-prompt` grant. |
+| `generate_interceptor` | Optional JavaScript global function name for an `st-bridge` Extension. It requires the `generate-interceptor` subscription. Prompt read-back is inherent to the bridge runtime. |
 
 The engine validates the component digest before it runs the component. When the file and the digest do not match, the engine rejects the plugin.
 
@@ -241,10 +241,11 @@ The engine validates the component digest before it runs the component. When the
 
 `extension import <directory>` accepts an unmodified local SillyTavern Extension directory. Core
 does not clone or update git repositories. It reads the native `manifest.json`, copies the declared
-JavaScript component into a normalized `st-bridge` package, and installs it under the exact
-component digest. The source directory basename becomes a lowercase kebab-case Plugin ID.
+JavaScript component into a normalized internal `st-bridge` package, and installs it under the
+exact component digest. The source directory basename becomes a lowercase kebab-case Extension
+identifier.
 
-| Native field | Normalized Plugin field or behavior |
+| Native field | Normalized internal field or behavior |
 |---|---|
 | `js` | The single JavaScript component. A string or one-element array is accepted. |
 | `version` | `version`; it must be semantic. |
@@ -268,11 +269,11 @@ stcli extension adopt --session <session-id> \
   <extension-id>
 ```
 
-This creates a Session Configuration Revision that pins the exact version and digest. The fixed
-consent grant includes namespaced state writes, command registration, Brokered HTTPS Egress, and
-Secondary Inference. The normalized manifest also declares the bridge's lifecycle, prompt, and
-Session-read capabilities, but the dedicated adoption command does not grant them implicitly. The
-egress allow-list is empty unless `--egress-domain <host>` is repeated explicitly.
+This creates a Session Configuration Revision that pins the exact version and digest. Read-only
+Session context, lifecycle observation, and prompt read-back are inherent to the bridge runtime.
+The fixed consent grant covers namespaced state writes, command registration, Brokered HTTPS
+Egress, and Secondary Inference. The egress allow-list is empty unless
+`--egress-domain <host>` is repeated explicitly.
 
 ## Tutorial: a script plugin
 

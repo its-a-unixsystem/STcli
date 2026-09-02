@@ -1623,7 +1623,15 @@ async fn imports_native_extension_and_adopts_fixed_bridge_grant() {
     std::fs::create_dir_all(source.join("scripts")).unwrap();
     let script = br#"
 globalThis.rewrite = function (chat) {
-  void chat;
+  const context = SillyTavern.getContext();
+  chat.push({
+    name: "System",
+    is_user: false,
+    is_system: true,
+    mes: `imported extension prompt for ${context.name2}`,
+    extra: {},
+    index: chat.length
+  });
 };
 "#;
     std::fs::write(source.join("scripts").join("index.js"), script).unwrap();
@@ -1736,14 +1744,6 @@ globalThis.rewrite = function (chat) {
         b"globalThis.changed = true;",
     )
     .unwrap();
-    let manifest_path = source.join("manifest.json");
-    let mut manifest: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
-    manifest
-        .as_object_mut()
-        .unwrap()
-        .remove("generate_interceptor");
-    std::fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
     let EngineResult::ImportedExtension(changed) = engine
         .execute(EngineCommand::ImportExtension { directory: source }, |_| {})
         .await
@@ -1809,9 +1809,9 @@ globalThis.rewrite = function (chat) {
         .execute(
             EngineCommand::AdoptExtension {
                 session_id: created.session.session_id,
-                id: changed.plugin.manifest.id.clone(),
-                version: changed.plugin.manifest.version.to_string(),
-                digest: changed.plugin.manifest.component_sha256.clone(),
+                id: imported.plugin.manifest.id.clone(),
+                version: imported.plugin.manifest.version.to_string(),
+                digest: imported.plugin.manifest.component_sha256.clone(),
                 settings: json!({}),
                 egress: Vec::new(),
             },
@@ -1823,7 +1823,10 @@ globalThis.rewrite = function (chat) {
         panic!("unexpected extension adoption result");
     };
     let pin = configuration.configuration.plugins.last().unwrap();
-    assert_eq!(pin.component_hash, changed.plugin.manifest.component_sha256);
+    assert_eq!(
+        pin.component_hash,
+        imported.plugin.manifest.component_sha256
+    );
     assert_eq!(
         pin.capabilities,
         [
@@ -1837,7 +1840,8 @@ globalThis.rewrite = function (chat) {
     );
     assert!(pin.egress_allow_list.is_empty());
 
-    let EngineResult::DryRun(_) = engine
+    // Regression: the fixed Extension consent tier must still permit bridge-inherent prompt rewrites.
+    let EngineResult::DryRun(result) = engine
         .execute(
             EngineCommand::DryRunSend {
                 session_id: created.session.session_id,
@@ -1851,6 +1855,13 @@ globalThis.rewrite = function (chat) {
     else {
         panic!("unexpected Dry Run result");
     };
+    assert!(
+        result.provider_request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["content"] == "imported extension prompt for Alice")
+    );
 }
 
 #[test]

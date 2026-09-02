@@ -1513,21 +1513,14 @@ impl Store {
                 continue;
             }
             let grant = &grants[&installed.manifest.id];
-            let context = if grant
-                .capabilities
-                .contains(&crate::PluginCapability::ReadSession)
-            {
-                bridge_context_snapshot(
-                    configuration,
-                    session_id,
-                    branch_id,
-                    character_name,
-                    session_chat,
-                    effective_generation_settings,
-                )
-            } else {
-                Value::Null
-            };
+            let context = bridge_context_snapshot(
+                configuration,
+                session_id,
+                branch_id,
+                character_name,
+                session_chat,
+                effective_generation_settings,
+            );
             let session = json!({"session_id": session_id, "branch_id": branch_id, "generation_type": generation_type, "dry_run": dry_run});
             if installed
                 .manifest
@@ -1694,31 +1687,24 @@ impl Store {
                 continue;
             }
             let grant = &grants[&installed.manifest.id];
-            let context = if grant
-                .capabilities
-                .contains(&crate::PluginCapability::ReadSession)
-            {
-                let character =
-                    self.decoded_artifact(&configuration.configuration.character_revision)?;
-                let character_name = character
-                    .semantic
-                    .get("data")
-                    .and_then(|d| d.get("name"))
-                    .and_then(Value::as_str)
-                    .or_else(|| character.semantic.get("name").and_then(Value::as_str))
-                    .unwrap_or("Character");
-                let effective = resolve_effective_generation_settings(&configuration, None);
-                bridge_context_snapshot(
-                    &configuration,
-                    session_id,
-                    branch_id,
-                    character_name,
-                    &chat,
-                    &effective,
-                )
-            } else {
-                Value::Null
-            };
+            let character =
+                self.decoded_artifact(&configuration.configuration.character_revision)?;
+            let character_name = character
+                .semantic
+                .get("data")
+                .and_then(|d| d.get("name"))
+                .and_then(Value::as_str)
+                .or_else(|| character.semantic.get("name").and_then(Value::as_str))
+                .unwrap_or("Character");
+            let effective = resolve_effective_generation_settings(&configuration, None);
+            let context = bridge_context_snapshot(
+                &configuration,
+                session_id,
+                branch_id,
+                character_name,
+                &chat,
+                &effective,
+            );
             receipts.push(host.execute(&installed, grant, PluginInput {
                 event: PluginEvent::StBridgeLifecycle,
                 plugin_id: installed.manifest.id.clone(), settings: grant.settings.clone(), context,

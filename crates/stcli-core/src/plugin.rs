@@ -1142,6 +1142,18 @@ fn validate_effects(
         {
             return Err(PluginError::LifecycleObservationOnly);
         }
+        if installed.manifest.runtime == PluginRuntime::StBridge
+            && matches!(
+                (event, effect),
+                (PluginEvent::StBridgeLifecycle, PluginEffect::Observe { .. })
+                    | (
+                        PluginEvent::GenerateInterceptor | PluginEvent::ChatCompletionPromptReady,
+                        PluginEffect::PromptRewrite { .. }
+                    )
+            )
+        {
+            continue;
+        }
         let capability = match effect {
             PluginEffect::Output { .. } => PluginCapability::InspectArtifact,
             PluginEffect::Observe { .. } => PluginCapability::ObserveLifecycle,
