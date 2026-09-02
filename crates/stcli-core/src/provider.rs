@@ -353,6 +353,34 @@ pub fn provider_request(
     prompt_plan: &PromptPlan,
     generation_settings: &Value,
 ) -> Result<Value, ProviderError> {
+    provider_request_parts(
+        settings,
+        &prompt_plan.messages,
+        prompt_plan.text_prompt.as_deref(),
+        &prompt_plan.stop_sequences,
+        generation_settings,
+    )
+}
+
+pub(crate) fn secondary_provider_request(
+    settings: &ProviderSettings,
+    prompt: &str,
+    generation_settings: &Value,
+) -> Result<Value, ProviderError> {
+    let messages = [ChatMessage {
+        role: ChatRole::User,
+        content: prompt.to_owned(),
+    }];
+    provider_request_parts(settings, &messages, Some(prompt), &[], generation_settings)
+}
+
+fn provider_request_parts(
+    settings: &ProviderSettings,
+    messages: &[ChatMessage],
+    text_prompt: Option<&str>,
+    stop_sequences: &[String],
+    generation_settings: &Value,
+) -> Result<Value, ProviderError> {
     let mut request = match generation_settings {
         Value::Object(object) => object.clone(),
         _ => return Err(ProviderError::InvalidGenerationSettings),
@@ -362,16 +390,15 @@ pub fn provider_request(
         FormatMode::ChatCompletion => {
             request.insert(
                 "messages".to_owned(),
-                serde_json::to_value(&prompt_plan.messages).map_err(ProviderError::Encode)?,
+                serde_json::to_value(messages).map_err(ProviderError::Encode)?,
             );
         }
         FormatMode::TextCompletion => {
             request.insert(
                 "prompt".to_owned(),
                 Value::String(
-                    prompt_plan
-                        .text_prompt
-                        .clone()
+                    text_prompt
+                        .map(str::to_owned)
                         .ok_or(ProviderError::MissingTextPrompt)?,
                 ),
             );
@@ -387,7 +414,7 @@ pub fn provider_request(
                     .collect::<Result<Vec<_>, _>>()?,
                 Some(_) => return Err(ProviderError::InvalidStopSequences),
             };
-            for stop in &prompt_plan.stop_sequences {
+            for stop in stop_sequences {
                 if !stop.is_empty() && !stops.contains(stop) {
                     stops.push(stop.clone());
                 }

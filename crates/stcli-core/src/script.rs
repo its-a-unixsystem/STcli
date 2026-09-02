@@ -19,6 +19,7 @@ pub struct ScriptOutcome {
     pub effects: Vec<PluginEffect>,
     pub logs: Vec<ScriptLog>,
     pub egress_receipts: Vec<crate::EgressReceipt>,
+    pub inference_receipts: Vec<crate::InferenceReceipt>,
     pub prng_seed: Option<u64>,
 }
 
@@ -115,6 +116,7 @@ pub fn execute(
         effects: sink.effects.clone(),
         logs: sink.logs.clone(),
         egress_receipts: Vec::new(),
+        inference_receipts: Vec::new(),
         prng_seed: None,
     })
 }

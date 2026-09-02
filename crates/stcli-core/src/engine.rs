@@ -29,6 +29,7 @@ const NEMO_PLUGIN_SCRIPT: &str = include_str!("../../../plugins/nemo-directives/
 pub struct StcliEngine {
     database: PathBuf,
     egress: Option<crate::EgressBroker>,
+    inference: Option<crate::InferenceBroker>,
 }
 
 impl StcliEngine {
@@ -36,6 +37,7 @@ impl StcliEngine {
         Self {
             database: database.as_ref().to_owned(),
             egress: None,
+            inference: None,
         }
     }
 
@@ -43,6 +45,19 @@ impl StcliEngine {
         Self {
             database: database.as_ref().to_owned(),
             egress: Some(broker),
+            inference: None,
+        }
+    }
+
+    pub fn with_effect_brokers(
+        database: impl AsRef<Path>,
+        egress: crate::EgressBroker,
+        inference: crate::InferenceBroker,
+    ) -> Self {
+        Self {
+            database: database.as_ref().to_owned(),
+            egress: Some(egress),
+            inference: Some(inference),
         }
     }
 
@@ -461,6 +476,9 @@ impl StcliEngine {
         let mut store = Store::open(&self.database)?;
         if let Some(broker) = &self.egress {
             store.set_egress_broker(broker.clone());
+        }
+        if let Some(broker) = &self.inference {
+            store.set_inference_broker(broker.clone());
         }
         match command {
             EngineCommand::InstallPlugin { directory } => {

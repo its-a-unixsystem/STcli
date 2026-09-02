@@ -177,11 +177,11 @@ snapshot is rebuilt for every call; writes to it warn without effect. The frozen
 | `worldInfo` | Empty array (lorebook exposure is not yet supported). |
 | `generationSettings` | The effective generation settings (session + preset + profile defaults). |
 
-The following methods are present as stubs that emit a one-time warn-level script log on
-first call. They exist so that unmodified Extensions do not throw; they do not yet mutate engine
-state. Return values are control-flow-safe so Extensions can chain calls without crashing.
+The following methods are present as control-flow-safe host APIs. Generation calls return a
+Promise and route through the brokered Secondary Inference boundary; they do not mutate the
+primary Session Configuration Revision.
 
-| Method | Return value | Planned ticket |
+| Method | Return value | Requirements |
 |---|---|---|
 | `setExtensionPrompt` | `undefined` | Prompt slot injection |
 | `registerSlashCommand` | `undefined` | Ticket 04 (slash commands) |
@@ -191,8 +191,19 @@ state. Return values are control-flow-safe so Extensions can chain calls without
 | `saveSettingsDebounced` | `undefined` | Ticket 05 (settings) |
 | `saveMetadata` | `undefined` | Ticket 05 |
 | `updateChatMetadata` | `undefined` | Ticket 05 |
-| `generateQuietPrompt` | `undefined` | Ticket 09 (secondary inference) |
-| `generateRaw` | `undefined` | Ticket 09 |
+| `generateQuietPrompt(prompt, options)` | `Promise<string>` | `secondary-inference` grant |
+| `generateRaw(prompt, options)` | `Promise<string>` | `secondary-inference` grant |
+
+`options.provider` or `options.providerProfile` selects a named `[providers.<name>]` profile;
+when omitted, the session's provider profile is used. Other option fields are independent,
+per-call Effective Generation Settings and never update session configuration. Each successful
+or transport-failed exchange records the profile, canonical request hash, response content hash,
+effective settings, returned text, and status in the Plugin Receipt's `inference` array.
+
+Dry Runs use a configured stub transport, or return a deterministic empty completion without
+network access. Replay applies the recorded completion without resolving credentials, contacting
+the network, or executing the Extension. Denials and malformed calls warn and return an empty
+control-flow-safe completion.
 
 Any other `SillyTavern.X` member access returns a no-op function that warns once per property
 name. Writes to `SillyTavern` properties warn once and are ignored.

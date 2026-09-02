@@ -668,6 +668,32 @@ impl Store {
         };
         let attempt =
             self.begin_attempt(&turn, previous.config_hash, Some(attempt_id), preparation)?;
+        let inference_receipts = effect
+            .plugins
+            .iter()
+            .filter(|receipt| receipt.event == PluginEvent::GenerateInterceptor)
+            .flat_map(|receipt| receipt.inference.iter())
+            .collect::<Vec<_>>();
+        if inference_receipts.len() > 1 {
+            return Err(TurnError::Plugin(PluginError::RecordedReceiptInvalid(
+                "ambiguous primary inference receipts".to_owned(),
+            )));
+        }
+        if let Some(inference) = inference_receipts.first() {
+            crate::validate_inference_receipt(inference).map_err(|error| {
+                TurnError::Plugin(PluginError::RecordedReceiptInvalid(error.to_string()))
+            })?;
+            let result = ProviderResult {
+                text: inference.text.clone(),
+                request_hash: attempt
+                    .provider_request_hash
+                    .clone()
+                    .ok_or(TurnError::ProviderRequestHashMismatch)?,
+                receipt: json!({ "replayed_inference": inference.response_hash }),
+                events: Vec::new(),
+            };
+            return self.complete_attempt(turn, attempt, result, true);
+        }
         self.execute_attempt(turn, attempt, configuration, &mut on_event)
             .await
     }
@@ -1479,7 +1505,8 @@ impl Store {
             return Ok(Vec::new());
         }
         let (ordered, grants) = self.configured_runtime_plugins(configuration)?;
-        let host = PluginHost::with_egress(Default::default(), self.egress.clone());
+        let host = PluginHost::with_egress(Default::default(), self.egress.clone())
+            .with_inference(self.inference.clone());
         let mut receipts = Vec::new();
         for installed in ordered {
             if installed.manifest.runtime != PluginRuntime::StBridge {
@@ -2726,7 +2753,8 @@ impl Store {
         };
         let reasoning_scripts = self.granted_scripts_for_attempt(&configuration)?;
         match result {
-            Ok(result) => match self.complete_attempt(turn.clone(), attempt.clone(), result) {
+            Ok(result) => match self.complete_attempt(turn.clone(), attempt.clone(), result, false)
+            {
                 Ok(mut completed) => {
                     completed.scrubbed_reasoning =
                         scrub_reasoning(&completed.provider_events, &reasoning_scripts);
@@ -2772,6 +2800,7 @@ impl Store {
         mut turn: TurnProjection,
         mut attempt: AttemptProjection,
         result: ProviderResult,
+        replay: bool,
     ) -> Result<CompletedTurn, TurnError> {
         let candidate_id = EntityId::new();
         let parent_candidate_id = attempt.prompt_plan.parent_candidate_id;
@@ -2795,10 +2824,14 @@ impl Store {
         if attempt.provider_request_hash.as_ref() != Some(&result.request_hash) {
             return Err(TurnError::ProviderRequestHashMismatch);
         }
-        let lifecycle_receipts =
-            self.run_st_bridge_lifecycle(&attempt, turn.session_id, turn.branch_id, &content)?;
-        let post_commit_receipts =
-            self.run_post_commit_plugins(&attempt, turn.session_id, turn.branch_id, &content)?;
+        let (lifecycle_receipts, post_commit_receipts) = if replay {
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                self.run_st_bridge_lifecycle(&attempt, turn.session_id, turn.branch_id, &content)?,
+                self.run_post_commit_plugins(&attempt, turn.session_id, turn.branch_id, &content)?,
+            )
+        };
         if !lifecycle_receipts.is_empty() || !post_commit_receipts.is_empty() {
             let effect_receipt = attempt
                 .effect_receipt

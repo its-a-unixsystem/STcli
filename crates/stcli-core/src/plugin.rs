@@ -36,6 +36,8 @@ pub enum PluginCapability {
     AbortPreRequest,
     InspectArtifact,
     BrokeredEgress,
+    #[serde(rename = "secondary-inference")]
+    InferenceCapability,
 }
 impl std::str::FromStr for PluginCapability {
     type Err = PluginError;
@@ -51,6 +53,7 @@ impl std::str::FromStr for PluginCapability {
             "abort-pre-request" => Ok(Self::AbortPreRequest),
             "inspect-artifact" => Ok(Self::InspectArtifact),
             "brokered-egress" => Ok(Self::BrokeredEgress),
+            "secondary-inference" => Ok(Self::InferenceCapability),
             _ => Err(PluginError::UnknownCapability(value.to_owned())),
         }
     }
@@ -224,6 +227,8 @@ pub struct PluginReceipt {
     pub script_logs: Vec<ScriptLog>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub egress: Vec<crate::EgressReceipt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inference: Vec<crate::InferenceReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prng_seed: Option<u64>,
 }
@@ -284,6 +289,7 @@ impl Default for PluginLimits {
 pub struct PluginHost {
     limits: PluginLimits,
     egress: Option<crate::EgressBroker>,
+    inference: Option<crate::InferenceBroker>,
 }
 
 impl PluginHost {
@@ -291,6 +297,7 @@ impl PluginHost {
         Self {
             limits,
             egress: None,
+            inference: None,
         }
     }
 
@@ -298,7 +305,13 @@ impl PluginHost {
         Self {
             limits,
             egress: Some(broker),
+            inference: None,
         }
+    }
+
+    pub fn with_inference(mut self, broker: crate::InferenceBroker) -> Self {
+        self.inference = Some(broker);
+        self
     }
 
     pub fn execute(
@@ -335,6 +348,7 @@ impl PluginHost {
             return Err(PluginError::DigestMismatch);
         }
         let mut egress_receipts = Vec::new();
+        let mut inference_receipts = Vec::new();
         let (effects, fuel_consumed, script_logs, prng_seed) = match installed.manifest.runtime {
             PluginRuntime::Wasm => {
                 let (output_json, fuel_consumed) =
@@ -398,12 +412,40 @@ impl PluginHost {
                             mode,
                         }
                     });
+                    let inference =
+                        self.inference
+                            .clone()
+                            .map(|broker| crate::InferenceInvocation {
+                                broker,
+                                policy: crate::InferencePolicy {
+                                    capability_granted: grant
+                                        .capabilities
+                                        .contains(&PluginCapability::InferenceCapability),
+                                    mode: if input
+                                        .session
+                                        .get("dry_run")
+                                        .and_then(Value::as_bool)
+                                        .unwrap_or(false)
+                                    {
+                                        crate::InferenceMode::DryRun
+                                    } else {
+                                        crate::InferenceMode::Live
+                                    },
+                                },
+                                default_profile: input
+                                    .session
+                                    .get("provider_profile")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                            });
                     let outcome = crate::st_bridge::execute(
                         installed,
                         &input,
                         &source,
                         self.limits.script,
                         invocation,
+                        inference,
                     )?;
                     let output_json = serde_json::to_string(&PluginOutput {
                         effects: outcome.effects.clone(),
@@ -412,6 +454,7 @@ impl PluginHost {
                         return Err(PluginError::OutputLimit);
                     }
                     egress_receipts = outcome.egress_receipts;
+                    inference_receipts = outcome.inference_receipts;
                     (outcome.effects, 0, outcome.logs, outcome.prng_seed)
                 }
                 #[cfg(not(feature = "scripting"))]
@@ -433,6 +476,7 @@ impl PluginHost {
             input,
             effects,
             egress: egress_receipts,
+            inference: inference_receipts,
             fuel_consumed,
             script_logs,
             prng_seed,
@@ -772,6 +816,13 @@ pub fn validate_recorded_receipt(receipt: &PluginReceipt) -> Result<(), PluginEr
             .is_subset(&receipt.manifest.requested_capabilities)
         || receipt.input.plugin_id != receipt.id
         || receipt.input.event != receipt.event
+    {
+        return Err(PluginError::RecordedReceiptInvalid(receipt.id.clone()));
+    }
+    if receipt
+        .inference
+        .iter()
+        .any(|inference| crate::validate_inference_receipt(inference).is_err())
     {
         return Err(PluginError::RecordedReceiptInvalid(receipt.id.clone()));
     }

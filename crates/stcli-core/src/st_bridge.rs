@@ -74,13 +74,15 @@ struct BridgeContext {
     abandoned: Rc<Cell<bool>>,
     prng_seed: u64,
     logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
-    egress: Rc<RefCell<EgressState>>,
+    effects: Rc<RefCell<BridgeEffectState>>,
 }
 
-struct EgressState {
+struct BridgeEffectState {
     caller: String,
-    invocation: Option<EgressInvocation>,
-    receipts: Vec<EgressReceipt>,
+    egress: Option<EgressInvocation>,
+    inference: Option<crate::InferenceInvocation>,
+    egress_receipts: Vec<EgressReceipt>,
+    inference_receipts: Vec<crate::InferenceReceipt>,
 }
 
 struct Xoshiro128PlusPlus {
@@ -129,6 +131,7 @@ struct Request {
     source: String,
     limits: ScriptLimits,
     egress: Option<EgressInvocation>,
+    inference: Option<crate::InferenceInvocation>,
     response: mpsc::SyncSender<Result<ScriptOutcome, PluginError>>,
 }
 
@@ -149,6 +152,7 @@ pub(crate) fn execute(
     source: &str,
     limits: ScriptLimits,
     egress: Option<EgressInvocation>,
+    inference: Option<crate::InferenceInvocation>,
 ) -> Result<ScriptOutcome, PluginError> {
     let worker = WORKER
         .get_or_init(|| {
@@ -170,6 +174,7 @@ pub(crate) fn execute(
             source: source.to_owned(),
             limits,
             egress,
+            inference,
             response,
         })
         .map_err(|_| PluginError::StBridgeWorkerStopped)?;
@@ -190,6 +195,7 @@ impl Worker {
                 &request.source,
                 request.limits,
                 request.egress,
+                request.inference,
             );
             let result = match result {
                 Err(PluginError::StBridgeAsyncTimeout) => Ok(ScriptOutcome {
@@ -199,6 +205,7 @@ impl Worker {
                         message: "st-bridge async callback exceeded 64 microtasks; dispatch effects were discarded".to_owned(),
                     }],
                     egress_receipts: Vec::new(),
+                    inference_receipts: Vec::new(),
                     prng_seed: timeout_seed,
                 }),
                 other => other,
@@ -214,6 +221,7 @@ impl Worker {
         source: &str,
         limits: ScriptLimits,
         egress: Option<EgressInvocation>,
+        inference: Option<crate::InferenceInvocation>,
     ) -> Result<ScriptOutcome, PluginError> {
         let key = ContextKey::from_request(&installed, &input)?;
         if !self.contexts.contains_key(&key) {
@@ -226,16 +234,19 @@ impl Worker {
             .contexts
             .get_mut(&key)
             .ok_or(PluginError::StBridgeWorkerStopped)?;
-        *context.egress.borrow_mut() = EgressState {
+        *context.effects.borrow_mut() = BridgeEffectState {
             caller: installed.manifest.id.clone(),
-            invocation: egress,
-            receipts: Vec::new(),
+            egress,
+            inference,
+            egress_receipts: Vec::new(),
+            inference_receipts: Vec::new(),
         };
         if context.abandoned.get() {
             return Ok(ScriptOutcome {
                 effects: Vec::new(),
                 logs: context.take_logs(),
                 egress_receipts: Vec::new(),
+                inference_receipts: Vec::new(),
                 prng_seed: Some(context.prng_seed),
             });
         }
@@ -415,6 +426,7 @@ impl Worker {
                     effects: vec![PluginEffect::PromptRewrite { messages }],
                     logs: context.take_logs(),
                     egress_receipts: Vec::new(),
+                    inference_receipts: Vec::new(),
                     prng_seed: Some(context.prng_seed),
                 })
             }
@@ -434,6 +446,7 @@ impl Worker {
                         effects: Vec::new(),
                         logs: context.take_logs(),
                         egress_receipts: Vec::new(),
+                        inference_receipts: Vec::new(),
                         prng_seed: Some(context.prng_seed),
                     })
                 } else {
@@ -449,6 +462,7 @@ impl Worker {
                         }],
                         logs: context.take_logs(),
                         egress_receipts: Vec::new(),
+                        inference_receipts: Vec::new(),
                         prng_seed: Some(context.prng_seed),
                     })
                 }
@@ -476,12 +490,15 @@ impl Worker {
                     }],
                     logs: context.take_logs(),
                     egress_receipts: Vec::new(),
+                    inference_receipts: Vec::new(),
                     prng_seed: Some(context.prng_seed),
                 })
             }
             _ => Err(PluginError::UnsupportedStBridgeEvent),
         }?;
-        outcome.egress_receipts = std::mem::take(&mut context.egress.borrow_mut().receipts);
+        let mut effects = context.effects.borrow_mut();
+        outcome.egress_receipts = std::mem::take(&mut effects.egress_receipts);
+        outcome.inference_receipts = std::mem::take(&mut effects.inference_receipts);
         Ok(outcome)
     }
 }
@@ -528,10 +545,12 @@ impl BridgeContext {
         let next_timer_id = Rc::new(Cell::new(1));
         let logs = Rc::new(RefCell::new(Vec::new()));
         let warned_delayed_timer = Rc::new(Cell::new(false));
-        let egress = Rc::new(RefCell::new(EgressState {
+        let effects = Rc::new(RefCell::new(BridgeEffectState {
             caller: plugin_id.to_owned(),
-            invocation: None,
-            receipts: Vec::new(),
+            egress: None,
+            inference: None,
+            egress_receipts: Vec::new(),
+            inference_receipts: Vec::new(),
         }));
         context.with(|ctx| {
             install_globals(
@@ -542,7 +561,7 @@ impl BridgeContext {
                 next_timer_id,
                 Rc::clone(&logs),
                 warned_delayed_timer,
-                Rc::clone(&egress),
+                Rc::clone(&effects),
             )
             .map_err(|error| PluginError::ScriptRuntime(error.to_string()))?;
             let globals = ctx.globals();
@@ -576,7 +595,7 @@ impl BridgeContext {
             abandoned,
             prng_seed,
             logs,
-            egress,
+            effects,
         })
     }
 
@@ -728,7 +747,7 @@ fn install_globals<'js>(
     next_timer_id: Rc<Cell<u32>>,
     logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
     warned_delayed_timer: Rc<Cell<bool>>,
-    egress: Rc<RefCell<EgressState>>,
+    effects: Rc<RefCell<BridgeEffectState>>,
 ) -> rquickjs::Result<()> {
     let globals = ctx.globals();
     let event_types = Object::new(ctx.clone())?;
@@ -940,9 +959,12 @@ fn install_globals<'js>(
     silly_tavern.set("updateChatMetadata", make_stub(ctx, "updateChatMetadata")?)?;
     silly_tavern.set(
         "generateQuietPrompt",
-        make_stub(ctx, "generateQuietPrompt")?,
+        ctx.eval::<Function, _>("(prompt, options) => Promise.resolve(__stcliInfer(String(prompt), JSON.stringify(options || {})))")?,
     )?;
-    silly_tavern.set("generateRaw", make_stub(ctx, "generateRaw")?)?;
+    silly_tavern.set(
+        "generateRaw",
+        ctx.eval::<Function, _>("(prompt, options) => Promise.resolve(__stcliInfer(String(prompt), JSON.stringify(options || {})))")?,
+    )?;
 
     freeze(ctx, silly_tavern.clone())?;
 
@@ -1026,7 +1048,8 @@ fn install_globals<'js>(
 
     globals.set("clearTimeout", Function::new(ctx.clone(), || ())?)?;
     globals.set("clearInterval", Function::new(ctx.clone(), || ())?)?;
-    install_egress(ctx, &globals, egress, Rc::clone(&logs))?;
+    install_egress(ctx, &globals, effects.clone(), Rc::clone(&logs))?;
+    install_inference(ctx, &globals, effects, Rc::clone(&logs))?;
     Ok(())
 }
 
@@ -1082,7 +1105,7 @@ const EGRESS_SHIM: &str = r#"
 fn install_egress<'js>(
     ctx: &Ctx<'js>,
     globals: &Object<'js>,
-    egress: Rc<RefCell<EgressState>>,
+    effects: Rc<RefCell<BridgeEffectState>>,
     logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
 ) -> rquickjs::Result<()> {
     globals.set(
@@ -1098,7 +1121,7 @@ fn install_egress<'js>(
                     return DENIED_FETCH_JSON.to_owned();
                 }
             };
-            let invocation = egress.borrow().invocation.clone();
+            let invocation = effects.borrow().egress.clone();
             let Some(invocation) = invocation else {
                 logs.borrow_mut().push(crate::ScriptLog {
                     level: "warn".to_owned(),
@@ -1106,8 +1129,8 @@ fn install_egress<'js>(
                 });
                 return DENIED_FETCH_JSON.to_owned();
             };
-            let caller = egress.borrow().caller.clone();
-            let mut state = egress.borrow_mut();
+            let caller = effects.borrow().caller.clone();
+            let mut state = effects.borrow_mut();
             let outcome = invocation.broker.fetch(
                 &caller,
                 &invocation.policy,
@@ -1116,7 +1139,7 @@ fn install_egress<'js>(
                 &mut logs.borrow_mut(),
             );
             if let Some(receipt) = outcome.receipt {
-                state.receipts.push(receipt);
+                state.egress_receipts.push(receipt);
             }
             serde_json::to_string(&serde_json::json!({
                 "ok": outcome.ok,
@@ -1130,6 +1153,29 @@ fn install_egress<'js>(
         })?,
     )?;
     ctx.eval::<Value, _>(EGRESS_SHIM)?;
+    Ok(())
+}
+
+fn install_inference<'js>(
+    ctx: &Ctx<'js>,
+    globals: &Object<'js>,
+    effects: Rc<RefCell<BridgeEffectState>>,
+    logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
+) -> rquickjs::Result<()> {
+    globals.set("__stcliInfer", Function::new(ctx.clone(), move |prompt: String, options_json: String| {
+        let options: JsonValue = serde_json::from_str(&options_json).unwrap_or(JsonValue::Object(serde_json::Map::new()));
+        let Some(invocation) = effects.borrow().inference.clone() else {
+            logs.borrow_mut().push(crate::ScriptLog { level: "warn".to_owned(), message: "`generateQuietPrompt`/`generateRaw` unavailable: secondary inference is unavailable in this host".to_owned() });
+            return Ok::<String, rquickjs::Error>(String::new());
+        };
+        let object = options.as_object().cloned().unwrap_or_default();
+        let profile = object.get("provider").or_else(|| object.get("providerProfile")).and_then(JsonValue::as_str).unwrap_or(&invocation.default_profile).to_owned();
+        let request = crate::InferenceRequest { prompt, profile_name: profile, generation_settings: JsonValue::Object(object) };
+        match invocation.broker.infer("st-bridge", &invocation.policy, &request) {
+            Ok(response) => { effects.borrow_mut().inference_receipts.push(response.receipt); Ok(response.text) }
+            Err(error) => { logs.borrow_mut().push(crate::ScriptLog { level: "warn".to_owned(), message: error.to_string() }); Ok(String::new()) }
+        }
+    })?)?;
     Ok(())
 }
 

@@ -7,6 +7,7 @@ pub mod egress;
 pub mod engine;
 pub mod fixture;
 pub mod identity;
+pub mod inference;
 pub mod limits;
 pub mod lore;
 pub mod macros;
@@ -71,6 +72,12 @@ pub use fixture::{
 pub use identity::{
     ContentHash, EntityId, artifact_revision_hash, canonical_json, canonical_json_hash,
     session_projection_hash,
+};
+pub use inference::{
+    INFERENCE_REQUEST_DOMAIN, InferenceBroker, InferenceError, InferenceInvocation, InferenceMode,
+    InferencePolicy, InferenceReceipt, InferenceRequest, InferenceResponse, InferenceStatus,
+    InferenceTransport, InferenceTransportError, ProviderInferenceTransport,
+    StubInferenceTransport, validate_inference_receipt,
 };
 pub use lore::{
     ActivatedLore, LoreDecision, LoreDecisionOutcome, LoreEngine, LoreEntry, LoreError,

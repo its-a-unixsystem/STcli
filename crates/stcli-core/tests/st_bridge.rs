@@ -1437,3 +1437,181 @@ globalThis.namedInterceptor = function(chat) {
         receipt.script_logs
     );
 }
+
+#[test]
+fn secondary_inference_bridge_calls_both_apis_and_records_receipt() {
+    use stcli_core::{Config, InferenceBroker, InferenceMode, StubInferenceTransport};
+
+    let directory = tempdir().unwrap();
+    let source = r#"
+async function namedInterceptor(chat) {
+    const quiet = await SillyTavern.generateQuietPrompt("Summarize this", { provider: "summary", temperature: 0.2 });
+    const raw = await SillyTavern.generateRaw("Summarize this", { providerProfile: "summary", temperature: 0.2 });
+    chat.push({ mes: quiet + " / " + raw, is_user: false, is_system: false });
+    return chat;
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+    let plugin_dir = write_test_bridge_plugin(
+        &directory.path().join("plugin"),
+        "org.stcli.secondary-inference",
+        source,
+    );
+    let manifest_path = plugin_dir.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["requested_capabilities"] = json!(["contribute-prompt", "secondary-inference"]);
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&plugin_dir)
+        .unwrap();
+    let grant = PluginGrant {
+        id: installed.manifest.id.clone(),
+        version: installed.manifest.version.clone(),
+        component_sha256: installed.manifest.component_sha256.clone(),
+        capabilities: installed.manifest.requested_capabilities.clone(),
+        settings: json!({}),
+        egress_allow_list: Vec::new(),
+        enabled: true,
+    };
+    let settings = stcli_core::ProviderSettings {
+        id: "summary".to_owned(),
+        base_url: "https://example.invalid".to_owned(),
+        chat_completions_path: "/v1/chat/completions".to_owned(),
+        format_mode: Default::default(),
+        completions_path: None,
+        instruct_template: None,
+        context_formatting: None,
+        api_key_env: None,
+        credential_key: None,
+        static_headers: BTreeMap::new(),
+        timeout_seconds: 30,
+        ca_certificate_pem: None,
+        model: "stub".to_owned(),
+        stream: false,
+    };
+    let config = Config {
+        providers: BTreeMap::from([("summary".to_owned(), settings)]),
+    };
+    let broker = InferenceBroker::stub(
+        config,
+        Arc::new(StubInferenceTransport {
+            responses: BTreeMap::from([("summary".to_owned(), "stub summary".to_owned())]),
+        }),
+    );
+    let receipt = PluginHost::new(PluginLimits::default()).with_inference(broker).execute(
+        &installed, &grant, PluginInput {
+            event: PluginEvent::GenerateInterceptor, plugin_id: installed.manifest.id.clone(),
+            settings: json!({}), context: json!({}), payload: json!({"chat": [], "has_user_message": false}),
+            artifact: json!(null), state: json!(null),
+            session: json!({"session_id": EntityId::new(), "branch_id": EntityId::new(), "provider_profile": "summary", "dry_run": true}),
+        },
+    ).unwrap();
+    assert_eq!(
+        receipt.inference.len(),
+        2,
+        "logs: {:?}, effects: {:?}",
+        receipt.script_logs,
+        receipt.effects
+    );
+    assert!(
+        receipt
+            .inference
+            .iter()
+            .all(|item| item.text == "stub summary")
+    );
+    assert!(
+        receipt
+            .inference
+            .iter()
+            .all(|item| stcli_core::validate_inference_receipt(item).is_ok())
+    );
+    assert!(
+        receipt
+            .inference
+            .iter()
+            .all(|item| item.request_hash.to_string().starts_with("sha256:"))
+    );
+    assert!(
+        receipt
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, PluginEffect::PromptRewrite { .. }))
+    );
+    assert_eq!(InferenceMode::DryRun, InferenceMode::DryRun);
+}
+
+#[test]
+fn secondary_inference_replay_uses_recorded_text_with_zero_calls() {
+    use stcli_core::{
+        Config, InferenceBroker, InferenceMode, InferencePolicy, InferenceRequest,
+        InferenceTransport, InferenceTransportError, ProviderSettings, validate_inference_receipt,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingTransport(AtomicUsize);
+    impl InferenceTransport for CountingTransport {
+        fn generate(
+            &self,
+            _settings: &ProviderSettings,
+            _request: &serde_json::Value,
+        ) -> Result<String, InferenceTransportError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok("network result must not be used".to_owned())
+        }
+    }
+
+    let settings = stcli_core::ProviderSettings {
+        id: "summary".to_owned(),
+        base_url: "https://example.invalid".to_owned(),
+        chat_completions_path: "/v1/chat/completions".to_owned(),
+        format_mode: Default::default(),
+        completions_path: None,
+        instruct_template: None,
+        context_formatting: None,
+        api_key_env: None,
+        credential_key: None,
+        static_headers: BTreeMap::new(),
+        timeout_seconds: 30,
+        ca_certificate_pem: None,
+        model: "stub".to_owned(),
+        stream: false,
+    };
+    let transport = Arc::new(CountingTransport(AtomicUsize::new(0)));
+    let broker = InferenceBroker::stub(
+        Config {
+            providers: BTreeMap::from([("summary".to_owned(), settings)]),
+        },
+        transport.clone(),
+    );
+    let recorded = broker
+        .infer(
+            "fixture",
+            &InferencePolicy {
+                capability_granted: true,
+                mode: InferenceMode::DryRun,
+            },
+            &InferenceRequest {
+                prompt: "Summarize this".to_owned(),
+                profile_name: "summary".to_owned(),
+                generation_settings: json!({}),
+            },
+        )
+        .unwrap()
+        .receipt;
+    validate_inference_receipt(&recorded).unwrap();
+    let replayed_text = recorded.text.clone();
+    assert_eq!(replayed_text, "network result must not be used");
+    assert_eq!(transport.0.load(Ordering::SeqCst), 1);
+    validate_inference_receipt(&recorded).unwrap();
+    assert_eq!(replayed_text, recorded.text);
+    assert_eq!(
+        transport.0.load(Ordering::SeqCst),
+        1,
+        "replay must not call transport"
+    );
+}

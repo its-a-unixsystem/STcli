@@ -23,6 +23,7 @@ pub struct Store {
     path: PathBuf,
     assets_root: PathBuf,
     pub(crate) egress: crate::EgressBroker,
+    pub(crate) inference: crate::InferenceBroker,
 }
 
 impl Store {
@@ -45,16 +46,22 @@ impl Store {
             .map_err(StorageError::Sqlite)?;
         migrate(&connection)?;
         set_private_file_permissions(&path)?;
+        let inference = crate::InferenceBroker::live(crate::Config::load(parent)?);
         Ok(Self {
             connection,
             path,
             assets_root,
             egress: crate::EgressBroker::live(),
+            inference,
         })
     }
 
     pub fn set_egress_broker(&mut self, broker: crate::EgressBroker) {
         self.egress = broker;
+    }
+
+    pub fn set_inference_broker(&mut self, broker: crate::InferenceBroker) {
+        self.inference = broker;
     }
 
     pub fn path(&self) -> &Path {
@@ -969,6 +976,8 @@ pub enum StorageError {
     Sqlite(rusqlite::Error),
     #[error("JSON operation failed: {0}")]
     Json(serde_json::Error),
+    #[error("provider configuration failed: {0}")]
+    Configuration(#[from] crate::ConfigError),
     #[error("stored identity is invalid: {0}")]
     InvalidIdentity(String),
 }
