@@ -977,9 +977,15 @@ pub enum StorageError {
     #[error("JSON operation failed: {0}")]
     Json(serde_json::Error),
     #[error("provider configuration failed: {0}")]
-    Configuration(#[from] crate::ConfigError),
+    Configuration(Box<crate::ConfigError>),
     #[error("stored identity is invalid: {0}")]
     InvalidIdentity(String),
+}
+
+impl From<crate::ConfigError> for StorageError {
+    fn from(error: crate::ConfigError) -> Self {
+        Self::Configuration(Box::new(error))
+    }
 }
 
 #[cfg(test)]

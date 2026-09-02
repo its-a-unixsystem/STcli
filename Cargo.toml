@@ -50,7 +50,7 @@ thiserror = "2.0"
 tiktoken-rs = "0.12.0"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 wait-timeout = "0.2"
-wasmtime = { version = "=36.0.13", default-features = false, features = ["component-model", "cranelift", "runtime", "std", "wat"] }
+wasmtime = { version = "=36.0.14", default-features = false, features = ["component-model", "cranelift", "runtime", "std", "wat"] }
 arboard = "3.4"
 tempfile = "3.0"
 unicode-width = "0.2"
