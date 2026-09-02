@@ -16,6 +16,14 @@ fn run(home: &TestHome, arguments: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
+fn run_extension(home: &TestHome, arguments: &[&str]) -> std::process::Output {
+    stcli_cmd(home)
+        .args(["--output", "json", "extension"])
+        .args(arguments)
+        .output()
+        .unwrap()
+}
+
 #[test]
 fn upgrade_disable_and_reference_aware_remove_are_explicit() {
     let home = TestHome::new().unwrap();
@@ -167,5 +175,109 @@ fn upgrade_disable_and_reference_aware_remove_are_explicit() {
         run(&unreferenced_home, &["remove", "org.stcli.proof"])
             .status
             .success()
+    );
+}
+
+#[test]
+fn native_extension_import_and_adoption_emit_structured_results() {
+    let home = TestHome::new().unwrap();
+    let source = home.root().join("CLI Extension");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(
+        source.join("index.js"),
+        "globalThis.interceptor = function (chat) { void chat; };",
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("manifest.json"),
+        serde_json::to_vec(&json!({
+            "display_name": "CLI Extension",
+            "version": "1.0.0",
+            "js": "index.js",
+            "css": "style.css",
+            "generate_interceptor": "interceptor"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let imported = run_extension(&home, &["import", source.to_str().unwrap()]);
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&imported.stdout).unwrap();
+    assert_eq!(envelope["command"], "extension.import");
+    assert_eq!(
+        envelope["data"]["plugin"]["manifest"]["id"],
+        "cli-extension"
+    );
+    assert_eq!(
+        envelope["data"]["warnings"][0]["code"],
+        "extension-import-field-ignored"
+    );
+
+    let paths = home.paths();
+    let mut store = Store::open(paths.database()).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let created = store
+        .create_session(configuration(character.revision_hash), 0)
+        .unwrap();
+    drop(store);
+    let session = created.session.session_id.to_string();
+    let version = envelope["data"]["plugin"]["manifest"]["version"]
+        .as_str()
+        .unwrap();
+    let digest = envelope["data"]["plugin"]["manifest"]["component_sha256"]
+        .as_str()
+        .unwrap();
+    let adopted = run_extension(
+        &home,
+        &[
+            "adopt",
+            "--session",
+            &session,
+            "--version",
+            version,
+            "--digest",
+            digest,
+            "cli-extension",
+        ],
+    );
+    assert!(
+        adopted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&adopted.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&adopted.stdout).unwrap();
+    assert_eq!(envelope["command"], "extension.adopt");
+    let plugins = envelope["data"]["configuration"]["plugins"]
+        .as_array()
+        .unwrap();
+    assert_eq!(plugins.len(), 1);
+    let plugin = &plugins[0];
+    assert_eq!(
+        plugin["capabilities"],
+        json!([
+            "register-command",
+            "write-own-state",
+            "brokered-egress",
+            "secondary-inference"
+        ])
+    );
+    assert!(plugin.get("egress_allow_list").is_none());
+    let store = Store::open(paths.database()).unwrap();
+    let projection = store.session(created.session.session_id).unwrap().unwrap();
+    let configuration = store
+        .configuration(&projection.current_config_hash)
+        .unwrap()
+        .unwrap();
+    assert!(
+        configuration.configuration.plugins[0]
+            .egress_allow_list
+            .is_empty()
     );
 }

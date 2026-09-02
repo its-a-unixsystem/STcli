@@ -237,6 +237,43 @@ Every plugin has a `manifest.json` file. The [manifest schema](../schemas/plugin
 
 The engine validates the component digest before it runs the component. When the file and the digest do not match, the engine rejects the plugin.
 
+### Import a SillyTavern Extension
+
+`extension import <directory>` accepts an unmodified local SillyTavern Extension directory. Core
+does not clone or update git repositories. It reads the native `manifest.json`, copies the declared
+JavaScript component into a normalized `st-bridge` package, and installs it under the exact
+component digest. The source directory basename becomes a lowercase kebab-case Plugin ID.
+
+| Native field | Normalized Plugin field or behavior |
+|---|---|
+| `js` | The single JavaScript component. A string or one-element array is accepted. |
+| `version` | `version`; it must be semantic. |
+| `display_name`, `author` | Optional display metadata. Neither field determines identity. |
+| `generate_interceptor` | `generate_interceptor` plus the corresponding event subscription. |
+| `dependencies`, `requires` | Required Plugin dependencies with an unrestricted version range. |
+| `optional` | Optional Plugin dependencies with an unrestricted version range. |
+| `loading_order` | Numeric ordering tie-breaker after dependency edges. |
+| `css`, `html`, `i18n` | Ignored with non-blocking Compatibility Warnings. |
+| `auto_update` | Ignored. The normalized value is always `false`. |
+
+Other native fields are not persisted. Import does not execute JavaScript and rejects component
+paths that are absolute, escape the source directory, or resolve through a symlink outside it.
+
+Adopt the installed Extension into a Session with:
+
+```bash
+stcli extension adopt --session <session-id> \
+  --version <version> \
+  --digest sha256:<component-digest> \
+  <extension-id>
+```
+
+This creates a Session Configuration Revision that pins the exact version and digest. The fixed
+consent grant includes namespaced state writes, command registration, Brokered HTTPS Egress, and
+Secondary Inference. The normalized manifest also declares the bridge's lifecycle, prompt, and
+Session-read capabilities, but the dedicated adoption command does not grant them implicitly. The
+egress allow-list is empty unless `--egress-domain <host>` is repeated explicitly.
+
 ## Tutorial: a script plugin
 
 This tutorial builds a small script plugin named **turn counter**. On each turn, it counts the turn and adds one line to the prompt, such as `[Turn 12]`. It shows the three things a script plugin does: read a setting, write its own state, and contribute to the prompt.

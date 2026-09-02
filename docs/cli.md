@@ -284,6 +284,16 @@ These commands work the same for Wasm plugins and for script plugins. The manife
 | `plugin disable` | `plugin disable --session <session> <id>` | Targets a Plugin ID in the Session context. |
 | `plugin remove` | `plugin remove <id>` | Removes an installed Plugin ID. Removing a default Plugin persists an opt-out until `plugin restore-defaults`. |
 
+## Extension commands
+
+These commands import SillyTavern-native Extension directories into the normalized `st-bridge`
+Plugin runtime. Git clone and fetch remain frontend responsibilities.
+
+| Command | Canonical syntax | Argument behavior |
+| --- | --- | --- |
+| `extension import` | `extension import <directory>` | Imports one local native Extension directory, installs its content-addressed normalized package, and returns the installed Plugin plus non-blocking import warnings. |
+| `extension adopt` | `extension adopt --session <session> <id> --version <version> --digest <digest> [--settings <json>] [--egress-domain <host>]...` | Pins the Extension to a new Session Configuration Revision and grants the fixed bridge capability tier. Settings default to `{}`. The egress allow-list defaults empty and contains only explicitly repeated domains. |
+
 ## Prompt command
 
 | Command | Canonical syntax | Argument behavior |

@@ -106,6 +106,8 @@ pub enum PromptSlot {
 pub struct PluginDependency {
     pub id: String,
     pub version: VersionReq,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
 }
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PluginManifest {
@@ -131,6 +133,20 @@ pub struct PluginManifest {
     pub after: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generate_interceptor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loading_order: Option<i64>,
+    #[serde(default)]
+    pub auto_update: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct NativeExtensionImport {
+    pub plugin: InstalledPlugin,
+    pub warnings: Vec<crate::CompatibilityWarning>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -534,6 +550,51 @@ impl PluginHost {
     }
 }
 
+#[derive(Deserialize)]
+struct NativeExtensionManifest {
+    #[serde(default)]
+    display_name: Option<String>,
+    version: Option<String>,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    js: Option<NativeExtensionComponent>,
+    #[serde(default)]
+    generate_interceptor: Option<String>,
+    #[serde(default)]
+    dependencies: Vec<String>,
+    #[serde(default)]
+    requires: Vec<String>,
+    #[serde(default)]
+    optional: Vec<String>,
+    #[serde(default)]
+    loading_order: Option<i64>,
+    #[serde(default)]
+    css: Option<Value>,
+    #[serde(default)]
+    html: Option<Value>,
+    #[serde(default)]
+    i18n: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum NativeExtensionComponent {
+    One(String),
+    Many(Vec<String>),
+}
+
+pub fn st_bridge_capability_tier() -> BTreeSet<PluginCapability> {
+    [
+        PluginCapability::WriteOwnState,
+        PluginCapability::RegisterCommand,
+        PluginCapability::BrokeredEgress,
+        PluginCapability::InferenceCapability,
+    ]
+    .into_iter()
+    .collect()
+}
+
 pub struct PluginRegistry {
     root: PathBuf,
 }
@@ -598,6 +659,178 @@ impl PluginRegistry {
             })?;
         }
         self.doctor(&destination)
+    }
+
+    pub fn import_native_extension(
+        &self,
+        directory: &Path,
+    ) -> Result<NativeExtensionImport, PluginError> {
+        let source_root = fs::canonicalize(directory).map_err(|source| PluginError::Read {
+            path: directory.to_owned(),
+            source,
+        })?;
+        let manifest_path = source_root.join("manifest.json");
+        let source = fs::read(&manifest_path).map_err(|source| PluginError::Read {
+            path: manifest_path,
+            source,
+        })?;
+        let value = decode_unique_json(&source).map_err(PluginError::Artifact)?;
+        let native = serde_json::from_value::<NativeExtensionManifest>(value)
+            .map_err(|error| PluginError::UnsupportedNativeManifest(error.to_string()))?;
+        let component = match native.js {
+            None => return Err(PluginError::MissingNativeManifestField("js")),
+            Some(NativeExtensionComponent::One(component)) if !component.trim().is_empty() => {
+                component
+            }
+            Some(NativeExtensionComponent::Many(components)) if components.len() == 1 => {
+                components.into_iter().next().expect("one component")
+            }
+            Some(_) => return Err(PluginError::NativeComponentCount),
+        };
+        if component.trim().is_empty() {
+            return Err(PluginError::NativeComponentCount);
+        }
+        let component_path = safe_child(&source_root, &component)?;
+        let canonical_component = fs::canonicalize(&component_path)
+            .map_err(|_| PluginError::NativeComponentMissing(component.clone()))?;
+        if !canonical_component.starts_with(&source_root) {
+            return Err(PluginError::UnsafePath(component));
+        }
+        if !canonical_component.is_file() {
+            return Err(PluginError::NativeComponentMissing(component));
+        }
+        let component_name = canonical_component
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| *name != "manifest.json")
+            .filter(|name| {
+                Path::new(name).extension().and_then(|value| value.to_str()) == Some("js")
+            })
+            .ok_or_else(|| {
+                PluginError::UnsupportedNativeManifest(
+                    "native Extension component must be a JavaScript file".to_owned(),
+                )
+            })?
+            .to_owned();
+        let component_bytes =
+            fs::read(&canonical_component).map_err(|source| PluginError::Read {
+                path: canonical_component,
+                source,
+            })?;
+        let component_sha256 = plugin_digest(&component_bytes);
+        let version_text = native
+            .version
+            .ok_or(PluginError::MissingNativeManifestField("version"))?;
+        let version = Version::parse(&version_text)
+            .map_err(|_| PluginError::InvalidNativeVersion(version_text))?;
+        let directory_name = directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let id = normalize_native_id(directory_name);
+        if !valid_id(&id) {
+            return Err(PluginError::InvalidId(directory_name.to_owned()));
+        }
+        let mut dependencies = BTreeMap::<String, bool>::new();
+        for dependency in native.dependencies.into_iter().chain(native.requires) {
+            let id = normalize_native_dependency(&dependency)?;
+            dependencies.insert(id, false);
+        }
+        for dependency in native.optional {
+            let id = normalize_native_dependency(&dependency)?;
+            dependencies.entry(id).or_insert(true);
+        }
+        let mut subscriptions = BTreeSet::from([
+            PluginEvent::ChatCompletionPromptReady,
+            PluginEvent::StBridgeLifecycle,
+        ]);
+        if native.generate_interceptor.is_some() {
+            subscriptions.insert(PluginEvent::GenerateInterceptor);
+        }
+        let requested_capabilities = st_bridge_capability_tier();
+        let manifest = PluginManifest {
+            schema: MANIFEST_SCHEMA.to_owned(),
+            id,
+            version,
+            engine: VersionReq::parse(">=0.1.0, <0.2.0").expect("valid engine range"),
+            runtime: PluginRuntime::StBridge,
+            component: component_name.clone(),
+            component_sha256: component_sha256.clone(),
+            dependencies: dependencies
+                .into_iter()
+                .map(|(id, optional)| PluginDependency {
+                    id,
+                    version: VersionReq::STAR,
+                    optional,
+                })
+                .collect(),
+            license: "LicenseRef-SillyTavern-Extension".to_owned(),
+            subscriptions,
+            prompt_slots: BTreeSet::new(),
+            commands: BTreeSet::new(),
+            macros: BTreeSet::new(),
+            settings_schema: None,
+            requested_capabilities,
+            before: BTreeSet::new(),
+            after: BTreeSet::new(),
+            generate_interceptor: native.generate_interceptor,
+            display_name: native.display_name,
+            author: native.author,
+            loading_order: native.loading_order,
+            auto_update: false,
+        };
+        let warnings = [
+            ("css", native.css),
+            ("html", native.html),
+            ("i18n", native.i18n),
+        ]
+        .into_iter()
+        .filter_map(|(field, value)| {
+            value.map(|_| crate::CompatibilityWarning {
+                code: "extension-import-field-ignored".to_owned(),
+                profile_id: "sillytavern-1.18-core".to_owned(),
+                non_blocking: true,
+                source_revision: component_sha256.clone(),
+                affected_identifiers: vec![field.to_owned()],
+                count: 1,
+                detail: format!(
+                    "native Extension manifest field '{field}' is visual or localization-only and was not imported"
+                ),
+            })
+        })
+        .collect();
+        let package =
+            std::env::temp_dir().join(format!("stcli-extension-import-{}", ulid::Ulid::new()));
+        fs::create_dir(&package).map_err(|source| PluginError::Create {
+            path: package.clone(),
+            source,
+        })?;
+        let import_result = (|| {
+            let component_path = package.join(&component_name);
+            fs::write(&component_path, component_bytes).map_err(|source| PluginError::Write {
+                path: component_path,
+                source,
+            })?;
+            let normalized_manifest =
+                serde_json::to_vec_pretty(&manifest).map_err(PluginError::Json)?;
+            let manifest_path = package.join("manifest.json");
+            fs::write(&manifest_path, normalized_manifest).map_err(|source| {
+                PluginError::Write {
+                    path: manifest_path,
+                    source,
+                }
+            })?;
+            self.install(&package)
+        })();
+        let cleanup_result = fs::remove_dir_all(&package).map_err(|source| PluginError::Remove {
+            path: package,
+            source,
+        });
+        match (import_result, cleanup_result) {
+            (Ok(plugin), Ok(())) => Ok(NativeExtensionImport { plugin, warnings }),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+        }
     }
 
     pub fn list(&self) -> Result<Vec<InstalledPlugin>, PluginError> {
@@ -672,12 +905,15 @@ pub fn order_plugins(plugins: &[InstalledPlugin]) -> Result<Vec<InstalledPlugin>
         .collect::<BTreeMap<_, _>>();
     for plugin in plugins {
         for dependency in &plugin.manifest.dependencies {
-            let target = by_id.get(dependency.id.as_str()).ok_or_else(|| {
-                PluginError::MissingDependency {
+            let Some(target) = by_id.get(dependency.id.as_str()) else {
+                if dependency.optional {
+                    continue;
+                }
+                return Err(PluginError::MissingDependency {
                     plugin: plugin.manifest.id.clone(),
                     dependency: dependency.id.clone(),
-                }
-            })?;
+                });
+            };
             if !dependency.version.matches(&target.manifest.version) {
                 return Err(PluginError::DependencyVersion {
                     plugin: plugin.manifest.id.clone(),
@@ -715,7 +951,9 @@ pub fn order_plugins(plugins: &[InstalledPlugin]) -> Result<Vec<InstalledPlugin>
     let mut ready = indegree
         .iter()
         .filter_map(|(id, degree)| (*degree == 0).then_some(*id))
-        .collect::<VecDeque<_>>();
+        .collect::<Vec<_>>();
+    ready.sort_by_key(|id| (by_id[id].manifest.loading_order.unwrap_or_default(), *id));
+    let mut ready = VecDeque::from(ready);
     let mut ordered = Vec::with_capacity(plugins.len());
     while let Some(id) = ready.pop_front() {
         ordered.push((*by_id[id]).clone());
@@ -724,9 +962,18 @@ pub fn order_plugins(plugins: &[InstalledPlugin]) -> Result<Vec<InstalledPlugin>
                 let degree = indegree.get_mut(target).expect("known plugin");
                 *degree -= 1;
                 if *degree == 0 {
+                    let priority = (
+                        by_id[target].manifest.loading_order.unwrap_or_default(),
+                        *target,
+                    );
                     let position = ready
                         .iter()
-                        .position(|queued| queued > target)
+                        .position(|queued| {
+                            (
+                                by_id[queued].manifest.loading_order.unwrap_or_default(),
+                                *queued,
+                            ) > priority
+                        })
                         .unwrap_or(ready.len());
                     ready.insert(position, target);
                 }
@@ -960,6 +1207,32 @@ fn add_edge<'a>(
     }
 }
 
+fn normalize_native_id(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut separator = false;
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            if separator && !normalized.is_empty() {
+                normalized.push('-');
+            }
+            normalized.push(character.to_ascii_lowercase());
+            separator = false;
+        } else {
+            separator = true;
+        }
+    }
+    normalized
+}
+
+fn normalize_native_dependency(value: &str) -> Result<String, PluginError> {
+    let normalized = normalize_native_id(value);
+    if valid_id(&normalized) {
+        Ok(normalized)
+    } else {
+        Err(PluginError::InvalidNativeDependency(value.to_owned()))
+    }
+}
+
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.split('.').all(|part| {
@@ -1037,6 +1310,18 @@ pub enum PluginError {
     UnsupportedManifest(String),
     #[error("invalid plugin ID '{0}'")]
     InvalidId(String),
+    #[error("missing required native Extension manifest field '{0}'")]
+    MissingNativeManifestField(&'static str),
+    #[error("unsupported native Extension manifest: {0}")]
+    UnsupportedNativeManifest(String),
+    #[error("native Extension manifest field 'js' must declare exactly one component")]
+    NativeComponentCount,
+    #[error("native Extension component '{0}' does not exist")]
+    NativeComponentMissing(String),
+    #[error("invalid native Extension semantic version '{0}'")]
+    InvalidNativeVersion(String),
+    #[error("invalid native Extension dependency '{0}'")]
+    InvalidNativeDependency(String),
     #[error("plugin engine range excludes this engine")]
     EngineVersion,
     #[error("invalid SPDX license expression '{0}'")]

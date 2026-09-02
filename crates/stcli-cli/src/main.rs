@@ -70,6 +70,10 @@ enum Command {
         #[command(subcommand)]
         command: PluginCommand,
     },
+    Extension {
+        #[command(subcommand)]
+        command: ExtensionCommand,
+    },
     Prompt {
         #[command(subcommand)]
         command: PromptCommand,
@@ -110,6 +114,7 @@ impl Command {
             Self::Branch { command } => command.name(),
             Self::Candidate { command } => command.name(),
             Self::Plugin { command } => command.name(),
+            Self::Extension { command } => command.name(),
             Self::Prompt { command } => command.name(),
             Self::Profile { command } => command.name(),
             Self::Credentials { command } => command.name(),
@@ -441,6 +446,35 @@ impl PluginCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum ExtensionCommand {
+    Import {
+        directory: PathBuf,
+    },
+    Adopt {
+        #[arg(long)]
+        session: EntityId,
+        id: String,
+        #[arg(long)]
+        version: String,
+        #[arg(long)]
+        digest: ContentHash,
+        #[arg(long, default_value = "{}")]
+        settings: String,
+        #[arg(long = "egress-domain")]
+        egress_domain: Vec<String>,
+    },
+}
+
+impl ExtensionCommand {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Import { .. } => "extension.import",
+            Self::Adopt { .. } => "extension.adopt",
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
 enum PromptCommand {
     Inspect {
         attempt: EntityId,
@@ -617,6 +651,7 @@ async fn run(output: OutputFormat, command: Command) -> Result<()> {
         Command::Branch { command } => branch(output, command).await,
         Command::Candidate { command } => candidate(output, command).await,
         Command::Plugin { command } => plugin(output, command).await,
+        Command::Extension { command } => extension(output, command).await,
         Command::Prompt { command } => prompt(output, command),
         Command::Profile { command } => profile(output, command).await,
         Command::Credentials { command } => credentials(output, command),
@@ -1427,6 +1462,51 @@ async fn turn(output: OutputFormat, command: TurnCommand) -> Result<()> {
     }
 }
 
+async fn extension(output: OutputFormat, command: ExtensionCommand) -> Result<()> {
+    let command_name = command.name();
+    let paths = AppPaths::discover()?;
+    paths.ensure_exists()?;
+    let engine = StcliEngine::new(paths.database());
+    let result = match command {
+        ExtensionCommand::Import { directory } => {
+            engine
+                .execute(EngineCommand::ImportExtension { directory }, |_| {})
+                .await?
+        }
+        ExtensionCommand::Adopt {
+            session,
+            id,
+            version,
+            digest,
+            settings,
+            egress_domain,
+        } => {
+            let settings =
+                serde_json::from_str(&settings).context("Extension settings must be valid JSON")?;
+            engine
+                .execute(
+                    EngineCommand::AdoptExtension {
+                        session_id: session,
+                        id,
+                        version,
+                        digest,
+                        settings,
+                        egress: egress_domain
+                            .into_iter()
+                            .map(|domain| EgressAllowance {
+                                domain,
+                                secret: None,
+                            })
+                            .collect(),
+                    },
+                    |_| {},
+                )
+                .await?
+        }
+    };
+    emit_engine_result(output, command_name, &result)
+}
+
 async fn plugin(output: OutputFormat, command: PluginCommand) -> Result<()> {
     let command_name = command.name();
     let paths = AppPaths::discover()?;
@@ -1853,6 +1933,7 @@ fn open_engine() -> Result<StcliEngine> {
 fn emit_engine_result(output: OutputFormat, command: &str, result: &EngineResult) -> Result<()> {
     match result {
         EngineResult::InstalledPlugin(data) => emit(output, command, data),
+        EngineResult::ImportedExtension(data) => emit(output, command, data),
         EngineResult::ArtifactInspectorRegistration(data) => emit(output, command, data),
         EngineResult::PluginRemoval(data) => emit(output, command, data),
         EngineResult::ArtifactBundle {

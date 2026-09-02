@@ -2,8 +2,9 @@ use std::{path::PathBuf, time::Duration};
 
 use serde_json::json;
 use stcli_core::{
-    CapsuleKind, PluginCapability, PluginError, PluginEvent, PluginGrant, PluginHost, PluginInput,
-    PluginLimits, PluginPin, PluginRegistry, SessionConfiguration, Store, TurnError, order_plugins,
+    CapsuleKind, PluginCapability, PluginDependency, PluginError, PluginEvent, PluginGrant,
+    PluginHost, PluginInput, PluginLimits, PluginPin, PluginRegistry, SessionConfiguration, Store,
+    TurnError, order_plugins,
 };
 use stcli_testkit::{configuration as base_configuration, fixtures};
 use tempfile::tempdir;
@@ -221,6 +222,27 @@ fn dependency_cycles_and_digest_tampering_are_rejected() {
         order_plugins(&[first, second]),
         Err(PluginError::DependencyCycle)
     ));
+
+    let mut later = registry.doctor(&proof_directory()).unwrap();
+    later.manifest.id = "later".to_owned();
+    later.manifest.loading_order = Some(20);
+    later.manifest.dependencies = vec![PluginDependency {
+        id: "not-installed".to_owned(),
+        version: semver::VersionReq::STAR,
+        optional: true,
+    }];
+    let mut earlier = later.clone();
+    earlier.manifest.id = "earlier".to_owned();
+    earlier.manifest.loading_order = Some(10);
+    earlier.manifest.dependencies.clear();
+    let ordered = order_plugins(&[later, earlier]).unwrap();
+    assert_eq!(
+        ordered
+            .iter()
+            .map(|plugin| plugin.manifest.id.as_str())
+            .collect::<Vec<_>>(),
+        ["earlier", "later"]
+    );
 
     let copied = directory.path().join("tampered");
     std::fs::create_dir_all(&copied).unwrap();

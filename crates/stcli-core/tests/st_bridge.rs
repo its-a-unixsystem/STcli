@@ -1615,3 +1615,349 @@ fn secondary_inference_replay_uses_recorded_text_with_zero_calls() {
         "replay must not call transport"
     );
 }
+
+#[tokio::test]
+async fn imports_native_extension_and_adopts_fixed_bridge_grant() {
+    let directory = tempdir().unwrap();
+    let source = directory.path().join("My Native Extension");
+    std::fs::create_dir_all(source.join("scripts")).unwrap();
+    let script = br#"
+globalThis.rewrite = function (chat) {
+  void chat;
+};
+"#;
+    std::fs::write(source.join("scripts").join("index.js"), script).unwrap();
+    std::fs::write(
+        source.join("manifest.json"),
+        serde_json::to_vec_pretty(&json!({
+            "display_name": "My Native Extension",
+            "loading_order": 42,
+            "requires": ["required-module"],
+            "optional": ["optional-module"],
+            "generate_interceptor": "rewrite",
+            "js": ["scripts/index.js"],
+            "css": "style.css",
+            "html": "panel.html",
+            "i18n": "i18n",
+            "author": "Fixture Author",
+            "version": "1.2.3",
+            "auto_update": true
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let database = directory.path().join("data").join("stcli.sqlite3");
+    let engine = StcliEngine::new(&database);
+    let EngineResult::ImportedExtension(imported) = engine
+        .execute(
+            EngineCommand::ImportExtension {
+                directory: source.clone(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected extension import result");
+    };
+
+    assert_eq!(imported.plugin.manifest.id, "my-native-extension");
+    assert_eq!(
+        imported.plugin.manifest.runtime,
+        stcli_core::PluginRuntime::StBridge
+    );
+    assert_eq!(
+        imported.plugin.manifest.display_name.as_deref(),
+        Some("My Native Extension")
+    );
+    assert_eq!(
+        imported.plugin.manifest.author.as_deref(),
+        Some("Fixture Author")
+    );
+    assert_eq!(imported.plugin.manifest.loading_order, Some(42));
+    assert!(!imported.plugin.manifest.auto_update);
+    assert_eq!(imported.plugin.manifest.component, "index.js");
+    assert_eq!(
+        imported.plugin.manifest.component_sha256,
+        plugin_digest(script)
+    );
+    assert_eq!(imported.plugin.manifest.dependencies.len(), 2);
+    assert!(
+        !imported
+            .plugin
+            .manifest
+            .dependencies
+            .iter()
+            .find(|dependency| dependency.id == "required-module")
+            .unwrap()
+            .optional
+    );
+    assert!(
+        imported
+            .plugin
+            .manifest
+            .dependencies
+            .iter()
+            .find(|dependency| dependency.id == "optional-module")
+            .unwrap()
+            .optional
+    );
+    assert_eq!(
+        imported
+            .warnings
+            .iter()
+            .flat_map(|warning| warning.affected_identifiers.iter())
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["css", "html", "i18n"]
+    );
+
+    let first_digest = imported.plugin.manifest.component_sha256.clone();
+    let EngineResult::ImportedExtension(unchanged) = engine
+        .execute(
+            EngineCommand::ImportExtension {
+                directory: source.clone(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected unchanged extension re-import result");
+    };
+    assert_eq!(unchanged.plugin.directory, imported.plugin.directory);
+    assert_eq!(
+        unchanged.plugin.manifest.component_sha256,
+        imported.plugin.manifest.component_sha256
+    );
+    std::fs::write(
+        source.join("scripts").join("index.js"),
+        b"globalThis.changed = true;",
+    )
+    .unwrap();
+    let manifest_path = source.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest
+        .as_object_mut()
+        .unwrap()
+        .remove("generate_interceptor");
+    std::fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    let EngineResult::ImportedExtension(changed) = engine
+        .execute(EngineCommand::ImportExtension { directory: source }, |_| {})
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected extension re-import result");
+    };
+    assert_ne!(changed.plugin.manifest.component_sha256, first_digest);
+
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    drop(store);
+    let EngineResult::CreatedSession(created) = engine
+        .execute(
+            EngineCommand::CreateSession {
+                configuration: Box::new(base_configuration(character.revision_hash)),
+                greeting_index: 0,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected create result");
+    };
+    let required_package = write_test_bridge_plugin(
+        &directory.path().join("required-plugin"),
+        "required-module",
+        "globalThis.namedInterceptor = function () {};",
+    );
+    let EngineResult::InstalledPlugin(required) = engine
+        .execute(
+            EngineCommand::InstallPlugin {
+                directory: required_package,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected dependency install result");
+    };
+    engine
+        .execute(
+            EngineCommand::AdoptPlugin {
+                session_id: created.session.session_id,
+                id: required.manifest.id.clone(),
+                version: required.manifest.version.to_string(),
+                digest: required.manifest.component_sha256,
+                capabilities: [stcli_core::PluginCapability::ContributePrompt]
+                    .into_iter()
+                    .collect(),
+                settings: json!({}),
+                egress: Vec::new(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let EngineResult::Configuration(configuration) = engine
+        .execute(
+            EngineCommand::AdoptExtension {
+                session_id: created.session.session_id,
+                id: changed.plugin.manifest.id.clone(),
+                version: changed.plugin.manifest.version.to_string(),
+                digest: changed.plugin.manifest.component_sha256.clone(),
+                settings: json!({}),
+                egress: Vec::new(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected extension adoption result");
+    };
+    let pin = configuration.configuration.plugins.last().unwrap();
+    assert_eq!(pin.component_hash, changed.plugin.manifest.component_sha256);
+    assert_eq!(
+        pin.capabilities,
+        [
+            stcli_core::PluginCapability::WriteOwnState,
+            stcli_core::PluginCapability::RegisterCommand,
+            stcli_core::PluginCapability::BrokeredEgress,
+            stcli_core::PluginCapability::InferenceCapability,
+        ]
+        .into_iter()
+        .collect()
+    );
+    assert!(pin.egress_allow_list.is_empty());
+
+    let EngineResult::DryRun(_) = engine
+        .execute(
+            EngineCommand::DryRunSend {
+                session_id: created.session.session_id,
+                branch_id: created.branch.branch_id,
+                content: "Hello".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected Dry Run result");
+    };
+}
+
+#[test]
+fn native_extension_import_rejects_invalid_component_declarations() {
+    let directory = tempdir().unwrap();
+    let registry = PluginRegistry::new(directory.path().join("registry"));
+    for (name, manifest, expected) in [
+        (
+            "missing-js",
+            json!({"display_name": "Missing", "version": "1.0.0"}),
+            "missing required native Extension manifest field 'js'",
+        ),
+        (
+            "unsafe-js",
+            json!({"display_name": "Unsafe", "version": "1.0.0", "js": "../outside.js"}),
+            "unsafe plugin-relative path '../outside.js'",
+        ),
+        (
+            "missing-file",
+            json!({"display_name": "Missing", "version": "1.0.0", "js": "index.js"}),
+            "native Extension component 'index.js' does not exist",
+        ),
+        (
+            "ambiguous-js",
+            json!({"display_name": "Ambiguous", "version": "1.0.0", "js": []}),
+            "native Extension manifest field 'js' must declare exactly one component",
+        ),
+    ] {
+        let source = directory.path().join(name);
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            source.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let error = registry.import_native_extension(&source).unwrap_err();
+        assert_eq!(error.to_string(), expected);
+    }
+
+    let malformed = directory.path().join("malformed");
+    std::fs::create_dir_all(&malformed).unwrap();
+    std::fs::write(malformed.join("manifest.json"), b"{").unwrap();
+    assert!(matches!(
+        registry.import_native_extension(&malformed),
+        Err(stcli_core::PluginError::Artifact(_))
+    ));
+
+    for (name, version, dependency, expected) in [
+        (
+            "invalid-version",
+            "not-semver",
+            "valid-dependency",
+            "invalid native Extension semantic version 'not-semver'",
+        ),
+        (
+            "invalid-dependency",
+            "1.0.0",
+            "",
+            "invalid native Extension dependency ''",
+        ),
+    ] {
+        let source = directory.path().join(name);
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("index.js"), b"").unwrap();
+        std::fs::write(
+            source.join("manifest.json"),
+            serde_json::to_vec(&json!({
+                "version": version,
+                "js": "index.js",
+                "requires": [dependency]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            registry
+                .import_native_extension(&source)
+                .unwrap_err()
+                .to_string(),
+            expected
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let outside = directory.path().join("outside.js");
+        std::fs::write(&outside, b"").unwrap();
+        let source = directory.path().join("symlink-escape");
+        std::fs::create_dir_all(&source).unwrap();
+        symlink(&outside, source.join("index.js")).unwrap();
+        std::fs::write(
+            source.join("manifest.json"),
+            serde_json::to_vec(&json!({
+                "version": "1.0.0",
+                "js": "index.js"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            registry
+                .import_native_extension(&source)
+                .unwrap_err()
+                .to_string(),
+            "unsafe plugin-relative path 'index.js'"
+        );
+    }
+}

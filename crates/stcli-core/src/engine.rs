@@ -12,13 +12,14 @@ use crate::{
     ArtifactError, ArtifactInspectorRegistration, ArtifactKind, ArtifactRecord, AttemptProjection,
     BranchProjection, CandidateProjection, CapsuleError, CapsuleKind, CompactionReport,
     CompletedTurn, ContentHash, CreatedSession, DryRunResult, EcmaRegexWorker, EditedCandidate,
-    EntityId, ImportedCapsule, InstalledPlugin, PluginCapability, PluginCommandResult,
-    PluginEffect, PluginError, PluginEvent, PluginGrant, PluginHost, PluginInput, PluginPin,
-    PluginRegistry, PromptDiff, PromptPlan, PromptSegmentInspection, ProviderEvent, RecoveryReport,
-    ReplayReport, SessionConfiguration, SessionConfigurationRecord, SessionError,
-    SessionProjection, StorageError, Store, StscriptError, StscriptLimits, StscriptResult,
-    TokenizerError, TokenizerId, TurnCapsule, TurnError, TurnProjection, apply_display_scripts,
-    diff_prompt_plans, extract_character_scripts, transform_preset_content,
+    EntityId, ImportedCapsule, InstalledPlugin, NativeExtensionImport, PluginCapability,
+    PluginCommandResult, PluginEffect, PluginError, PluginEvent, PluginGrant, PluginHost,
+    PluginInput, PluginPin, PluginRegistry, PromptDiff, PromptPlan, PromptSegmentInspection,
+    ProviderEvent, RecoveryReport, ReplayReport, SessionConfiguration, SessionConfigurationRecord,
+    SessionError, SessionProjection, StorageError, Store, StscriptError, StscriptLimits,
+    StscriptResult, TokenizerError, TokenizerId, TurnCapsule, TurnError, TurnProjection,
+    apply_display_scripts, diff_prompt_plans, extract_character_scripts, st_bridge_capability_tier,
+    transform_preset_content,
 };
 
 pub const DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID: &str = "org.stcli.nemo-directives";
@@ -494,6 +495,9 @@ impl StcliEngine {
                 }
                 Ok(EngineResult::InstalledPlugin(installed))
             }
+            EngineCommand::ImportExtension { directory } => Ok(EngineResult::ImportedExtension(
+                self.plugin_registry().import_native_extension(&directory)?,
+            )),
             EngineCommand::RestoreDefaultPlugins => {
                 self.clear_default_opt_out(DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID)?;
                 self.ensure_default_plugins()?;
@@ -561,6 +565,37 @@ impl StcliEngine {
                 egress,
             } => {
                 let installed = self.installed_plugin(&id, &version, &digest)?;
+                if !capabilities.is_subset(&installed.manifest.requested_capabilities) {
+                    return Err(EngineError::PluginGrantExceeded);
+                }
+                let mut configuration = selected_session_configuration(&store, session_id)?;
+                configuration.plugins.retain(|pin| pin.id != id);
+                configuration.plugins.push(PluginPin {
+                    id,
+                    version: installed.manifest.version.to_string(),
+                    component_hash: installed.manifest.component_sha256,
+                    capabilities,
+                    settings,
+                    egress_allow_list: egress,
+                    enabled: true,
+                });
+                Ok(EngineResult::Configuration(Box::new(
+                    store.update_session_configuration(session_id, configuration)?,
+                )))
+            }
+            EngineCommand::AdoptExtension {
+                session_id,
+                id,
+                version,
+                digest,
+                settings,
+                egress,
+            } => {
+                let installed = self.installed_plugin(&id, &version, &digest)?;
+                if installed.manifest.runtime != crate::PluginRuntime::StBridge {
+                    return Err(EngineError::ExtensionRuntimeRequired(id));
+                }
+                let capabilities = st_bridge_capability_tier();
                 if !capabilities.is_subset(&installed.manifest.requested_capabilities) {
                     return Err(EngineError::PluginGrantExceeded);
                 }
@@ -980,6 +1015,9 @@ pub enum EngineCommand {
     InstallPlugin {
         directory: PathBuf,
     },
+    ImportExtension {
+        directory: PathBuf,
+    },
     RestoreDefaultPlugins,
     RemovePlugin {
         plugin_id: String,
@@ -990,6 +1028,14 @@ pub enum EngineCommand {
         version: String,
         digest: ContentHash,
         capabilities: BTreeSet<PluginCapability>,
+        settings: serde_json::Value,
+        egress: Vec<crate::EgressAllowance>,
+    },
+    AdoptExtension {
+        session_id: EntityId,
+        id: String,
+        version: String,
+        digest: ContentHash,
         settings: serde_json::Value,
         egress: Vec<crate::EgressAllowance>,
     },
@@ -1150,6 +1196,7 @@ pub enum EngineCommand {
 #[serde(tag = "result", content = "data", rename_all = "kebab-case")]
 pub enum EngineResult {
     InstalledPlugin(InstalledPlugin),
+    ImportedExtension(NativeExtensionImport),
     ArtifactInspectorRegistration(ArtifactInspectorRegistration),
     PluginRemoval(PluginRemovalReceipt),
     ArtifactBundle {
@@ -1556,6 +1603,8 @@ pub enum EngineError {
     PluginNotPinned(String),
     #[error("Plugin '{0}' is not registered for Artifact inspection")]
     ArtifactInspectorNotRegistered(String),
+    #[error("Plugin '{0}' is not an st-bridge Extension")]
+    ExtensionRuntimeRequired(String),
     #[error("prompt preset revision is not pinned by Session {0}")]
     PromptPresetNotPinned(EntityId),
     #[error("existing grants exceed the upgraded Plugin manifest request")]
