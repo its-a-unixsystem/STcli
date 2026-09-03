@@ -9,11 +9,11 @@ use serde_json::json;
 use stcli_core::{
     CredentialError, CredentialResolver, EGRESS_REQUEST_DOMAIN, EgressAllowance, EgressBroker,
     EgressRequest, EgressResponse, EgressSecretInjection, EgressTransport, EngineCommand,
-    EngineError, EngineResult, EntityId, ExtensionCommandTrace, InstalledPlugin, PluginEffect,
-    PluginEvent, PluginGrant, PluginHost, PluginInput, PluginLimits, PluginPin, PluginReceipt,
-    PluginRegistry, ReqwestTransport, StcliEngine, Store, StscriptError, StscriptLimits,
-    StscriptProgram, StscriptResult, StubTransport, VariableScope, canonical_json_hash,
-    content_blob_hash, plugin_digest,
+    EngineError, EngineInspection, EngineQuery, EngineResult, EntityId, ExtensionCommandTrace,
+    InstalledPlugin, PluginCapability, PluginEffect, PluginEvent, PluginGrant, PluginHost,
+    PluginInput, PluginLimits, PluginPin, PluginReceipt, PluginRegistry, ReqwestTransport,
+    StcliEngine, Store, StscriptError, StscriptLimits, StscriptProgram, StscriptResult,
+    StubTransport, VariableScope, canonical_json_hash, content_blob_hash, plugin_digest,
 };
 use stcli_testkit::{MockProvider, configuration as base_configuration, fixtures};
 use tempfile::tempdir;
@@ -1247,6 +1247,7 @@ globalThis.namedInterceptor = namedInterceptor;
 
 #[test]
 fn immediate_timer_resolves_as_microtask() {
+    // Regression test for ticket 16: zero-delay timers must not retain a JS function past reset.
     let source = r#"
 function namedInterceptor(chat) {
   setTimeout(() => {
@@ -3126,4 +3127,666 @@ fn real_extension_fixture_provenance() {
             );
         }
     }
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_extension_complete_session_workflow_replays_offline() {
+    use stcli_core::{
+        Config, InferenceBroker, InferenceStatus, ProviderSettings, StubInferenceTransport,
+        provider_request_hash, validate_inference_receipt,
+    };
+    use stcli_testkit::{BrokerTestServer, QueuedResponse};
+
+    const SECRET: &str = "workflow-secret";
+    const FETCH_BODY: &str = r#"{"result":"fetch-ok"}"#;
+    const AJAX_BODY: &str = r#"{"result":"ajax-ok"}"#;
+    const FETCH_JSON: &str = r#"{"channel":"fetch","input":"fixture"}"#;
+    const AJAX_JSON: &str = r#"{"channel":"ajax","input":"fixture"}"#;
+    let four_capabilities = [
+        PluginCapability::WriteOwnState,
+        PluginCapability::RegisterCommand,
+        PluginCapability::BrokeredEgress,
+        PluginCapability::InferenceCapability,
+    ]
+    .into_iter()
+    .collect();
+
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let fixtures_root =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/real_extensions");
+    let copies = directory.path().join("extensions");
+    let queued = |status, body: &str| QueuedResponse {
+        status,
+        headers: BTreeMap::new(),
+        body: body.to_owned(),
+    };
+    let server = BrokerTestServer::spawn([
+        queued(201, FETCH_BODY),
+        queued(202, AJAX_BODY),
+        queued(201, FETCH_BODY),
+        queued(202, AJAX_BODY),
+        queued(201, FETCH_BODY),
+        queued(202, AJAX_BODY),
+    ])
+    .await
+    .unwrap();
+
+    let copy_fixture = |id: &str| {
+        let source = fixtures_root.join(id);
+        let target = copies.join(id);
+        std::fs::create_dir_all(&target).unwrap();
+        for entry in std::fs::read_dir(&source).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                std::fs::copy(entry.path(), target.join(entry.file_name())).unwrap();
+            }
+        }
+        let js_path = target.join("index.js");
+        let mut js = std::fs::read_to_string(&js_path).unwrap();
+        if id == "metamorph-lifecycle" {
+            let original = js.clone();
+            js = js.replace(
+                "function recordLifecycle(name) {\n    settings().lastLifecycle = name;\n    saveSettingsDebounced();\n}",
+                "function recordLifecycle(_name) {}",
+            );
+            assert_ne!(js, original, "lifecycle fixture rewrite did not match");
+        } else {
+            js = js
+                .replace(
+                    "https://fixture.invalid/fetch?source=monitor",
+                    &format!("{}/fetch?source=monitor", server.base_url()),
+                )
+                .replace(
+                    "https://fixture.invalid/ajax?source=monitor",
+                    &format!("{}/ajax?source=monitor", server.base_url()),
+                );
+        }
+        std::fs::write(&js_path, &js).unwrap();
+        (target, plugin_digest(js.as_bytes()))
+    };
+    let (lifecycle_dir, lifecycle_digest) = copy_fixture("metamorph-lifecycle");
+    let (wire_dir, wire_digest) = copy_fixture("request-monitor-wire");
+
+    let mock = MockProvider::spawn(["turn-one", "turn-two", "turn-three"])
+        .await
+        .unwrap();
+    let summary = ProviderSettings {
+        id: "summary".to_owned(),
+        base_url: "https://example.invalid".to_owned(),
+        chat_completions_path: "/v1/chat/completions".to_owned(),
+        format_mode: Default::default(),
+        completions_path: None,
+        instruct_template: None,
+        context_formatting: None,
+        api_key_env: None,
+        credential_key: None,
+        static_headers: BTreeMap::new(),
+        timeout_seconds: 30,
+        ca_certificate_pem: None,
+        model: "stub".to_owned(),
+        stream: false,
+    };
+    let inference = InferenceBroker::stub(
+        Config {
+            providers: BTreeMap::from([("summary".to_owned(), summary)]),
+            enabled_extensions: BTreeMap::new(),
+        },
+        Arc::new(StubInferenceTransport {
+            responses: BTreeMap::from([("summary".to_owned(), "summary".to_owned())]),
+        }),
+    );
+    let credentials = Arc::new(MapCredentialResolver {
+        secrets: BTreeMap::from([("wire-key".to_owned(), SECRET.to_owned())]),
+    });
+    let transport = Arc::new(ReqwestTransport::with_client(
+        server.https_client().await.unwrap(),
+    ));
+    let database = data.join("stcli.sqlite3");
+    let engine = StcliEngine::with_effect_brokers(
+        &database,
+        EgressBroker::with_transport(transport, credentials),
+        inference,
+    );
+
+    let EngineResult::ImportedExtension(lifecycle) = engine
+        .execute(
+            EngineCommand::ImportExtension {
+                directory: lifecycle_dir,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("lifecycle import")
+    };
+    let EngineResult::ImportedExtension(wire) = engine
+        .execute(
+            EngineCommand::ImportExtension {
+                directory: wire_dir,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("wire import")
+    };
+    assert_eq!(lifecycle.plugin.manifest.id, "metamorph-lifecycle");
+    assert_eq!(
+        lifecycle.plugin.manifest.display_name.as_deref(),
+        Some("Metamorph Lifecycle Fixture")
+    );
+    assert_eq!(
+        lifecycle.plugin.manifest.author.as_deref(),
+        Some("Andrew; modified by STcli contributors")
+    );
+    assert_eq!(lifecycle.plugin.manifest.version.to_string(), "0.1.0");
+    assert_eq!(
+        lifecycle.plugin.manifest.runtime,
+        stcli_core::PluginRuntime::StBridge
+    );
+    assert_eq!(lifecycle.plugin.manifest.component, "index.js");
+    assert_eq!(
+        lifecycle.plugin.manifest.license,
+        "LicenseRef-SillyTavern-Extension"
+    );
+    assert!(
+        lifecycle
+            .plugin
+            .manifest
+            .subscriptions
+            .contains(&PluginEvent::GenerateInterceptor)
+    );
+    assert!(
+        lifecycle
+            .plugin
+            .manifest
+            .subscriptions
+            .contains(&PluginEvent::StBridgeLifecycle)
+    );
+    assert_eq!(
+        lifecycle.plugin.manifest.requested_capabilities,
+        four_capabilities
+    );
+    assert_eq!(lifecycle.plugin.manifest.loading_order, Some(50));
+    assert!(!lifecycle.plugin.manifest.auto_update);
+    assert_eq!(lifecycle.plugin.manifest.component_sha256, lifecycle_digest);
+    assert_eq!(
+        lifecycle
+            .warnings
+            .iter()
+            .flat_map(|warning| warning.affected_identifiers.iter())
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["css", "html"]
+    );
+    assert_eq!(wire.plugin.manifest.id, "request-monitor-wire");
+    assert_eq!(
+        wire.plugin.manifest.display_name.as_deref(),
+        Some("ST Request Monitor Wire Fixture")
+    );
+    assert_eq!(wire.plugin.manifest.version.to_string(), "0.1.0");
+    assert_eq!(
+        wire.plugin.manifest.runtime,
+        stcli_core::PluginRuntime::StBridge
+    );
+    assert_eq!(wire.plugin.manifest.component, "index.js");
+    assert_eq!(
+        wire.plugin.manifest.license,
+        "LicenseRef-SillyTavern-Extension"
+    );
+    assert!(
+        wire.plugin
+            .manifest
+            .subscriptions
+            .contains(&PluginEvent::GenerateInterceptor)
+    );
+    assert_eq!(
+        wire.plugin.manifest.requested_capabilities,
+        four_capabilities
+    );
+    assert_eq!(wire.plugin.manifest.loading_order, Some(-10000));
+    assert_eq!(wire.plugin.manifest.component_sha256, wire_digest);
+    assert_eq!(
+        wire.warnings
+            .iter()
+            .flat_map(|warning| warning.affected_identifiers.iter())
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["css"]
+    );
+
+    let EngineResult::GlobalExtensionEnabled(_) = engine
+        .execute(
+            EngineCommand::EnableGlobalExtension {
+                id: lifecycle.plugin.manifest.id.clone(),
+                version: lifecycle.plugin.manifest.version.to_string(),
+                digest: lifecycle.plugin.manifest.component_sha256.clone(),
+                settings: json!({}),
+                egress: Vec::new(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("global enable")
+    };
+
+    let EngineResult::ArtifactBundle { primary, .. } = engine
+        .execute(
+            EngineCommand::ImportArtifact {
+                source: fixtures::minimal_card().as_bytes().to_vec(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("artifact")
+    };
+    let mut configuration = base_configuration(primary.revision_hash);
+    configuration.provider = mock.provider_settings();
+    let EngineResult::CreatedSession(created) = engine
+        .execute(
+            EngineCommand::CreateSession {
+                configuration: Box::new(configuration),
+                greeting_index: 0,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("session")
+    };
+    let sid = created.session.session_id;
+    let bid = created.branch.branch_id;
+    let EngineInspection::Configuration(created_config) = engine
+        .inspect(EngineQuery::Configuration { session_id: sid })
+        .unwrap()
+    else {
+        panic!("created configuration")
+    };
+    let lifecycle_pin = created_config
+        .configuration
+        .plugins
+        .iter()
+        .find(|pin| pin.id == "metamorph-lifecycle")
+        .unwrap();
+    assert_eq!(lifecycle_pin.version, "0.1.0");
+    assert_eq!(lifecycle_pin.component_hash, lifecycle_digest);
+    assert_eq!(lifecycle_pin.capabilities, four_capabilities);
+    assert!(lifecycle_pin.egress_allow_list.is_empty());
+
+    let allowance = EgressAllowance {
+        domain: server.hostname().to_owned(),
+        secret: Some(EgressSecretInjection {
+            credential_key: "wire-key".to_owned(),
+            header: "Authorization".to_owned(),
+            value_template: "Bearer {secret}".to_owned(),
+        }),
+    };
+    let EngineResult::Configuration(adopted) = engine
+        .execute(
+            EngineCommand::AdoptExtension {
+                session_id: sid,
+                id: wire.plugin.manifest.id.clone(),
+                version: wire.plugin.manifest.version.to_string(),
+                digest: wire.plugin.manifest.component_sha256.clone(),
+                settings: json!({}),
+                egress: vec![allowance.clone()],
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("wire adopt")
+    };
+    let wire_pin = adopted
+        .configuration
+        .plugins
+        .iter()
+        .find(|pin| pin.id == "request-monitor-wire")
+        .unwrap();
+    assert_eq!(wire_pin.version, "0.1.0");
+    assert_eq!(wire_pin.component_hash, wire_digest);
+    assert_eq!(wire_pin.capabilities, four_capabilities);
+    assert_eq!(wire_pin.egress_allow_list, vec![allowance]);
+
+    let send = |content: String| {
+        let engine = &engine;
+        async move {
+            let EngineResult::CompletedTurn(completed) = engine
+                .execute(
+                    EngineCommand::Send {
+                        session_id: sid,
+                        branch_id: bid,
+                        content,
+                    },
+                    |_| {},
+                )
+                .await
+                .unwrap()
+            else {
+                panic!("turn")
+            };
+            completed
+        }
+    };
+    let first = send("first".to_owned()).await;
+    let second = send("second".to_owned()).await;
+
+    let assert_turn =
+        |completed: &stcli_core::CompletedTurn, user: &str, persistent: u64, transient: u64| {
+            let effect = completed.attempt.effect_receipt.as_ref().unwrap();
+            let messages = serde_json::to_string(&effect.provider_request["messages"]).unwrap();
+            assert!(messages.contains(user), "{messages}");
+            assert!(
+                messages.contains(&format!(
+                    "metamorph:persistent={persistent}:transient={transient}:summary:summary"
+                )),
+                "{messages}"
+            );
+            assert!(
+                messages.contains("wire:fetch-ok:ajax-ok:ajax-ok"),
+                "{messages}"
+            );
+            let wire_index = messages.find("wire:fetch-ok:ajax-ok:ajax-ok").unwrap();
+            let lifecycle_index = messages.find("metamorph:persistent=").unwrap();
+            assert!(wire_index < lifecycle_index, "{messages}");
+            let lifecycle_events = effect
+                .plugins
+                .iter()
+                .filter(|receipt| {
+                    receipt.id == "metamorph-lifecycle"
+                        && receipt.event == PluginEvent::StBridgeLifecycle
+                })
+                .flat_map(|receipt| receipt.input.payload["events"].as_array().unwrap())
+                .map(|event| event["name"].as_str().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(lifecycle_events, ["message_received", "generation_ended"]);
+            let lifecycle_interceptor = effect
+                .plugins
+                .iter()
+                .find(|receipt| {
+                    receipt.id == "metamorph-lifecycle"
+                        && receipt.event == PluginEvent::GenerateInterceptor
+                })
+                .unwrap();
+            assert_eq!(lifecycle_interceptor.inference.len(), 2);
+            let quiet = lifecycle_interceptor
+                .inference
+                .iter()
+                .find(|item| item.prompt == "Describe the latest irreversible change.")
+                .unwrap();
+            let raw = lifecycle_interceptor
+                .inference
+                .iter()
+                .find(|item| item.prompt == "Return the current transformation tier.")
+                .unwrap();
+            for receipt in [quiet, raw] {
+                assert_eq!(receipt.profile_name, "summary");
+                assert_eq!(receipt.status, InferenceStatus::Completed);
+                assert_eq!(receipt.text, "summary");
+                assert!(receipt.error.is_none());
+                assert_eq!(receipt.effective_settings["model"], "stub");
+                assert_eq!(receipt.effective_settings["stream"], false);
+                assert!(validate_inference_receipt(receipt).is_ok());
+                assert!(receipt.request_hash.to_string().starts_with("sha256:"));
+                assert_eq!(receipt.response_hash, content_blob_hash(b"summary"));
+            }
+            let wire_interceptor = effect
+                .plugins
+                .iter()
+                .find(|receipt| {
+                    receipt.id == "request-monitor-wire"
+                        && receipt.event == PluginEvent::GenerateInterceptor
+                })
+                .unwrap();
+            assert_eq!(wire_interceptor.egress.len(), 2);
+            for (receipt, path, status, request_body, response_body) in [
+                (
+                    &wire_interceptor.egress[0],
+                    "fetch",
+                    201,
+                    FETCH_JSON,
+                    FETCH_BODY,
+                ),
+                (
+                    &wire_interceptor.egress[1],
+                    "ajax",
+                    202,
+                    AJAX_JSON,
+                    AJAX_BODY,
+                ),
+            ] {
+                let url = format!("{}/{path}?source=monitor", server.base_url());
+                assert_eq!(receipt.method, "POST");
+                assert_eq!(receipt.url, url);
+                assert_eq!(receipt.status, status);
+                assert_eq!(receipt.body, response_body);
+                assert_eq!(
+                    receipt.request_hash,
+                    canonical_json_hash(
+                        EGRESS_REQUEST_DOMAIN,
+                        &json!({
+                            "method": "POST",
+                            "url": url,
+                            "body": request_body,
+                            "injected_headers": ["Authorization"],
+                        }),
+                    )
+                    .unwrap()
+                );
+                assert_eq!(
+                    receipt.response_hash,
+                    content_blob_hash(response_body.as_bytes())
+                );
+            }
+        };
+    assert_turn(&first, "first", 1, 1);
+    assert_turn(&second, "second", 2, 2);
+
+    let EngineInspection::Attempt(inspected) = engine
+        .inspect(EngineQuery::Attempt {
+            attempt_id: first.attempt.attempt_id,
+        })
+        .unwrap()
+    else {
+        panic!("attempt")
+    };
+    assert_eq!(
+        inspected.effect_receipt.as_ref().unwrap().plugins.len(),
+        first.attempt.effect_receipt.as_ref().unwrap().plugins.len()
+    );
+
+    let EngineResult::Stscript(StscriptResult::Completed { output }) = engine
+        .execute(
+            EngineCommand::ExecuteStscript {
+                session_id: sid,
+                execution_id: EntityId::new(),
+                source: "/wire-status".to_owned(),
+                limits: StscriptLimits::default(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("slash")
+    };
+    assert!(output.starts_with("requests=2;last="), "{output}");
+    assert!(output.contains(r#""fetchStatus":201"#), "{output}");
+    assert!(output.contains(r#""result":"fetch-ok""#), "{output}");
+    assert!(output.contains(r#""result":"ajax-ok""#), "{output}");
+
+    let captured = server.captured_requests().await;
+    assert_eq!(captured.len(), 4);
+    for (request, (path, public, body)) in captured.iter().zip([
+        ("/fetch", "fetch", FETCH_JSON),
+        ("/ajax", "ajax", AJAX_JSON),
+        ("/fetch", "fetch", FETCH_JSON),
+        ("/ajax", "ajax", AJAX_JSON),
+    ]) {
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, path);
+        assert_eq!(
+            request.query,
+            BTreeMap::from([("source".to_owned(), "monitor".to_owned())])
+        );
+        assert_eq!(
+            request.headers.get("content-type").map(String::as_str),
+            Some("application/json")
+        );
+        assert_eq!(
+            request.headers.get("x-fixture-public").map(String::as_str),
+            Some(public)
+        );
+        assert_eq!(
+            request.headers.get("authorization").map(String::as_str),
+            Some("Bearer workflow-secret")
+        );
+        assert_eq!(request.body, body);
+    }
+
+    for id in ["metamorph-lifecycle", "request-monitor-wire"] {
+        engine
+            .execute(
+                EngineCommand::SetExtensionEnabled {
+                    session_id: sid,
+                    id: id.to_owned(),
+                    enabled: false,
+                },
+                |_| {},
+            )
+            .await
+            .unwrap();
+        engine
+            .execute(
+                EngineCommand::SetExtensionEnabled {
+                    session_id: sid,
+                    id: id.to_owned(),
+                    enabled: true,
+                },
+                |_| {},
+            )
+            .await
+            .unwrap();
+    }
+    let third = send("third".to_owned()).await;
+    assert_turn(&third, "third", 3, 1);
+    assert_eq!(server.request_count().await, 6);
+
+    let EngineResult::Stscript(StscriptResult::Completed { output: after }) = engine
+        .execute(
+            EngineCommand::ExecuteStscript {
+                session_id: sid,
+                execution_id: EntityId::new(),
+                source: "/wire-status".to_owned(),
+                limits: StscriptLimits::default(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("slash after re-enable")
+    };
+    assert!(after.starts_with("requests=3;last="), "{after}");
+
+    let attempt_id = third.attempt.attempt_id;
+    let original_request = third
+        .attempt
+        .effect_receipt
+        .as_ref()
+        .unwrap()
+        .provider_request
+        .clone();
+    let original_request_hash = provider_request_hash(&original_request).unwrap();
+    let EngineInspection::Capsule(capsule) = engine
+        .inspect(EngineQuery::ExportCapsule {
+            session_id: sid,
+            attempt_id,
+            kind: stcli_core::CapsuleKind::Portable,
+            redact_content: false,
+        })
+        .unwrap()
+    else {
+        panic!("capsule")
+    };
+    let projection_hash = capsule.result.projection_hash.clone().unwrap();
+    assert_eq!(
+        capsule.provider.request_hash.as_ref(),
+        Some(&original_request_hash)
+    );
+    let state = &capsule.result.projection.as_ref().unwrap().state;
+    let settings_value = |id: &str| {
+        state
+            .iter()
+            .find(|cell| cell.key.name == format!("extension.{id}.settings"))
+            .map(|cell| cell.value.clone())
+            .unwrap()
+    };
+    assert_eq!(settings_value("metamorph-lifecycle")["turns"], 3);
+    assert_eq!(settings_value("request-monitor-wire")["requests"], 3);
+    assert!(state.iter().any(|cell| {
+        cell.key.name == "extension.request-monitor-wire.ls.request-monitor-wire-last"
+    }));
+
+    let secret_surfaces = [
+        serde_json::to_value(&first.attempt).unwrap(),
+        serde_json::to_value(&second.attempt).unwrap(),
+        serde_json::to_value(&third.attempt).unwrap(),
+        serde_json::to_value(&capsule).unwrap(),
+        serde_json::to_value(&output).unwrap(),
+        serde_json::to_value(&after).unwrap(),
+    ];
+    for value in &secret_surfaces {
+        let encoded = serde_json::to_string(value).unwrap();
+        assert!(!encoded.contains(SECRET), "{encoded}");
+    }
+
+    mock.shutdown().await;
+    drop(server);
+    let wire_component = wire.plugin.directory.join(&wire.plugin.manifest.component);
+    let wire_source = std::fs::read(&wire_component).unwrap();
+    let lifecycle_component = lifecycle
+        .plugin
+        .directory
+        .join(&lifecycle.plugin.manifest.component);
+    let lifecycle_source = std::fs::read(&lifecycle_component).unwrap();
+    std::fs::remove_file(&wire_component).unwrap();
+    std::fs::remove_file(&lifecycle_component).unwrap();
+    let EngineInspection::DryRun(rerun) = engine
+        .inspect(EngineQuery::DryRunRerun {
+            session_id: sid,
+            attempt_id,
+        })
+        .unwrap()
+    else {
+        panic!("rerun")
+    };
+    assert_eq!(rerun.provider_request, original_request);
+    assert_eq!(
+        provider_request_hash(&rerun.provider_request).unwrap(),
+        original_request_hash
+    );
+    let EngineInspection::ReplayReport(report) = engine
+        .inspect(EngineQuery::ReplayCapsule { capsule })
+        .unwrap()
+    else {
+        panic!("replay")
+    };
+    assert_eq!(report.provider_calls, 0);
+    assert_eq!(report.plugin_executions, 0);
+    assert!(!wire_component.exists());
+    assert!(!lifecycle_component.exists());
+    std::fs::write(wire_component, wire_source).unwrap();
+    std::fs::write(lifecycle_component, lifecycle_source).unwrap();
+    assert_eq!(report.projection_hash, projection_hash);
+    assert_files_do_not_contain_secret(directory.path(), SECRET);
 }

@@ -120,6 +120,15 @@ digests for every committed fixture file. Tests use only these pinned local byte
 [Pinned real-world Extension fixtures](testing.md#pinned-real-world-extension-fixtures) for the
 reviewed update procedure.
 
+The deterministic public-engine workflow in
+`real_extension_complete_session_workflow_replays_offline` combines both fixtures: lifecycle
+observation and Secondary Inference from `metamorph-lifecycle`, and brokered HTTPS plus slash
+commands from `request-monitor-wire`. Live Turns record prompt contributions, lifecycle receipts,
+egress, and inference. After the TLS server stops and installed JavaScript is removed,
+`DryRunRerun` reconstructs the recorded provider request and `ReplayCapsule` validates the recorded
+projection hash without executing Extension code or issuing new requests. Secrets injected by the
+host never enter Extension memory, receipts, capsules, or projections.
+
 ### Extension slash commands
 
 An `st-bridge` Extension may register a command in either SillyTavern-compatible form:
@@ -719,6 +728,8 @@ The manifest requests capabilities. The session grant allows a subset. The engin
 A script plugin uses `contribute-prompt` and `write-own-state`. It cannot register a macro or a command, and it cannot abort a turn. For those effects, write a Wasm plugin.
 
 The engine records every applied effect in the authoritative Turn Trace. During replay, the engine reads the recorded effects and does not run the plugin again.
+
+The deterministic public-engine workflow test (`real_extension_complete_session_workflow_replays_offline`) combines two pinned native Extension fixtures. It imports copies, verifies metadata, digest, and ignored visual fields, adopts the exact pin and four-capability grant, and checks session configuration before exercising turns. Its final phase removes the component and stops the local services; dry-run rerun and capsule replay must preserve recorded hashes without resolving or executing the Extension. This is the supported boundary for offline reproducibility.
 
 ## See also
 

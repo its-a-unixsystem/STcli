@@ -109,6 +109,19 @@ Fixture updates are explicit reviewed changes:
 
 Tests never download or refresh these fixtures.
 
+The `real_extension_complete_session_workflow_replays_offline` test is the public-engine L2
+deterministic Extension seam. It copies both pinned fixtures into a temporary directory, rewrites
+only the wire fixture URLs and lifecycle observation-only callbacks, then drives import, global
+enable, session adoption, two live Turns, `/wire-status`, disable/re-enable, and a third Turn
+through `StcliEngine::execute`/`inspect`. Assertions cover normalized metadata and visual-field
+warnings, the exact four-capability pin, ordered prompt contributions and lifecycle receipts,
+local TLS `fetch`/`$.ajax` method/path/query/headers/body and receipts, named Secondary Inference
+receipts, persistent settings/localStorage versus reset module state, and secret exclusion from
+receipts, capsules, projections, and test-home files. After the mock provider and TLS server stop
+and both component files are removed, `DryRunRerun` preserves the recorded provider request while
+`ReplayCapsule` preserves the recorded projection hash with zero provider calls and zero Plugin
+executions.
+
 ### C. Protocol and schema conformance — the frontend seam
 
 The schemas in [`schemas/`](../schemas/) plus `wit/plugin.wit` are the public protocol every future UI binds to (PRD Success Criterion 8). Today nothing validates real binary output against them.

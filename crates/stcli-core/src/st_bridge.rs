@@ -69,11 +69,10 @@ impl ContextKey {
 }
 
 struct BridgeContext {
-    context: Context,
     listeners: Rc<RefCell<HashMap<String, Vec<Listener>>>>,
+    storage_hydrate: Option<StorageHydrate>,
     commands: Rc<RefCell<HashSet<String>>>,
     snapshot: Rc<RefCell<JsonValue>>,
-    storage_hydrate: StorageHydrate,
     ticks: Rc<Cell<u64>>,
     last_branch_id: Rc<RefCell<Option<EntityId>>>,
     app_ready_emitted: Rc<Cell<bool>>,
@@ -85,6 +84,7 @@ struct BridgeContext {
     prng: Rc<RefCell<Xoshiro128PlusPlus>>,
     logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
     effects: Rc<RefCell<BridgeEffectState>>,
+    context: Context,
 }
 
 struct BridgeEffectState {
@@ -747,11 +747,10 @@ impl BridgeContext {
             error => error.to_string(),
         });
         Ok(Self {
-            context,
             listeners,
+            storage_hydrate: Some(storage_hydrate),
             commands,
             snapshot,
-            storage_hydrate,
             ticks,
             last_branch_id,
             app_ready_emitted,
@@ -763,6 +762,7 @@ impl BridgeContext {
             prng,
             logs,
             effects,
+            context,
         })
     }
 
@@ -782,8 +782,15 @@ impl BridgeContext {
     }
 
     fn hydrate_storage(&self, state: &JsonValue) -> Result<(), PluginError> {
-        self.context
-            .with(|ctx| hydrate_storage(&ctx, &self.storage_hydrate, state))
+        self.context.with(|ctx| {
+            hydrate_storage(
+                &ctx,
+                self.storage_hydrate
+                    .as_ref()
+                    .expect("bridge storage hydrate is installed"),
+                state,
+            )
+        })
     }
 
     fn invoke_command(
@@ -945,8 +952,10 @@ impl BridgeContext {
 
 impl Drop for BridgeContext {
     fn drop(&mut self) {
+        let hydrate = self.storage_hydrate.take();
         self.listeners.borrow_mut().clear();
         self.commands.borrow_mut().clear();
+        drop(hydrate);
         self.context.with(clear_bridge_globals);
     }
 }
@@ -974,7 +983,6 @@ fn drain_pending_jobs(
     }
     Ok(())
 }
-
 fn install_timer<'js>(
     ctx: &Ctx<'js>,
     globals: &Object<'js>,
@@ -983,7 +991,6 @@ fn install_timer<'js>(
     logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
     warned_delayed_timer: Rc<Cell<bool>>,
 ) -> rquickjs::Result<()> {
-    let schedule: Function = ctx.eval("(callback) => Promise.resolve().then(callback)")?;
     globals.set(
         name,
         Function::new(
@@ -1003,6 +1010,8 @@ fn install_timer<'js>(
                         &format!("{name} with delay is unsupported"),
                     ));
                 }
+                let schedule: Function =
+                    ctx.eval("(callback) => Promise.resolve().then(callback)")?;
                 let _: Value = schedule.call((callback,))?;
                 let id = next_timer_id.get();
                 next_timer_id.set(id.wrapping_add(1));

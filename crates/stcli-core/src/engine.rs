@@ -173,7 +173,12 @@ impl StcliEngine {
     }
 
     pub fn inspect(&self, query: EngineQuery) -> Result<EngineInspection, EngineError> {
-        self.ensure_default_plugins()?;
+        if !matches!(
+            query,
+            EngineQuery::ReplayCapsule { .. } | EngineQuery::DryRunRerun { .. }
+        ) {
+            self.ensure_default_plugins()?;
+        }
         if let EngineQuery::DoctorPlugin { directory } = &query {
             return Ok(EngineInspection::InstalledPlugin(
                 self.plugin_registry().doctor(directory)?,
