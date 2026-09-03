@@ -29,9 +29,9 @@ STcli supports three runtimes for the component:
 
 - **Wasm**: A WebAssembly Component Model binary (`.wasm`). This is the default runtime. It has access to every effect type.
 - **Script**: A JavaScript file (`.js`) that runs in a sandboxed QuickJS engine. It is quick to write and needs no build step. It can contribute to the prompt, write its own state, and log messages.
-- **st-bridge Extension**: A SillyTavern-compatible JavaScript Extension (`.js`) run headlessly in a persistent QuickJS context. It is an **Extension**, not a Plugin: it uses the normalized Plugin manifest and grants, but its sanctioned mutable surfaces are the ST-shaped `generate_interceptor` chat array and `CHAT_COMPLETION_PROMPT_READY` payload. `getContext()` remains a frozen snapshot.
+- **st-bridge Extension**: A SillyTavern-compatible JavaScript Extension (`.js`) run headlessly in a persistent QuickJS context. It is an **Extension**, not a Plugin: it uses the normalized Plugin manifest and grants, but its sanctioned mutable surfaces are the ST-shaped `generate_interceptor` chat array, `CHAT_COMPLETION_PROMPT_READY` payload, and `SillyTavern.setExtensionPrompt`. `getContext()` remains a frozen snapshot.
 
-Both Plugin runtimes use the same manifest, capability model, and effect types. The `st-bridge` runtime is an Extension compatibility surface with recorded prompt rewrites; Replay and Rerun reuse those recorded effects without executing JavaScript.
+Both Plugin runtimes use the same manifest, capability model, and effect types. The `st-bridge` runtime is an Extension compatibility surface with recorded prompt rewrites and contributions; Replay and Rerun reuse those recorded effects without executing JavaScript.
 
 A plugin can do these things when its manifest requests them and the session grants them:
 
@@ -91,8 +91,10 @@ The Script runtime needs the `scripting` build feature. This feature is on by de
 The `st-bridge` runtime keeps one QuickJS context for each Session, Extension, and component
 digest. It provides these deterministic browser-compatible globals:
 
-- `Math.random()` uses a seeded Xoshiro128++ generator. The Turn Trace records the seed in the
-  plugin receipt as `prng_seed`.
+- `Math.random()` uses a seeded Xoshiro128++ generator. Each bridge invocation starts a fresh
+  sequence and records its seed in the Plugin Receipt as `prng_seed`. Reinitializing the generator
+  from that receipt reproduces the random sequence for that invocation, including later calls in
+  the same persistent Extension context.
 - `setTimeout(callback, 0)` and `setInterval(callback, 0)` enqueue the callback as a microtask.
   The returned numeric handle is informational. `clearTimeout` and `clearInterval` are no-ops.
 - A positive timer delay is unsupported. The call throws and records one Compatibility Warning
@@ -123,16 +125,21 @@ string. Its string-compatible return value becomes the STscript pipe output; `un
 an empty output. The latest registration for a name wins within that persistent Session/Extension
 context.
 
+Before every callback, STcli hydrates the Extension's persisted local state from
+`extension.<id>.*`. `extension.<id>.settings` becomes `extension_settings[id]`, and
+`extension.<id>.ls.<key>` becomes `localStorage[key]`. Writes remain limited to that namespace.
+
 Slash commands use the existing STscript unknown-command fallback, so `/greet` is not a second
 command language. A missing registration remains the normal `StscriptError::UnknownCommand`.
 Each attempted Extension invocation is recorded as exactly one `extension.command` Turn-Trace
-event, including arguments, output, callback logs/effects, and state mutations.
+event, including arguments, output, callback logs/effects, and proposed state mutations. Extension
+command writes commit only when the whole STscript evaluation succeeds. If a later pipeline
+command fails, STcli records the failed evaluation and command trace but commits none of its state
+writes.
 
-Replay consumes that recorded output and receipt and reapplies the recorded state mutations. It
-never resolves the component, starts QuickJS, executes JavaScript, invokes timers, or contacts the
-network.
-Replay does not initialize the PRNG or run timer callbacks. It reads the recorded seed and effects
-from the Turn Trace and reapplies the effects.
+Replay consumes recorded output and state mutations from a successful evaluation. It never
+resolves the component, starts QuickJS, executes JavaScript, invokes timers, or contacts the
+network. Replay does not initialize the PRNG or run timer callbacks.
 
 ### Brokered HTTPS egress
 
@@ -186,6 +193,17 @@ Dry Runs exercise egress without touching the network: a live broker answers a c
 response, and a broker configured with a stub transport forwards to the stub. Native Plugin hosts
 can reuse the same boundary through `EgressBroker`, `EgressTransport`, and `StubTransport` in
 `stcli-core`.
+
+### `SillyTavern.setExtensionPrompt`
+
+`SillyTavern.setExtensionPrompt(key, value, position, depth, scan, role)` records a prompt
+contribution during the Extension's prompt-phase invocation. The supported SillyTavern positions
+are `IN_PROMPT` (`0`, after the story/character definitions), `IN_CHAT` (`1`, at the requested
+depth), and `BEFORE_PROMPT` (`2`, before the story/character definitions). Roles `0`, `1`, and `2`
+map to system, user, and assistant. Reusing a key replaces that contribution for the invocation.
+The contribution is applied after interceptor read-back and before context pruning and provider
+request serialization. Prompt observation and mutation are bridge-inherent surfaces; they do not
+add a fifth capability to the fixed consent grant.
 
 ### `SillyTavern.getContext()` read-only surface
 

@@ -32,8 +32,8 @@ use serde_json::Value as JsonValue;
 
 use crate::{
     ChatMessage, ChatRole, ContentHash, EgressInvocation, EgressReceipt, EgressRequest, EntityId,
-    InstalledPlugin, PluginEffect, PluginError, PluginEvent, PluginInput, PromptRewriteMessage,
-    ScriptLimits, ScriptOutcome, StateKey, VariableScope,
+    InstalledPlugin, PluginEffect, PluginError, PluginEvent, PluginInput, PromptContribution,
+    PromptRewriteMessage, PromptSlot, ScriptLimits, ScriptOutcome, StateKey, VariableScope,
 };
 
 type Listener = Persistent<Function<'static>>;
@@ -80,6 +80,9 @@ struct BridgeContext {
     abandoned: Rc<Cell<bool>>,
     initialization_error: Option<String>,
     prng_seed: u64,
+    invocation_count: u64,
+    base_prng_seed: u64,
+    prng: Rc<RefCell<Xoshiro128PlusPlus>>,
     logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
     effects: Rc<RefCell<BridgeEffectState>>,
 }
@@ -91,6 +94,7 @@ struct BridgeEffectState {
     egress_receipts: Vec<EgressReceipt>,
     inference_receipts: Vec<crate::InferenceReceipt>,
     state_writes: BTreeMap<StateKey, JsonValue>,
+    prompt_contributions: Vec<PromptContribution>,
 }
 
 struct Xoshiro128PlusPlus {
@@ -235,9 +239,7 @@ impl Worker {
         while let Ok(request) = receiver.recv() {
             match request {
                 WorkerRequest::Execute(request) => {
-                    let timeout_seed = ContextKey::from_request(&request.installed, &request.input)
-                        .ok()
-                        .map(|key| key.prng_seed());
+                    let key = ContextKey::from_request(&request.installed, &request.input).ok();
                     let result = self.execute(
                         request.installed,
                         request.input,
@@ -246,6 +248,10 @@ impl Worker {
                         request.egress,
                         request.inference,
                     );
+                    let timeout_seed = key
+                        .as_ref()
+                        .and_then(|key| self.contexts.get(key))
+                        .map(|context| context.prng_seed);
                     let result = match result {
                         Err(PluginError::StBridgeAsyncTimeout) => Ok(ScriptOutcome {
                             effects: Vec::new(),
@@ -313,6 +319,9 @@ impl Worker {
                 message: message.clone(),
             });
         }
+        context.prng_seed = context.invocation_seed();
+        context.invocation_count = context.invocation_count.wrapping_add(1);
+        context.reset_prng();
         *context.effects.borrow_mut() = BridgeEffectState {
             caller: installed.manifest.id.clone(),
             egress,
@@ -320,6 +329,7 @@ impl Worker {
             egress_receipts: Vec::new(),
             inference_receipts: Vec::new(),
             state_writes: BTreeMap::new(),
+            prompt_contributions: Vec::new(),
         };
         context.hydrate_storage(&input.state)?;
         if context.abandoned.get() {
@@ -618,6 +628,11 @@ impl Worker {
         outcome.egress_receipts = std::mem::take(&mut effects.egress_receipts);
         outcome.inference_receipts = std::mem::take(&mut effects.inference_receipts);
         outcome.effects.extend(
+            std::mem::take(&mut effects.prompt_contributions)
+                .into_iter()
+                .map(|contribution| PluginEffect::Prompt { contribution }),
+        );
+        outcome.effects.extend(
             std::mem::take(&mut effects.state_writes)
                 .into_iter()
                 .map(|(key, value)| PluginEffect::StateWrite { key, value }),
@@ -676,7 +691,8 @@ impl BridgeContext {
         let last_branch_id = Rc::new(RefCell::new(initial_branch_id));
         let app_ready_emitted = Rc::new(Cell::new(startup_passed));
         let abandoned = Rc::new(Cell::new(false));
-        let prng_seed = context_key.prng_seed();
+        let base_prng_seed = context_key.prng_seed();
+        let prng_seed = base_prng_seed;
         let prng = Rc::new(RefCell::new(Xoshiro128PlusPlus::from_seed(prng_seed)));
         let next_timer_id = Rc::new(Cell::new(1));
         let logs = Rc::new(RefCell::new(Vec::new()));
@@ -688,6 +704,7 @@ impl BridgeContext {
             egress_receipts: Vec::new(),
             inference_receipts: Vec::new(),
             state_writes: BTreeMap::new(),
+            prompt_contributions: Vec::new(),
         }));
         let storage_hydrate = context.with(|ctx| {
             let storage_hydrate = install_globals(
@@ -696,7 +713,7 @@ impl BridgeContext {
                 Rc::clone(&listeners),
                 Rc::clone(&commands),
                 Rc::clone(&snapshot),
-                prng,
+                Rc::clone(&prng),
                 next_timer_id,
                 Rc::clone(&logs),
                 warned_delayed_timer,
@@ -737,13 +754,27 @@ impl BridgeContext {
             storage_hydrate,
             ticks,
             last_branch_id,
-            initialization_error,
             app_ready_emitted,
             abandoned,
+            initialization_error,
             prng_seed,
+            invocation_count: 0,
+            base_prng_seed,
+            prng,
             logs,
             effects,
         })
+    }
+
+    fn invocation_seed(&self) -> u64 {
+        self.base_prng_seed
+            .wrapping_add(self.invocation_count.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+            .max(1)
+    }
+
+    fn reset_prng(&self) {
+        self.prng
+            .replace(Xoshiro128PlusPlus::from_seed(self.prng_seed));
     }
 
     fn take_logs(&self) -> Vec<crate::ScriptLog> {
@@ -1368,7 +1399,76 @@ fn install_globals<'js>(
         }
     };
 
-    silly_tavern.set("setExtensionPrompt", make_stub(ctx, "setExtensionPrompt")?)?;
+    silly_tavern.set(
+        "setExtensionPrompt",
+        Function::new(ctx.clone(), {
+            let prompt_effects = Rc::clone(&effects);
+            move |ctx: Ctx<'js>, args: Rest<Value<'js>>| {
+                let key = args
+                    .0
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| Exception::throw_type(&ctx, "setExtensionPrompt requires a key"))
+                    .and_then(|value| Coerced::<String>::from_js(&ctx, value))?
+                    .0;
+                let content = args
+                    .0
+                    .get(1)
+                    .cloned()
+                    .ok_or_else(|| {
+                        Exception::throw_type(&ctx, "setExtensionPrompt requires prompt text")
+                    })
+                    .and_then(|value| Coerced::<String>::from_js(&ctx, value))?
+                    .0;
+                let position = args.0.get(2).and_then(Value::as_int).unwrap_or(0);
+                let slot = match position {
+                    0 => PromptSlot::AfterCharacterDefinitions,
+                    1 => PromptSlot::InChat,
+                    2 => PromptSlot::BeforeCharacterDefinitions,
+                    _ => {
+                        return Err(Exception::throw_type(
+                            &ctx,
+                            "unsupported setExtensionPrompt position",
+                        ));
+                    }
+                };
+                let depth = (slot == PromptSlot::InChat)
+                    .then(|| args.0.get(3).and_then(Value::as_int).unwrap_or(0).max(0) as usize);
+                let role = match args.0.get(5).and_then(Value::as_int).unwrap_or(0) {
+                    0 => "system",
+                    1 => "user",
+                    2 => "assistant",
+                    _ => {
+                        return Err(Exception::throw_type(
+                            &ctx,
+                            "unsupported setExtensionPrompt role",
+                        ));
+                    }
+                };
+                let mut prompt_effects = prompt_effects.borrow_mut();
+                let order = prompt_effects.prompt_contributions.len();
+                let contribution = PromptContribution {
+                    slot,
+                    name: key.clone(),
+                    role: role.to_owned(),
+                    content,
+                    depth,
+                    order,
+                    outlet: None,
+                };
+                if let Some(existing) = prompt_effects
+                    .prompt_contributions
+                    .iter_mut()
+                    .find(|existing| existing.name == key)
+                {
+                    *existing = contribution;
+                } else {
+                    prompt_effects.prompt_contributions.push(contribution);
+                }
+                Ok::<Value<'js>, rquickjs::Error>(Value::new_undefined(ctx))
+            }
+        })?,
+    )?;
     silly_tavern.set(
         "registerSlashCommand",
         Function::new(
@@ -1911,13 +2011,19 @@ mod tests {
     use super::Xoshiro128PlusPlus;
 
     #[test]
-    fn seeded_prng_replays_to_same_values() {
-        let recorded_seed = 0x0123_4567_89ab_cdef;
-        let mut original = Xoshiro128PlusPlus::from_seed(recorded_seed);
-        let expected = (0..5).map(|_| original.next_f64()).collect::<Vec<_>>();
-        let mut replay = Xoshiro128PlusPlus::from_seed(recorded_seed);
-        let actual = (0..5).map(|_| replay.next_f64()).collect::<Vec<_>>();
+    fn seeded_prng_matches_known_sequence() {
+        let mut prng = Xoshiro128PlusPlus::from_seed(0x0123_4567_89ab_cdef);
+        let actual = (0..5).map(|_| prng.next_f64()).collect::<Vec<_>>();
 
-        assert_eq!(actual, expected);
+        assert_eq!(
+            actual,
+            [
+                0.05057272996197315,
+                0.9867480159495281,
+                0.39156541001586154,
+                0.1170161639932491,
+                0.8277870383931606,
+            ]
+        );
     }
 }

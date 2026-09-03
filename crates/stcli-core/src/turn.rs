@@ -3127,11 +3127,18 @@ fn apply_st_bridge_effects(
     effects: &[PluginEffect],
 ) -> Result<(), TurnError> {
     apply_st_bridge_state_effects(state, plugin_id, effects)?;
+    let mut contributions = Vec::new();
     for effect in effects {
-        if let PluginEffect::PromptRewrite { messages } = effect {
-            apply_st_bridge_rewrite(tokenizer, segments, plugin_id, messages.clone());
+        match effect {
+            PluginEffect::PromptRewrite { messages } => {
+                apply_st_bridge_rewrite(tokenizer, segments, plugin_id, messages.clone());
+            }
+            PluginEffect::Prompt { contribution } => contributions.push(contribution.clone()),
+            _ => {}
         }
     }
+    inject_plugin_contributions(tokenizer, segments, contributions)?;
+    *segments = insert_in_chat_segments(std::mem::take(segments));
     Ok(())
 }
 

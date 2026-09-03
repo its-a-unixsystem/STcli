@@ -422,6 +422,122 @@ SillyTavern.registerSlashCommand('/greet', (named, unnamed) => {
     assert_eq!(replay.output, "Sam:hello");
     assert_eq!(replay.state_mutations, recorded.state_mutations);
 }
+#[tokio::test]
+async fn extension_command_hydrates_turn_state_and_rolls_back_with_failed_pipeline() {
+    const ID: &str = "org.stcli.command-state";
+    const SOURCE: &str = r#"
+function namedInterceptor() {
+  extension_settings['org.stcli.command-state'] = { theme: 'dark' };
+  localStorage.setItem('token', 'abc');
+}
+globalThis.namedInterceptor = namedInterceptor;
+SillyTavern.registerSlashCommand('/inspect-state', () => {
+  const output = `${extension_settings['org.stcli.command-state'].theme}:${localStorage.getItem('token')}`;
+  localStorage.setItem('command-ran', 'yes');
+  return output;
+});
+"#;
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("data");
+    let registry = PluginRegistry::new(data.join("plugins"));
+    let installed = registry
+        .install(&write_bridge_plugin_with_capabilities(
+            &directory.path().join("plugin"),
+            ID,
+            SOURCE,
+            &["write-own-state", "register-command"],
+        ))
+        .unwrap();
+    let mock = MockProvider::spawn(["Generated response"]).await.unwrap();
+    let database = data.join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.provider = mock.provider_settings();
+    configuration.plugins = vec![PluginPin {
+        id: installed.manifest.id.clone(),
+        version: installed.manifest.version.to_string(),
+        component_hash: installed.manifest.component_sha256.clone(),
+        capabilities: installed.manifest.requested_capabilities.clone(),
+        settings: json!({}),
+        egress_allow_list: Vec::new(),
+        enabled: true,
+    }];
+    let created = store.create_session(configuration, 0).unwrap();
+    store
+        .send_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "persist extension state".to_owned(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    // Regression test for ticket 12: a failed pipeline records the command but commits no writes.
+    let error = store
+        .execute_stscript(
+            created.session.session_id,
+            EntityId::new(),
+            "/inspect-state | /missing",
+            StscriptLimits::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(error, StscriptError::UnknownCommand(command) if command == "missing"));
+    let state = store.state_transaction(created.session.session_id).unwrap();
+    assert_eq!(
+        state
+            .get(VariableScope::Local, &format!("extension.{ID}.settings"))
+            .unwrap()
+            .value,
+        json!({"theme": "dark"})
+    );
+    assert_eq!(
+        state
+            .get(VariableScope::Local, &format!("extension.{ID}.ls.token"))
+            .unwrap()
+            .value,
+        "abc"
+    );
+    assert!(
+        state
+            .get(
+                VariableScope::Local,
+                &format!("extension.{ID}.ls.command-ran")
+            )
+            .is_none()
+    );
+
+    let result = store
+        .execute_stscript(
+            created.session.session_id,
+            EntityId::new(),
+            "/inspect-state",
+            StscriptLimits::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        result,
+        StscriptResult::Completed {
+            output: "dark:abc".to_owned()
+        }
+    );
+    assert_eq!(
+        store
+            .state_transaction(created.session.session_id)
+            .unwrap()
+            .get(
+                VariableScope::Local,
+                &format!("extension.{ID}.ls.command-ran")
+            )
+            .unwrap()
+            .value,
+        "yes"
+    );
+}
+
 #[test]
 fn bridge_rejects_malformed_slash_command_registration() {
     let directory = tempdir().unwrap();
@@ -931,6 +1047,76 @@ async fn dry_run_applies_interceptor_and_prompt_ready_mutations() {
 }
 
 #[tokio::test]
+async fn set_extension_prompt_reaches_provider_request_in_sillytavern_order() {
+    const ID: &str = "org.stcli.extension-prompt";
+    const SOURCE: &str = r#"
+function namedInterceptor() {
+  SillyTavern.setExtensionPrompt('after-story', 'AFTER STORY', 0, 0);
+  SillyTavern.setExtensionPrompt('in-chat', 'IN CHAT', 1, 0, false, 2);
+  SillyTavern.setExtensionPrompt('before-story', 'BEFORE STORY', 2, 0);
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("data");
+    let registry = PluginRegistry::new(data.join("plugins"));
+    let installed = registry
+        .install(&write_bridge_plugin_with_capabilities(
+            &directory.path().join("plugin"),
+            ID,
+            SOURCE,
+            &[],
+        ))
+        .unwrap();
+    let database = data.join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.plugins = vec![PluginPin {
+        id: installed.manifest.id.clone(),
+        version: installed.manifest.version.to_string(),
+        component_hash: installed.manifest.component_sha256.clone(),
+        capabilities: installed.manifest.requested_capabilities.clone(),
+        settings: json!({}),
+        egress_allow_list: Vec::new(),
+        enabled: true,
+    }];
+    let created = store.create_session(configuration, 0).unwrap();
+
+    // Regression test for ticket 12: setExtensionPrompt is a bridge-inherent prompt surface.
+    let result = store
+        .dry_run_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "Hello",
+        )
+        .unwrap();
+    let messages = result.provider_request["messages"].as_array().unwrap();
+    let index = |content: &str| {
+        messages
+            .iter()
+            .position(|message| message["content"] == content)
+            .unwrap()
+    };
+    assert!(index("BEFORE STORY") < index("AFTER STORY"));
+    assert!(index("AFTER STORY") < index("Hello"));
+    assert!(index("Hello") < index("IN CHAT"));
+    assert_eq!(messages[index("IN CHAT")]["role"], "assistant");
+    assert!(
+        result.prompt_plan.plugin_receipts[0]
+            .effects
+            .iter()
+            .any(|effect| matches!(
+                effect,
+                PluginEffect::Prompt { contribution }
+                    if contribution.name == "after-story"
+            ))
+    );
+}
+
+#[tokio::test]
 async fn live_attempt_records_lifecycle_and_rerun_reuses_recorded_prompt() {
     let directory = tempdir().unwrap();
     let data = directory.path().join("data");
@@ -994,7 +1180,7 @@ async fn live_attempt_records_lifecycle_and_rerun_reuses_recorded_prompt() {
 }
 
 #[test]
-fn prng_seed_is_recorded_in_replayed_receipt() {
+fn every_persistent_context_invocation_records_a_reproducible_prng_seed() {
     let source = r#"
 function namedInterceptor(chat) {
   const values = Array.from({ length: 5 }, () => Math.random());
@@ -1011,27 +1197,35 @@ globalThis.namedInterceptor = namedInterceptor;
     let installed = PluginRegistry::new(directory.path().join("registry"))
         .doctor(&plugin)
         .unwrap();
-    let receipt = PluginHost::new(PluginLimits::default())
-        .execute(
-            &installed,
-            &authorize(&installed),
-            interceptor_input(&installed, EntityId::new()),
-        )
-        .unwrap();
+    let host = PluginHost::new(PluginLimits::default());
+    let input = interceptor_input(&installed, EntityId::new());
+    let receipts = [
+        host.execute(&installed, &authorize(&installed), input.clone())
+            .unwrap(),
+        host.execute(&installed, &authorize(&installed), input)
+            .unwrap(),
+    ];
 
-    assert_ne!(receipt.prng_seed, Some(0));
-    let values = match &receipt.effects[0] {
-        PluginEffect::PromptRewrite { messages } => {
-            serde_json::from_str::<Vec<f64>>(&messages[0].content).unwrap()
-        }
-        effect => panic!("expected PromptRewrite, got {effect:?}"),
-    };
-    assert_eq!(values.len(), 5);
-    assert!(values.iter().all(|value| (0.0..1.0).contains(value)));
-    let replayed: PluginReceipt =
-        serde_json::from_value(serde_json::to_value(&receipt).unwrap()).unwrap();
-    assert_eq!(replayed.prng_seed, receipt.prng_seed);
-    assert_eq!(replayed.effects, receipt.effects);
+    // Regression test for ticket 12: repeated calls record independent seeds and sequences.
+    assert_ne!(receipts[0].prng_seed, receipts[1].prng_seed);
+    let values = receipts
+        .iter()
+        .map(|receipt| match &receipt.effects[0] {
+            PluginEffect::PromptRewrite { messages } => {
+                serde_json::from_str::<Vec<f64>>(&messages[0].content).unwrap()
+            }
+            effect => panic!("expected PromptRewrite, got {effect:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(values[0].len(), 5);
+    assert_eq!(values[1].len(), 5);
+    assert_ne!(values[0], values[1]);
+    for receipt in receipts {
+        let replayed: PluginReceipt =
+            serde_json::from_value(serde_json::to_value(&receipt).unwrap()).unwrap();
+        assert_eq!(replayed.prng_seed, receipt.prng_seed);
+        assert_eq!(replayed.effects, receipt.effects);
+    }
 }
 
 #[test]
@@ -1769,13 +1963,16 @@ globalThis.namedInterceptor = function(chat) {
         .iter()
         .filter(|l| l.level == "warn")
         .collect();
-    // setExtensionPrompt called twice → 1 warning; getTokenCount → 1; generateQuietPrompt → 1.
-    assert!(
-        warnings
+    assert_eq!(
+        receipt
+            .effects
             .iter()
-            .any(|l| l.message.contains("setExtensionPrompt")),
-        "expected setExtensionPrompt warning, got: {:?}",
-        receipt.script_logs
+            .filter(|effect| matches!(
+                effect,
+                PluginEffect::Prompt { contribution } if contribution.name == "test"
+            ))
+            .count(),
+        1
     );
     assert!(
         warnings.iter().any(|l| l.message.contains("getTokenCount")),

@@ -1170,7 +1170,7 @@ fn validate_effects(
                     | (PluginEvent::Command, PluginEffect::Observe { .. })
                     | (
                         PluginEvent::GenerateInterceptor | PluginEvent::ChatCompletionPromptReady,
-                        PluginEffect::PromptRewrite { .. }
+                        PluginEffect::PromptRewrite { .. } | PluginEffect::Prompt { .. }
                     )
             )
         {

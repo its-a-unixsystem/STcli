@@ -163,7 +163,9 @@ impl ExtensionCommandRuntime {
                     "named": named,
                     "unnamed": unnamed,
                 }),
-                state: json!(state.local_namespace(&installed.manifest.id)),
+                state: json!(
+                    state.local_namespace(&format!("extension.{}", installed.manifest.id))
+                ),
                 artifact: serde_json::Value::Null,
                 session: json!({"session_id": self.session_id}),
             };
@@ -260,7 +262,7 @@ impl Store {
                     .connection
                     .transaction()
                     .map_err(StorageError::Sqlite)?;
-                append_extension_command_traces(&transaction, &command_traces)?;
+                append_extension_command_traces(&transaction, &command_traces, false)?;
                 append_event(
                     &transaction,
                     Some(session_id),
@@ -285,7 +287,7 @@ impl Store {
             .connection
             .transaction()
             .map_err(StorageError::Sqlite)?;
-        append_extension_command_traces(&transaction, &command_traces)?;
+        append_extension_command_traces(&transaction, &command_traces, true)?;
         apply_state_mutations(&transaction, session_id, execution_id, &mutations)?;
         append_event(
             &transaction,
@@ -307,6 +309,7 @@ impl Store {
 fn append_extension_command_traces(
     transaction: &rusqlite::Transaction<'_>,
     traces: &[ExtensionCommandTrace],
+    commit_state: bool,
 ) -> Result<(), StscriptError> {
     for trace in traces {
         append_event(
@@ -315,12 +318,14 @@ fn append_extension_command_traces(
             "extension.command",
             &json!(trace),
         )?;
-        apply_plugin_command_state_mutations(
-            transaction,
-            trace.session_id,
-            trace.command_execution_id,
-            &trace.state_mutations,
-        )?;
+        if commit_state {
+            apply_plugin_command_state_mutations(
+                transaction,
+                trace.session_id,
+                trace.command_execution_id,
+                &trace.state_mutations,
+            )?;
+        }
     }
     Ok(())
 }
