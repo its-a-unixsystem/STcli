@@ -130,6 +130,12 @@ impl ReqwestTransport {
             client: OnceLock::new(),
         }
     }
+
+    pub fn with_client(client: reqwest::blocking::Client) -> Self {
+        Self {
+            client: OnceLock::from(client),
+        }
+    }
 }
 
 impl Default for ReqwestTransport {
@@ -247,6 +253,17 @@ impl EgressBroker {
             transport: Arc::new(ReqwestTransport::new()),
             stubbed: false,
             credentials: Arc::new(SystemCredentialStore),
+        }
+    }
+
+    pub fn with_transport(
+        transport: Arc<dyn EgressTransport>,
+        credentials: Arc<dyn CredentialResolver>,
+    ) -> Self {
+        Self {
+            transport,
+            stubbed: false,
+            credentials,
         }
     }
 

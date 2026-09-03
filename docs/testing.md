@@ -63,6 +63,20 @@ New non-published crate (`publish = false`), dev-dependency of both crates:
 
 No new dependencies. Deliberately no `assert_cmd`: the wrapper delivers the same ergonomics in ~30 lines. Effort: ~1 day, including migrating the four existing helper blocks.
 
+#### Local TLS broker boundary
+
+`stcli-testkit::BrokerTestServer` binds `127.0.0.1:0`, serves HTTPS with a generated
+certificate, waits for `/health`, records requests in arrival order, and returns queued status,
+header, and body responses. It exposes the certificate PEM and hostname. The server task is
+aborted when the value is dropped.
+
+Tests that exercise the production wire serializer build a certificate-trusting blocking client
+with `BrokerTestServer::https_client`, pass it to `ReqwestTransport::with_client`, and construct a
+live-mode broker with `EgressBroker::with_transport`. This keeps the HTTPS requirement and the
+credential-injection boundary intact while avoiding external network access. The focused
+`real_extension_egress_uses_local_tls_wire_path` test checks the captured request, parsed response,
+receipt, and persisted files. In-memory `StubTransport` tests remain the faster lower seam.
+
 #### Pinned real-world Extension fixtures
 
 The L2 `st_bridge` target uses two compact fixtures under

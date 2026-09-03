@@ -11,9 +11,9 @@ use stcli_core::{
     EgressRequest, EgressResponse, EgressSecretInjection, EgressTransport, EngineCommand,
     EngineError, EngineResult, EntityId, ExtensionCommandTrace, InstalledPlugin, PluginEffect,
     PluginEvent, PluginGrant, PluginHost, PluginInput, PluginLimits, PluginPin, PluginReceipt,
-    PluginRegistry, StcliEngine, Store, StscriptError, StscriptLimits, StscriptProgram,
-    StscriptResult, StubTransport, VariableScope, canonical_json_hash, content_blob_hash,
-    plugin_digest,
+    PluginRegistry, ReqwestTransport, StcliEngine, Store, StscriptError, StscriptLimits,
+    StscriptProgram, StscriptResult, StubTransport, VariableScope, canonical_json_hash,
+    content_blob_hash, plugin_digest,
 };
 use stcli_testkit::{MockProvider, configuration as base_configuration, fixtures};
 use tempfile::tempdir;
@@ -231,6 +231,23 @@ fn authorize(installed: &InstalledPlugin) -> PluginGrant {
         settings: json!({}),
         egress_allow_list: Vec::new(),
         enabled: true,
+    }
+}
+
+fn assert_files_do_not_contain_secret(path: &Path, secret: &str) {
+    if path.is_dir() {
+        for entry in std::fs::read_dir(path).unwrap() {
+            assert_files_do_not_contain_secret(&entry.unwrap().path(), secret);
+        }
+    } else {
+        let bytes = std::fs::read(path).unwrap();
+        assert!(
+            !bytes
+                .windows(secret.len())
+                .any(|window| window == secret.as_bytes()),
+            "{} contains the secret",
+            path.display()
+        );
     }
 }
 
@@ -1725,6 +1742,173 @@ async fn secret_is_injected_out_of_band() {
     assert!(!receipt_json.contains("s3cr3t"), "{receipt_json}");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_extension_egress_uses_local_tls_wire_path() {
+    use stcli_testkit::{BrokerTestServer, QueuedResponse};
+
+    const SECRET: &str = "s3cr3t-wire-value";
+    const BODY: &str = r#"{"input":"fixture"}"#;
+
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("data");
+    let server = BrokerTestServer::spawn([QueuedResponse {
+        status: 201,
+        headers: BTreeMap::from([("x-reply".to_owned(), "wire".to_owned())]),
+        body: r#"{"result":"accepted"}"#.to_owned(),
+    }])
+    .await
+    .unwrap();
+    let source = r#"
+async function namedInterceptor(chat) {
+  const response = await fetch("__URL__", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-fixture-public": "visible"
+    },
+    body: '{"input":"fixture"}'
+  });
+  const result = await response.json();
+  extension_settings["org.stcli.tls-wire"] ||= {};
+  extension_settings["org.stcli.tls-wire"].lastResult = result.result;
+  saveSettingsDebounced();
+  chat.push({
+    name: "System",
+    is_user: false,
+    is_system: true,
+    mes: `wire:${response.status}:${response.statusText}:${response.headers["x-reply"]}:${result.result}`,
+    extra: {},
+    index: chat.length
+  });
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#
+    .replace(
+        "__URL__",
+        &format!("{}/v1/data?source=fixture&sequence=1", server.base_url()),
+    );
+    let plugin = write_bridge_plugin_with_capabilities(
+        &data.join("plugin"),
+        "org.stcli.tls-wire",
+        &source,
+        &["contribute-prompt", "write-own-state", "brokered-egress"],
+    );
+    let registry = PluginRegistry::new(data.join("plugins"));
+    let installed = registry.install(&plugin).unwrap();
+    let mock = MockProvider::spawn(["Generated response"]).await.unwrap();
+    let database = data.join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.provider = mock.provider_settings();
+    configuration.plugins = vec![egress_pin(
+        &installed,
+        vec![EgressAllowance {
+            domain: server.hostname().to_owned(),
+            secret: Some(EgressSecretInjection {
+                credential_key: "test-key".to_owned(),
+                header: "Authorization".to_owned(),
+                value_template: "Bearer {secret}".to_owned(),
+            }),
+        }],
+    )];
+    let created = store.create_session(configuration, 0).unwrap();
+    let credentials = MapCredentialResolver {
+        secrets: BTreeMap::from([("test-key".to_owned(), SECRET.to_owned())]),
+    };
+    let transport = ReqwestTransport::with_client(
+        server
+            .https_client()
+            .await
+            .expect("certificate-trusting client builds"),
+    );
+    store.set_egress_broker(EgressBroker::with_transport(
+        Arc::new(transport),
+        Arc::new(credentials),
+    ));
+    let completed = store
+        .send_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "Hello".to_owned(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(server.request_count().await, 1);
+    let requests = server.captured_requests().await;
+    let request = requests.first().expect("one captured request");
+    assert_eq!(request.method, "POST");
+    assert_eq!(request.path, "/v1/data");
+    assert_eq!(
+        request.query,
+        BTreeMap::from([
+            ("sequence".to_owned(), "1".to_owned()),
+            ("source".to_owned(), "fixture".to_owned()),
+        ])
+    );
+    assert_eq!(
+        request.headers.get("content-type").map(String::as_str),
+        Some("application/json")
+    );
+    assert_eq!(
+        request.headers.get("x-fixture-public").map(String::as_str),
+        Some("visible")
+    );
+    assert_eq!(
+        request.headers.get("authorization").map(String::as_str),
+        Some("Bearer s3cr3t-wire-value")
+    );
+    assert_eq!(request.body, BODY);
+
+    let effect_receipt = completed.attempt.effect_receipt.as_ref().unwrap();
+    let contents = serde_json::to_string(&effect_receipt.provider_request["messages"]).unwrap();
+    assert!(
+        contents.contains("wire:201:Created:wire:accepted"),
+        "{contents}"
+    );
+    let receipt = effect_receipt
+        .plugins
+        .iter()
+        .find(|receipt| receipt.event == PluginEvent::GenerateInterceptor)
+        .unwrap();
+    assert_eq!(receipt.egress.len(), 1);
+    assert_eq!(receipt.egress[0].status, 201);
+    assert_eq!(receipt.egress[0].body, r#"{"result":"accepted"}"#);
+    assert_eq!(
+        receipt.egress[0].response_hash,
+        content_blob_hash(br#"{"result":"accepted"}"#)
+    );
+    let state = store.state_transaction(created.session.session_id).unwrap();
+    let settings = &state
+        .get(
+            VariableScope::Local,
+            "extension.org.stcli.tls-wire.settings",
+        )
+        .expect("Extension settings were persisted")
+        .value;
+    assert_eq!(settings, &json!({"lastResult": "accepted"}));
+    let serialized_state = serde_json::to_vec(settings).unwrap();
+    assert!(
+        !serialized_state
+            .windows(SECRET.len())
+            .any(|bytes| bytes == SECRET.as_bytes())
+    );
+
+    let serialized = serde_json::to_vec(effect_receipt).unwrap();
+    assert!(
+        !serialized
+            .windows(SECRET.len())
+            .any(|bytes| bytes == SECRET.as_bytes())
+    );
+    assert_files_do_not_contain_secret(&data, SECRET);
+    tokio::task::spawn_blocking(move || drop(store))
+        .await
+        .unwrap();
+}
 #[test]
 fn get_context_returns_full_snapshot_fields() {
     let directory = tempdir().unwrap();

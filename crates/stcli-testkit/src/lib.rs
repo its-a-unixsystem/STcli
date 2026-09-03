@@ -3,6 +3,7 @@ use axum::{
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
+    routing,
     routing::{get, post},
 };
 use axum_server::tls_rustls::RustlsConfig;
@@ -438,5 +439,193 @@ impl MockProviderProcess {
 impl Drop for MockProviderProcess {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapturedRequest {
+    pub method: String,
+    pub path: String,
+    pub query: BTreeMap<String, String>,
+    pub headers: BTreeMap<String, String>,
+    pub body: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct QueuedResponse {
+    pub status: u16,
+    pub headers: BTreeMap<String, String>,
+    pub body: String,
+}
+
+struct BrokerStateData {
+    requests: Vec<CapturedRequest>,
+    responses: VecDeque<QueuedResponse>,
+}
+
+#[derive(Clone)]
+struct BrokerState {
+    data: Arc<AsyncMutex<BrokerStateData>>,
+}
+
+async fn broker_capture(
+    State(state): State<BrokerState>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: String,
+) -> Response {
+    let query = reqwest::Url::parse(&format!("https://fixture.invalid{uri}"))
+        .expect("captured request URI is valid")
+        .query_pairs()
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect();
+    let mut captured_headers = BTreeMap::new();
+    for (name, value) in &headers {
+        let value = String::from_utf8_lossy(value.as_bytes());
+        let entry: &mut String = captured_headers
+            .entry(name.as_str().to_owned())
+            .or_default();
+        if entry.is_empty() {
+            entry.push_str(&value);
+        } else {
+            entry.push_str(", ");
+            entry.push_str(&value);
+        }
+    }
+    let mut state = state.data.lock().await;
+    state.requests.push(CapturedRequest {
+        method: method.to_string(),
+        path: uri.path().to_owned(),
+        query,
+        headers: captured_headers,
+        body,
+    });
+    let queued = state
+        .responses
+        .pop_front()
+        .expect("broker test server response queue is exhausted");
+    drop(state);
+    let mut response = Response::builder()
+        .status(
+            StatusCode::from_u16(queued.status)
+                .expect("broker test server response status is valid"),
+        )
+        .body(axum::body::Body::from(queued.body))
+        .expect("broker test server response is constructible");
+    for (name, value) in queued.headers {
+        let name = axum::http::HeaderName::from_bytes(name.as_bytes())
+            .expect("broker test server response header name is valid");
+        let value = axum::http::HeaderValue::from_str(&value)
+            .expect("broker test server response header value is valid");
+        response.headers_mut().insert(name, value);
+    }
+    response
+}
+
+pub struct BrokerTestServer {
+    address: SocketAddr,
+    hostname: String,
+    certificate_pem: String,
+    server: JoinHandle<std::io::Result<()>>,
+    state: Arc<AsyncMutex<BrokerStateData>>,
+}
+
+impl BrokerTestServer {
+    pub async fn spawn(
+        responses: impl IntoIterator<Item = QueuedResponse>,
+    ) -> anyhow::Result<Self> {
+        let hostname = "127.0.0.1".to_owned();
+        let CertifiedKey { cert, signing_key } =
+            generate_simple_self_signed(vec!["localhost".to_owned(), hostname.clone()])?;
+        let certificate_pem = cert.pem();
+        let tls = RustlsConfig::from_pem(
+            certificate_pem.clone().into_bytes(),
+            signing_key.serialize_pem().into_bytes(),
+        )
+        .await?;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let address = listener.local_addr()?;
+        let state = Arc::new(AsyncMutex::new(BrokerStateData {
+            requests: Vec::new(),
+            responses: responses.into_iter().collect(),
+        }));
+        let router_state = BrokerState {
+            data: state.clone(),
+        };
+        let app = Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .route("/{*rest}", routing::any(broker_capture))
+            .with_state(router_state);
+        let server = tokio::spawn(async move {
+            axum_server::from_tcp_rustls(listener, tls)
+                .expect("broker test server listener is valid")
+                .serve(app.into_make_service())
+                .await
+        });
+        let server = Self {
+            address,
+            hostname,
+            certificate_pem,
+            server,
+            state,
+        };
+        let certificate = reqwest::Certificate::from_pem(server.certificate_pem.as_bytes())?;
+        let client = reqwest::Client::builder()
+            .add_root_certificate(certificate)
+            .build()?;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if client.get(server.health_url()).send().await.is_ok() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?;
+        Ok(server)
+    }
+
+    pub fn health_url(&self) -> String {
+        format!("https://{}/health", self.address)
+    }
+
+    pub fn certificate_pem(&self) -> &str {
+        &self.certificate_pem
+    }
+
+    pub fn hostname(&self) -> &str {
+        &self.hostname
+    }
+
+    pub fn base_url(&self) -> String {
+        format!("https://{}", self.address)
+    }
+
+    pub async fn https_client(&self) -> anyhow::Result<reqwest::blocking::Client> {
+        let certificate_pem = self.certificate_pem.clone();
+        tokio::task::spawn_blocking(move || {
+            let certificate = reqwest::Certificate::from_pem(certificate_pem.as_bytes())?;
+            Ok(reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .add_root_certificate(certificate)
+                .build()?)
+        })
+        .await?
+    }
+
+    pub async fn captured_requests(&self) -> Vec<CapturedRequest> {
+        self.state.lock().await.requests.clone()
+    }
+
+    pub async fn request_count(&self) -> usize {
+        self.state.lock().await.requests.len()
+    }
+}
+
+impl Drop for BrokerTestServer {
+    fn drop(&mut self) {
+        self.server.abort();
     }
 }

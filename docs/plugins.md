@@ -210,6 +210,14 @@ response, and a broker configured with a stub transport forwards to the stub. Na
 can reuse the same boundary through `EgressBroker`, `EgressTransport`, and `StubTransport` in
 `stcli-core`.
 
+The deterministic wire-path test uses `stcli-testkit::BrokerTestServer`, which binds an ephemeral
+loopback port and serves HTTPS with a generated certificate. A test client explicitly trusts the
+exposed certificate PEM before it is passed through `ReqwestTransport::with_client` and
+`EgressBroker::with_transport`. This exercises production request serialization, response
+parsing, and out-of-band secret injection over a real TLS socket without weakening the production
+HTTPS policy or contacting an external service. See
+[Local TLS broker boundary](testing.md#local-tls-broker-boundary).
+
 ### `SillyTavern.setExtensionPrompt`
 
 `SillyTavern.setExtensionPrompt(key, value, position, depth, scan, role)` records a prompt
