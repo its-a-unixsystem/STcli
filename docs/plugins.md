@@ -12,6 +12,7 @@ This page is the complete guide. It has an introduction, two tutorials, a packag
 - [How a plugin runs](#how-a-plugin-runs)
 - [Choose a runtime](#choose-a-runtime)
 - [st-bridge deterministic globals](#st-bridge-deterministic-globals)
+- [Pinned real-world Extension fixtures](#pinned-real-world-extension-fixtures)
 - [Brokered HTTPS egress](#brokered-https-egress)
 - [SillyTavern.getContext() read-only surface](#sillytaverngetcontext-read-only-surface)
 - [The manifest](#the-manifest)
@@ -103,6 +104,21 @@ digest. It provides these deterministic browser-compatible globals:
 Promise settlement is bounded to 64 microtasks by default. If a handler remains pending after the
 bound, STcli abandons the Extension context, discards its effects, and records a Compatibility
 Warning. Later calls to the abandoned context produce no effects.
+
+### Pinned real-world Extension fixtures
+
+The repository keeps two modified/derived MIT-licensed Extension fixtures under
+`crates/stcli-core/tests/fixtures/real_extensions/`. `metamorph-lifecycle` preserves real
+lifecycle, prompt, settings, Secondary Inference, and headless-degradation call shapes.
+`request-monitor-wire` preserves fetch, settings, localStorage, and response-handling call shapes
+and adds supported `$.ajax` and slash-command usage.
+
+These are test inputs, not bundled Extensions. Their imports, panels, styles, and unrelated browser
+behavior are intentionally removed. Each directory has a `provenance.json` sidecar with the
+upstream repository, full commit, source paths, license, derivation notes, update procedure, and
+digests for every committed fixture file. Tests use only these pinned local bytes. See
+[Pinned real-world Extension fixtures](testing.md#pinned-real-world-extension-fixtures) for the
+reviewed update procedure.
 
 ### Extension slash commands
 

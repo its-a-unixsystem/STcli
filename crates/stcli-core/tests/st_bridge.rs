@@ -2863,3 +2863,83 @@ fn native_extension_import_rejects_invalid_component_declarations() {
         );
     }
 }
+
+#[test]
+fn real_extension_fixture_provenance() {
+    let fixtures = [
+        (
+            "metamorph-lifecycle",
+            "https://github.com/dajected/metamorph",
+            "fd62f71a4cb410c8bde68aa3c88db07237ed6b29",
+        ),
+        (
+            "request-monitor-wire",
+            "https://github.com/haveagoodday1205-png/st-request-monitor",
+            "8849b551ae061114dcae3128d6187468ef997fbb",
+        ),
+    ];
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/real_extensions");
+
+    for (name, repository, commit) in fixtures {
+        let directory = root.join(name);
+        let provenance_path = directory.join("provenance.json");
+        let provenance: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&provenance_path)
+                .unwrap_or_else(|error| panic!("{}: {error}", provenance_path.display())),
+        )
+        .unwrap_or_else(|error| panic!("{}: {error}", provenance_path.display()));
+
+        assert_eq!(
+            provenance["schema"],
+            "stcli.real-extension-fixture-provenance/v1",
+            "{}: unexpected provenance schema",
+            provenance_path.display()
+        );
+        assert_eq!(provenance["repository"], repository);
+        assert_eq!(provenance["commit"], commit);
+        assert_eq!(provenance["license"], "MIT");
+        assert_eq!(provenance["status"], "modified/derived");
+        assert!(
+            provenance["upstream_paths"]
+                .as_array()
+                .is_some_and(|paths| !paths.is_empty()),
+            "{}: upstream_paths must not be empty",
+            provenance_path.display()
+        );
+        assert!(
+            provenance["update_instructions"]
+                .as_array()
+                .is_some_and(|steps| !steps.is_empty()),
+            "{}: update_instructions must not be empty",
+            provenance_path.display()
+        );
+
+        let digests = provenance["files"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{}: files must be an object", provenance_path.display()));
+        let committed_files: std::collections::BTreeSet<_> = std::fs::read_dir(&directory)
+            .unwrap_or_else(|error| panic!("{}: {error}", directory.display()))
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|file| file != "provenance.json")
+            .collect();
+        let digested_files = digests.keys().cloned().collect();
+        assert_eq!(
+            committed_files,
+            digested_files,
+            "{}: every committed fixture file must have a digest",
+            provenance_path.display()
+        );
+
+        for (file, expected) in digests {
+            let path = directory.join(file);
+            let bytes =
+                std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            assert_eq!(
+                plugin_digest(&bytes).to_string(),
+                expected.as_str().unwrap(),
+                "{}: fixture digest drifted",
+                path.display()
+            );
+        }
+    }
+}

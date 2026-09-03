@@ -63,6 +63,38 @@ New non-published crate (`publish = false`), dev-dependency of both crates:
 
 No new dependencies. Deliberately no `assert_cmd`: the wrapper delivers the same ergonomics in ~30 lines. Effort: ~1 day, including migrating the four existing helper blocks.
 
+#### Pinned real-world Extension fixtures
+
+The L2 `st_bridge` target uses two compact fixtures under
+`crates/stcli-core/tests/fixtures/real_extensions/`:
+
+- `metamorph-lifecycle` is derived from `dajected/metamorph`. It retains native manifest,
+  lifecycle, prompt, settings, asynchronous Secondary Inference, and headless-degradation
+  patterns.
+- `request-monitor-wire` is derived from
+  `haveagoodday1205-png/st-request-monitor`. It retains fetch, settings, localStorage, and
+  response-handling patterns and adds the supported `$.ajax` and slash-command forms.
+
+Both fixtures are modified/derived MIT-licensed test inputs, not upstream copies. Imports, panel
+rendering, styles, and unrelated browser behavior are excluded. Each fixture's `provenance.json`
+records the repository URL, full commit SHA, upstream paths, SPDX license, derivation notes,
+update instructions, and the SHA-256 digest of every other committed file in its directory.
+`real_extension_fixture_provenance` reads only committed files and fails with the affected path
+when a file is missing, unlisted, or changed.
+
+Fixture updates are explicit reviewed changes:
+
+1. Open every recorded upstream path at the recorded full commit on GitHub. If moving the pin,
+   review the upstream commit and license before copying any pattern.
+2. Re-derive only the public API and control-flow patterns named in `provenance.json`. Do not
+   restore UI-only code or module imports.
+3. Run `node --check` for both `index.js` files.
+4. Recalculate SHA-256 for every non-sidecar file and update the sidecar in the same change.
+5. Run
+   `cargo test -p stcli-core --test st_bridge real_extension_fixture_provenance --locked`.
+
+Tests never download or refresh these fixtures.
+
 ### C. Protocol and schema conformance — the frontend seam
 
 The schemas in [`schemas/`](../schemas/) plus `wit/plugin.wit` are the public protocol every future UI binds to (PRD Success Criterion 8). Today nothing validates real binary output against them.

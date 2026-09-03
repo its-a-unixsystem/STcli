@@ -1,0 +1,28 @@
+{
+  "schema": "stcli.real-extension-fixture-provenance/v1",
+  "repository": "https://github.com/haveagoodday1205-png/st-request-monitor",
+  "commit": "8849b551ae061114dcae3128d6187468ef997fbb",
+  "upstream_paths": [
+    "LICENSE",
+    "index.js",
+    "manifest.json"
+  ],
+  "license": "MIT",
+  "status": "modified/derived",
+  "derivation": [
+    "Retains the native manifest, fetch interception, extension settings, localStorage persistence, and recorded-response control-flow shapes.",
+    "Removes imports, XHR, Beacon, binary-body handling, request inspection, exports, panel rendering, and other browser-only dependencies.",
+    "Adds bridge-supported $.ajax and slash-command forms for deterministic wire and command coverage."
+  ],
+  "update_instructions": [
+    "Review LICENSE, index.js, and manifest.json at the pinned full commit on GitHub; never fetch them during a test run.",
+    "Re-derive only the fetch, settings, localStorage, response-handling, $.ajax, and slash-command patterns; do not copy UI or imported-module dependencies.",
+    "Run node --check on index.js, update every digest below, and run the real_extension_fixture_provenance test.",
+    "Commit source and digest changes together as an explicit reviewed fixture update."
+  ],
+  "files": {
+    "LICENSE": "sha256:7569ad0fbe7b984137e1c12bce1909a6e8de2d3d4fc199c55122e6e650057c79",
+    "index.js": "sha256:7a7dfe86fbcf4127205d1ac18983a0b5c84b3044bec63296b1878d3417f6bc6a",
+    "manifest.json": "sha256:0fb5754fcd238b8306241874ea2d4d0b8086896c2a60a3213e0315aeda31d50c"
+  }
+}

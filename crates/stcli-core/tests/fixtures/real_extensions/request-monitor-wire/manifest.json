@@ -1,0 +1,20 @@
+{
+  "display_name": "ST Request Monitor Wire Fixture",
+  "loading_order": -10000,
+  "requires": [],
+  "optional": [],
+  "js": [
+    "index.js"
+  ],
+  "css": "style.css",
+  "author": "haveagoodday1205-png; modified by STcli contributors",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Derived fetch, ajax, settings, localStorage, and slash-command wire fixture.",
+  "auto_update": false,
+  "minimum_client_version": "1.18.0",
+  "generate_interceptor": "requestMonitorFixtureInterceptor",
+  "hooks": {
+    "activate": "init"
+  }
+}

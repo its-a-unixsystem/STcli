@@ -1,0 +1,28 @@
+{
+  "schema": "stcli.real-extension-fixture-provenance/v1",
+  "repository": "https://github.com/dajected/metamorph",
+  "commit": "fd62f71a4cb410c8bde68aa3c88db07237ed6b29",
+  "upstream_paths": [
+    "LICENSE",
+    "index.js",
+    "manifest.json"
+  ],
+  "license": "MIT",
+  "status": "modified/derived",
+  "derivation": [
+    "Retains the native manifest, lifecycle registration, prompt injection, persistent settings, and asynchronous helper-generation call shapes.",
+    "Removes module imports, transformation-domain logic, styles, panel rendering, timers, and other browser-only dependencies.",
+    "Uses only bridge-supported headless DOM, jQuery, and toastr calls to preserve degradation coverage."
+  ],
+  "update_instructions": [
+    "Review LICENSE, index.js, and manifest.json at the pinned full commit on GitHub; never fetch them during a test run.",
+    "Re-derive only the lifecycle, prompt, settings, Secondary Inference, and headless-degradation patterns; do not copy UI or imported-module dependencies.",
+    "Run node --check on index.js, update every digest below, and run the real_extension_fixture_provenance test.",
+    "Commit source and digest changes together as an explicit reviewed fixture update."
+  ],
+  "files": {
+    "LICENSE": "sha256:611d12e4d2e055644ae45f311599fb002f88ae61f70f30f3cb464993f361f5fc",
+    "index.js": "sha256:54dd7eb801fd50c43e99a5b757065e8c885a596b1659c02cc63fa07b70c644a0",
+    "manifest.json": "sha256:41099cc18e8be4b1fb20543fe3a69a3386e3b9b968e492fc24598e013e7d8a3a"
+  }
+}
