@@ -429,6 +429,13 @@ fn validate_enabled_extension(id: &str, pin: &GlobalExtensionPin) -> Result<(), 
     if !pin.settings.is_object() {
         return Err(ParseError::InvalidExtensionSettings(id.to_owned()));
     }
+    if pin
+        .egress_allow_list
+        .iter()
+        .any(|allowance| allowance.secret.is_some())
+    {
+        return Err(ParseError::ExtensionSecretAllowance(id.to_owned()));
+    }
     Ok(())
 }
 
@@ -549,6 +556,8 @@ pub enum ParseError {
     InvalidExtensionVersion { id: String, source: semver::Error },
     #[error("enabled extension '{0}' settings must be a JSON object")]
     InvalidExtensionSettings(String),
+    #[error("enabled extension '{0}' cannot contain secret-bearing egress allowances")]
+    ExtensionSecretAllowance(String),
 }
 
 fn format_available(names: &[String]) -> String {

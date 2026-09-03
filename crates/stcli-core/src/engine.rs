@@ -1512,7 +1512,7 @@ fn adopt_extension_configuration(
         .plugins
         .retain(|existing| existing.id != pin.id);
     configuration.plugins.push(pin.clone());
-    let record = if mid_session {
+    if mid_session {
         let warning = CompatibilityWarning {
             code: "extension-adopted-mid-session".to_owned(),
             profile_id: configuration.compatibility_profile.clone(),
@@ -1525,12 +1525,11 @@ fn adopt_extension_configuration(
                 pin.id
             ),
         };
-        store.adopt_extension_configuration(session_id, configuration, &pin, &warning)?
+        crate::st_bridge::reset_context(session_id, &pin.id, &pin.component_hash, true)?;
+        Ok(store.adopt_extension_configuration(session_id, configuration, &pin, &warning)?)
     } else {
-        store.update_session_configuration(session_id, configuration)?
-    };
-    crate::st_bridge::reset_context(session_id, &pin.id, &pin.component_hash, mid_session)?;
-    Ok(record)
+        Ok(store.update_session_configuration(session_id, configuration)?)
+    }
 }
 
 fn set_plugin_enabled(
@@ -1548,25 +1547,38 @@ fn set_plugin_enabled(
         .find(|pin| pin.id == id)
         .ok_or_else(|| EngineError::PluginNotPinned(id.to_owned()))?;
     let was_enabled = pin.enabled;
-    let version = semver::Version::parse(&pin.version)
-        .map_err(|_| SessionError::InvalidPluginVersion(pin.version.clone()))?;
-    let installed = registry
-        .find_pinned(id, &version, &pin.component_hash)?
-        .ok_or_else(|| EngineError::PluginNotFound {
-            id: id.to_owned(),
-            version: pin.version.clone(),
-            digest: pin.component_hash.clone(),
-        })?;
-    if extension_required && installed.manifest.runtime != crate::PluginRuntime::StBridge {
+    let component_hash = pin.component_hash.clone();
+    let installed = if enabled || extension_required {
+        let version = semver::Version::parse(&pin.version)
+            .map_err(|_| SessionError::InvalidPluginVersion(pin.version.clone()))?;
+        Some(
+            registry
+                .find_pinned(id, &version, &component_hash)?
+                .ok_or_else(|| EngineError::PluginNotFound {
+                    id: id.to_owned(),
+                    version: pin.version.clone(),
+                    digest: component_hash.clone(),
+                })?,
+        )
+    } else {
+        None
+    };
+    if extension_required
+        && installed
+            .as_ref()
+            .is_none_or(|plugin| plugin.manifest.runtime != crate::PluginRuntime::StBridge)
+    {
         return Err(EngineError::ExtensionRuntimeRequired(id.to_owned()));
     }
     pin.enabled = enabled;
-    let component_hash = pin.component_hash.clone();
-    let record = store.update_session_configuration(session_id, configuration)?;
-    if was_enabled != enabled && installed.manifest.runtime == crate::PluginRuntime::StBridge {
+    if was_enabled != enabled
+        && installed
+            .as_ref()
+            .is_some_and(|plugin| plugin.manifest.runtime == crate::PluginRuntime::StBridge)
+    {
         crate::st_bridge::reset_context(session_id, id, &component_hash, false)?;
     }
-    Ok(record)
+    Ok(store.update_session_configuration(session_id, configuration)?)
 }
 
 fn session_summaries(store: &Store) -> Result<Vec<SessionSummary>, EngineError> {
