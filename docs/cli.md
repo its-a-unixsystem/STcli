@@ -294,6 +294,14 @@ Plugin runtime. Git clone and fetch remain frontend responsibilities.
 | `extension import` | `extension import <directory>` | Imports one local native Extension directory, installs its content-addressed normalized package, and returns the installed Plugin plus non-blocking import warnings. |
 | `extension adopt` | `extension adopt --session <session> <id> --version <version> --digest <digest> [--settings <json>] [--egress-domain <host>]...` | Pins the Extension to a new Session Configuration Revision and grants the fixed bridge capability tier. Settings default to `{}`. The egress allow-list defaults empty and contains only explicitly repeated domains. |
 
+`extension enable <id> --version <version> --digest <digest>` stores an exact global default in
+`config.toml`; optional `--settings <json>` and repeatable `--egress-domain <host>` configure the
+bridge. New Sessions auto-adopt these defaults, while existing Sessions are unchanged. To change
+one Session only, use `extension enable <id> --session <session>` or
+`extension disable <id> --session <session>`; the latter appends a Session Configuration Revision.
+Without `--session`, `extension disable <id>` removes only the global default. `extension list`
+reports installed st-bridge Extensions and enabled global selections without exposing secrets.
+
 ## Prompt command
 
 | Command | Canonical syntax | Argument behavior |

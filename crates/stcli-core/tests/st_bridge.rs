@@ -2164,6 +2164,7 @@ globalThis.namedInterceptor = namedInterceptor;
     };
     let config = Config {
         providers: BTreeMap::from([("summary".to_owned(), settings)]),
+        enabled_extensions: BTreeMap::new(),
     };
     let broker = InferenceBroker::stub(
         config,
@@ -2253,6 +2254,7 @@ fn secondary_inference_replay_uses_recorded_text_with_zero_calls() {
     let broker = InferenceBroker::stub(
         Config {
             providers: BTreeMap::from([("summary".to_owned(), settings)]),
+            enabled_extensions: BTreeMap::new(),
         },
         transport.clone(),
     );

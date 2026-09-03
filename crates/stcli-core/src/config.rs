@@ -3,12 +3,32 @@ use std::{collections::BTreeMap, fs, path::Path, str::FromStr};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{ProviderSettings, provider::ProviderError, validate_provider_settings};
+use crate::{
+    ContentHash, EgressAllowance, PluginError, PluginPin, PluginRegistry, PluginRuntime,
+    ProviderSettings, provider::ProviderError, st_bridge_capability_tier,
+    validate_provider_settings,
+};
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub providers: BTreeMap<String, ProviderSettings>,
+    #[serde(rename = "extensions")]
+    pub enabled_extensions: BTreeMap<String, GlobalExtensionPin>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct GlobalExtensionPin {
+    pub version: String,
+    pub digest: ContentHash,
+    #[serde(default = "empty_json_object")]
+    pub settings: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub egress_allow_list: Vec<EgressAllowance>,
+}
+
+fn empty_json_object() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
 }
 
 impl Config {
@@ -43,7 +63,32 @@ impl Config {
                 source,
             })?;
         }
+        for (id, pin) in &self.enabled_extensions {
+            validate_enabled_extension(id, pin)?;
+        }
         Ok(())
+    }
+
+    pub fn resolve_enabled_extensions(
+        &self,
+        registry: &PluginRegistry,
+    ) -> Result<Vec<PluginPin>, ConfigError> {
+        self.enabled_extensions
+            .iter()
+            .map(|(id, configured)| resolve_enabled_extension_pin(registry, id, configured))
+            .collect()
+    }
+
+    pub fn resolve_enabled_extension(
+        &self,
+        registry: &PluginRegistry,
+        id: &str,
+    ) -> Result<PluginPin, ConfigError> {
+        let configured = self
+            .enabled_extensions
+            .get(id)
+            .ok_or_else(|| ConfigError::EnabledExtensionNotConfigured(id.to_owned()))?;
+        resolve_enabled_extension_pin(registry, id, configured)
     }
 
     pub fn resolve_provider_profile(&self, name: &str) -> Result<&ProviderSettings, ConfigError> {
@@ -169,6 +214,83 @@ impl Config {
         Ok(removed)
     }
 
+    pub fn save_enabled_extension(
+        directory: &Path,
+        id: &str,
+        pin: GlobalExtensionPin,
+    ) -> Result<(), ConfigError> {
+        validate_enabled_extension(id, &pin).map_err(|source| ConfigError::InvalidExtension {
+            id: id.to_owned(),
+            source,
+        })?;
+        fs::create_dir_all(directory).map_err(|source| ConfigError::Write {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+        let path = directory.join("config.toml");
+        let source = if path.exists() {
+            fs::read_to_string(&path).map_err(|source| ConfigError::Read {
+                path: path.clone(),
+                source,
+            })?
+        } else {
+            String::new()
+        };
+        let mut document =
+            toml_edit::DocumentMut::from_str(&source).map_err(|source| ConfigError::Edit {
+                path: path.clone(),
+                source,
+            })?;
+        if !document.contains_key("extensions") {
+            document["extensions"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        let extensions = document["extensions"]
+            .as_table_mut()
+            .ok_or_else(|| ConfigError::ExtensionsNotTable { path: path.clone() })?;
+        let item_doc = toml::to_string(&pin).map_err(ConfigError::Serialize)?;
+        let item = item_doc
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|source| ConfigError::Edit {
+                path: path.clone(),
+                source,
+            })?;
+        update_extension_table(
+            extensions,
+            id,
+            toml_edit::Item::Table(item.as_table().clone()),
+        );
+        fs::write(&path, document.to_string()).map_err(|source| ConfigError::Write { path, source })
+    }
+
+    pub fn remove_enabled_extension(directory: &Path, id: &str) -> Result<bool, ConfigError> {
+        let path = directory.join("config.toml");
+        if !path.exists() {
+            return Ok(false);
+        }
+        let source = fs::read_to_string(&path).map_err(|source| ConfigError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        let mut document =
+            toml_edit::DocumentMut::from_str(&source).map_err(|source| ConfigError::Edit {
+                path: path.clone(),
+                source,
+            })?;
+        let removed = if let Some(extensions) = document
+            .get_mut("extensions")
+            .and_then(|p| p.as_table_mut())
+        {
+            extensions.remove(id).is_some()
+        } else {
+            false
+        };
+        if removed {
+            fs::write(&path, document.to_string())
+                .map_err(|source| ConfigError::Write { path, source })?;
+        }
+        Ok(removed)
+    }
+
     pub fn load_provider_templates(
         directory: &Path,
     ) -> Result<BTreeMap<String, ProviderTemplate>, ConfigError> {
@@ -274,6 +396,85 @@ fn merge_item(existing: &mut toml_edit::Item, desired: toml_edit::Item) {
     }
 }
 
+const EXTENSION_FIELDS: &[&str] = &["version", "digest", "settings", "egress_allow_list"];
+
+fn update_extension_table(extensions: &mut toml_edit::Table, id: &str, desired: toml_edit::Item) {
+    let Some(existing) = extensions.get_mut(id) else {
+        extensions.insert(id, desired);
+        return;
+    };
+    let (Some(existing), Some(desired)) = (existing.as_table_mut(), desired.as_table()) else {
+        extensions.insert(id, desired);
+        return;
+    };
+    for key in EXTENSION_FIELDS {
+        if !desired.contains_key(key) {
+            existing.remove(key);
+        }
+    }
+    merge_table(existing, desired);
+}
+
+fn validate_enabled_extension(id: &str, pin: &GlobalExtensionPin) -> Result<(), ParseError> {
+    if id.trim().is_empty() {
+        return Err(ParseError::EmptyExtensionId);
+    }
+    if pin.version.trim().is_empty() {
+        return Err(ParseError::EmptyExtensionVersion(id.to_owned()));
+    }
+    semver::Version::parse(&pin.version).map_err(|source| ParseError::InvalidExtensionVersion {
+        id: id.to_owned(),
+        source,
+    })?;
+    if !pin.settings.is_object() {
+        return Err(ParseError::InvalidExtensionSettings(id.to_owned()));
+    }
+    Ok(())
+}
+
+fn resolve_enabled_extension_pin(
+    registry: &PluginRegistry,
+    id: &str,
+    configured: &GlobalExtensionPin,
+) -> Result<PluginPin, ConfigError> {
+    validate_enabled_extension(id, configured).map_err(|source| ConfigError::InvalidExtension {
+        id: id.to_owned(),
+        source,
+    })?;
+    let version = semver::Version::parse(&configured.version).map_err(|source| {
+        ConfigError::InvalidExtension {
+            id: id.to_owned(),
+            source: ParseError::InvalidExtensionVersion {
+                id: id.to_owned(),
+                source,
+            },
+        }
+    })?;
+    let installed = registry
+        .find_pinned(id, &version, &configured.digest)?
+        .ok_or_else(|| ConfigError::EnabledExtensionNotInstalled {
+            id: id.to_owned(),
+            version: configured.version.clone(),
+            digest: configured.digest.clone(),
+        })?;
+    if installed.manifest.runtime != PluginRuntime::StBridge {
+        return Err(ConfigError::EnabledExtensionNotStBridge(id.to_owned()));
+    }
+    let capabilities = st_bridge_capability_tier();
+    if !capabilities.is_subset(&installed.manifest.requested_capabilities) {
+        return Err(ConfigError::EnabledExtensionGrantExceeded(id.to_owned()));
+    }
+    Ok(PluginPin {
+        id: id.to_owned(),
+        version: configured.version.clone(),
+        component_hash: configured.digest.clone(),
+        capabilities,
+        settings: configured.settings.clone(),
+        egress_allow_list: configured.egress_allow_list.clone(),
+        enabled: true,
+    })
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("failed to read {path}: {source}")]
@@ -307,11 +508,29 @@ pub enum ConfigError {
     Serialize(toml::ser::Error),
     #[error("the providers entry in {path} must be a table")]
     ProvidersNotTable { path: std::path::PathBuf },
+    #[error("enabled extension '{id}' is invalid: {source}")]
+    InvalidExtension { id: String, source: ParseError },
+    #[error("the extensions entry in {path} must be a table")]
+    ExtensionsNotTable { path: std::path::PathBuf },
     #[error("failed to write {path}: {source}")]
     Write {
         path: std::path::PathBuf,
         source: std::io::Error,
     },
+    #[error("extension '{0}' is not enabled globally")]
+    EnabledExtensionNotConfigured(String),
+    #[error("enabled extension '{id}' version {version} at {digest} is not installed")]
+    EnabledExtensionNotInstalled {
+        id: String,
+        version: String,
+        digest: ContentHash,
+    },
+    #[error("enabled extension '{0}' is not an st-bridge package")]
+    EnabledExtensionNotStBridge(String),
+    #[error("enabled extension '{0}' does not request the fixed st-bridge capability tier")]
+    EnabledExtensionGrantExceeded(String),
+    #[error(transparent)]
+    Plugin(#[from] PluginError),
 }
 
 #[derive(Debug, Error)]
@@ -322,6 +541,14 @@ pub enum ParseError {
     EmptyProfileName,
     #[error("provider profile '{name}' is invalid: {source}")]
     InvalidProfile { name: String, source: ProviderError },
+    #[error("enabled extension IDs cannot be empty")]
+    EmptyExtensionId,
+    #[error("enabled extension '{0}' version cannot be empty")]
+    EmptyExtensionVersion(String),
+    #[error("enabled extension '{id}' has an invalid version: {source}")]
+    InvalidExtensionVersion { id: String, source: semver::Error },
+    #[error("enabled extension '{0}' settings must be a JSON object")]
+    InvalidExtensionSettings(String),
 }
 
 fn format_available(names: &[String]) -> String {
@@ -454,6 +681,7 @@ value = "Bearer sk-secret"
                     context_formatting: None,
                 },
             )]),
+            enabled_extensions: BTreeMap::new(),
         };
 
         let profile = config.resolve_provider_profile("my-provider").unwrap();
@@ -503,6 +731,7 @@ value = "Bearer sk-secret"
                     },
                 ),
             ]),
+            enabled_extensions: BTreeMap::new(),
         };
 
         let error = config.resolve_provider_profile("nonexistent").unwrap_err();
@@ -692,5 +921,76 @@ timeout_seconds = 120
         assert_eq!(openrouter.base_url, "https://openrouter.ai");
         assert_eq!(openrouter.default_model, "anthropic/claude-3.5-sonnet");
         assert!(openrouter.stream);
+    }
+    #[test]
+    fn enabled_extension_defaults_round_trip_without_rewriting_unmanaged_config() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        fs::write(&path, "# keep this comment\n[tui]\ntheme = \"dark\"\n").unwrap();
+        let pin = GlobalExtensionPin {
+            version: "1.2.3".to_owned(),
+            digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .parse()
+                .unwrap(),
+            settings: serde_json::json!({"mode": "strict"}),
+            egress_allow_list: vec![EgressAllowance {
+                domain: "example.com".to_owned(),
+                secret: None,
+            }],
+        };
+
+        Config::save_enabled_extension(directory.path(), "example-extension", pin.clone()).unwrap();
+
+        let source = fs::read_to_string(&path).unwrap();
+        assert!(source.contains("# keep this comment"));
+        assert!(source.contains("[tui]\ntheme = \"dark\""));
+        assert!(source.contains("[extensions.example-extension]"));
+        let config = Config::load(directory.path()).unwrap();
+        assert_eq!(config.enabled_extensions["example-extension"], pin);
+
+        assert!(Config::remove_enabled_extension(directory.path(), "example-extension").unwrap());
+        assert!(
+            Config::load(directory.path())
+                .unwrap()
+                .enabled_extensions
+                .is_empty()
+        );
+        assert!(
+            fs::read_to_string(path)
+                .unwrap()
+                .contains("[tui]\ntheme = \"dark\"")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_enabled_extension_defaults() {
+        let error = Config::parse(
+            "[extensions.bad]\nversion = \"\"\ndigest = \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("version cannot be empty"));
+    }
+
+    #[test]
+    fn rejects_stale_enabled_extension_pin() {
+        let directory = tempdir().unwrap();
+        let configured = GlobalExtensionPin {
+            version: "1.2.3".to_owned(),
+            digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .parse()
+                .unwrap(),
+            settings: empty_json_object(),
+            egress_allow_list: Vec::new(),
+        };
+        let config = Config {
+            providers: BTreeMap::new(),
+            enabled_extensions: BTreeMap::from([("example-extension".to_owned(), configured)]),
+        };
+
+        let error = config
+            .resolve_enabled_extensions(&PluginRegistry::new(directory.path()))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("is not installed"));
     }
 }

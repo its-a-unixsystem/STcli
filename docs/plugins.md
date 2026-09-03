@@ -274,6 +274,13 @@ JavaScript component into a normalized internal `st-bridge` package, and install
 exact component digest. The source directory basename becomes a lowercase kebab-case Extension
 identifier.
 
+To persist a global Extension selection, use `extension enable <id> --version <version>
+--digest <digest>`. New Sessions auto-adopt that exact digest-pinned revision. Existing Sessions
+are changed only by `extension enable <id> --session <session>` or
+`extension disable <id> --session <session>`, which append a Session Configuration Revision;
+global disable removes the default without changing existing Sessions. `extension list` reports
+installed bridge Extensions and global selections while omitting secret values.
+
 | Native field | Normalized internal field or behavior |
 |---|---|
 | `js` | The single JavaScript component. A string or one-element array is accepted. |

@@ -44,7 +44,7 @@ pub use capsule::{
     CapsuleProvider, CapsuleReference, CapsuleResult, ImportedCapsule, RedactionEntry,
     ReplayReport, SessionProjectionSnapshot, TurnCapsule,
 };
-pub use config::{Config, ConfigError, ProviderTemplate};
+pub use config::{Config, ConfigError, GlobalExtensionPin, ProviderTemplate};
 pub use credential::{
     CredentialError, CredentialResolver, SystemCredentialStore, delete_credential, get_credential,
     set_credential,

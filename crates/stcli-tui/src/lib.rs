@@ -26,7 +26,7 @@ pub use ui::render;
 pub fn run(paths: &AppPaths, direct_session: Option<EntityId>) -> Result<()> {
     paths.ensure_exists()?;
     let config = Config::load(&paths.config)?;
-    let engine = StcliEngine::new(paths.database());
+    let engine = StcliEngine::new(paths.database()).with_config_directory(&paths.config);
     let mut app = App::load(engine, config, direct_session)?;
     app.set_config_dir(paths.config.clone());
     let mut terminal = TerminalSession::enter()?;

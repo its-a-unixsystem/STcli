@@ -133,7 +133,7 @@ impl Xoshiro128PlusPlus {
     }
 }
 
-struct Request {
+struct ExecuteRequest {
     installed: InstalledPlugin,
     input: PluginInput,
     source: String,
@@ -143,13 +143,23 @@ struct Request {
     response: mpsc::SyncSender<Result<ScriptOutcome, PluginError>>,
 }
 
+enum WorkerRequest {
+    Execute(Box<ExecuteRequest>),
+    Reset {
+        key: ContextKey,
+        startup_passed: bool,
+        response: mpsc::SyncSender<()>,
+    },
+}
+
 struct WorkerHandle {
-    requests: mpsc::Sender<Request>,
+    requests: mpsc::Sender<WorkerRequest>,
 }
 
 #[derive(Default)]
 struct Worker {
     contexts: HashMap<ContextKey, BridgeContext>,
+    startup_passed: HashSet<ContextKey>,
 }
 
 static WORKER: OnceLock<Result<WorkerHandle, ()>> = OnceLock::new();
@@ -162,7 +172,52 @@ pub(crate) fn execute(
     egress: Option<EgressInvocation>,
     inference: Option<crate::InferenceInvocation>,
 ) -> Result<ScriptOutcome, PluginError> {
-    let worker = WORKER
+    let worker = worker_handle()?;
+    let (response, receiver) = mpsc::sync_channel(1);
+    worker
+        .requests
+        .send(WorkerRequest::Execute(Box::new(ExecuteRequest {
+            installed: installed.clone(),
+            input: input.clone(),
+            source: source.to_owned(),
+            limits,
+            egress,
+            inference,
+            response,
+        })))
+        .map_err(|_| PluginError::StBridgeWorkerStopped)?;
+    receiver
+        .recv()
+        .map_err(|_| PluginError::StBridgeWorkerStopped)?
+}
+
+pub(crate) fn reset_context(
+    session_id: EntityId,
+    plugin_id: &str,
+    component_sha256: &ContentHash,
+    startup_passed: bool,
+) -> Result<(), PluginError> {
+    let worker = worker_handle()?;
+    let (response, receiver) = mpsc::sync_channel(1);
+    worker
+        .requests
+        .send(WorkerRequest::Reset {
+            key: ContextKey {
+                session_id,
+                plugin_id: plugin_id.to_owned(),
+                component_sha256: component_sha256.clone(),
+            },
+            startup_passed,
+            response,
+        })
+        .map_err(|_| PluginError::StBridgeWorkerStopped)?;
+    receiver
+        .recv()
+        .map_err(|_| PluginError::StBridgeWorkerStopped)
+}
+
+fn worker_handle() -> Result<&'static WorkerHandle, PluginError> {
+    WORKER
         .get_or_init(|| {
             let (requests, receiver) = mpsc::channel();
             std::thread::Builder::new()
@@ -172,53 +227,54 @@ pub(crate) fn execute(
                 .map_err(|_| ())
         })
         .as_ref()
-        .map_err(|_| PluginError::StBridgeWorkerStopped)?;
-    let (response, receiver) = mpsc::sync_channel(1);
-    worker
-        .requests
-        .send(Request {
-            installed: installed.clone(),
-            input: input.clone(),
-            source: source.to_owned(),
-            limits,
-            egress,
-            inference,
-            response,
-        })
-        .map_err(|_| PluginError::StBridgeWorkerStopped)?;
-    receiver
-        .recv()
-        .map_err(|_| PluginError::StBridgeWorkerStopped)?
+        .map_err(|_| PluginError::StBridgeWorkerStopped)
 }
 
 impl Worker {
-    fn run(&mut self, receiver: mpsc::Receiver<Request>) {
+    fn run(&mut self, receiver: mpsc::Receiver<WorkerRequest>) {
         while let Ok(request) = receiver.recv() {
-            let timeout_seed = ContextKey::from_request(&request.installed, &request.input)
-                .ok()
-                .map(|key| key.prng_seed());
-            let result = self.execute(
-                request.installed,
-                request.input,
-                &request.source,
-                request.limits,
-                request.egress,
-                request.inference,
-            );
-            let result = match result {
-                Err(PluginError::StBridgeAsyncTimeout) => Ok(ScriptOutcome {
-                    effects: Vec::new(),
-                    logs: vec![crate::ScriptLog {
-                        level: "warn".to_owned(),
-                        message: "st-bridge async callback exceeded 64 microtasks; dispatch effects were discarded".to_owned(),
-                    }],
-                    egress_receipts: Vec::new(),
-                    inference_receipts: Vec::new(),
-                    prng_seed: timeout_seed,
-                }),
-                other => other,
-            };
-            let _ = request.response.send(result);
+            match request {
+                WorkerRequest::Execute(request) => {
+                    let timeout_seed = ContextKey::from_request(&request.installed, &request.input)
+                        .ok()
+                        .map(|key| key.prng_seed());
+                    let result = self.execute(
+                        request.installed,
+                        request.input,
+                        &request.source,
+                        request.limits,
+                        request.egress,
+                        request.inference,
+                    );
+                    let result = match result {
+                        Err(PluginError::StBridgeAsyncTimeout) => Ok(ScriptOutcome {
+                            effects: Vec::new(),
+                            logs: vec![crate::ScriptLog {
+                                level: "warn".to_owned(),
+                                message: "st-bridge async callback exceeded 64 microtasks; dispatch effects were discarded".to_owned(),
+                            }],
+                            egress_receipts: Vec::new(),
+                            inference_receipts: Vec::new(),
+                            prng_seed: timeout_seed,
+                        }),
+                        other => other,
+                    };
+                    let _ = request.response.send(result);
+                }
+                WorkerRequest::Reset {
+                    key,
+                    startup_passed,
+                    response,
+                } => {
+                    self.contexts.remove(&key);
+                    if startup_passed {
+                        self.startup_passed.insert(key);
+                    } else {
+                        self.startup_passed.remove(&key);
+                    }
+                    let _ = response.send(());
+                }
+            }
         }
     }
 
@@ -233,13 +289,16 @@ impl Worker {
     ) -> Result<ScriptOutcome, PluginError> {
         let key = ContextKey::from_request(&installed, &input)?;
         if !self.contexts.contains_key(&key) {
+            let startup_passed = self.startup_passed.remove(&key);
             let context = BridgeContext::new(
                 &key,
                 &installed.manifest.id,
                 source,
                 &input.context,
+                &input.session,
                 &input.state,
                 limits,
+                startup_passed,
             )?;
             self.contexts.insert(key.clone(), context);
         }
@@ -568,13 +627,16 @@ impl Worker {
 }
 
 impl BridgeContext {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         context_key: &ContextKey,
         plugin_id: &str,
         source: &str,
         initial_snapshot: &JsonValue,
+        initial_session: &JsonValue,
         initial_state: &JsonValue,
         limits: ScriptLimits,
+        startup_passed: bool,
     ) -> Result<Self, PluginError> {
         let runtime =
             Runtime::new().map_err(|error| PluginError::ScriptRuntime(error.to_string()))?;
@@ -603,8 +665,16 @@ impl BridgeContext {
         let listeners = Rc::new(RefCell::new(HashMap::new()));
         let commands = Rc::new(RefCell::new(HashSet::new()));
         let snapshot = Rc::new(RefCell::new(initial_snapshot.clone()));
-        let last_branch_id = Rc::new(RefCell::new(None));
-        let app_ready_emitted = Rc::new(Cell::new(false));
+        let initial_branch_id = startup_passed
+            .then(|| {
+                initial_session
+                    .get("branch_id")
+                    .and_then(JsonValue::as_str)
+                    .and_then(|value| value.parse::<EntityId>().ok())
+            })
+            .flatten();
+        let last_branch_id = Rc::new(RefCell::new(initial_branch_id));
+        let app_ready_emitted = Rc::new(Cell::new(startup_passed));
         let abandoned = Rc::new(Cell::new(false));
         let prng_seed = context_key.prng_seed();
         let prng = Rc::new(RefCell::new(Xoshiro128PlusPlus::from_seed(prng_seed)));

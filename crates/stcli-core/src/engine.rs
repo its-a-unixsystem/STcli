@@ -11,15 +11,15 @@ use thiserror::Error;
 use crate::{
     ArtifactError, ArtifactInspectorRegistration, ArtifactKind, ArtifactRecord, AttemptProjection,
     BranchProjection, CandidateProjection, CapsuleError, CapsuleKind, CompactionReport,
-    CompletedTurn, ContentHash, CreatedSession, DryRunResult, EcmaRegexWorker, EditedCandidate,
-    EntityId, ImportedCapsule, InstalledPlugin, NativeExtensionImport, PluginCapability,
-    PluginCommandResult, PluginEffect, PluginError, PluginEvent, PluginGrant, PluginHost,
-    PluginInput, PluginPin, PluginRegistry, PromptDiff, PromptPlan, PromptSegmentInspection,
-    ProviderEvent, RecoveryReport, ReplayReport, SessionConfiguration, SessionConfigurationRecord,
-    SessionError, SessionProjection, StorageError, Store, StscriptError, StscriptLimits,
-    StscriptResult, TokenizerError, TokenizerId, TurnCapsule, TurnError, TurnProjection,
-    apply_display_scripts, diff_prompt_plans, extract_character_scripts, st_bridge_capability_tier,
-    transform_preset_content,
+    CompatibilityWarning, CompletedTurn, Config, ConfigError, ContentHash, CreatedSession,
+    DryRunResult, EcmaRegexWorker, EditedCandidate, EntityId, GlobalExtensionPin, ImportedCapsule,
+    InstalledPlugin, NativeExtensionImport, PluginCapability, PluginCommandResult, PluginEffect,
+    PluginError, PluginEvent, PluginGrant, PluginHost, PluginInput, PluginPin, PluginRegistry,
+    PromptDiff, PromptPlan, PromptSegmentInspection, ProviderEvent, RecoveryReport, ReplayReport,
+    SessionConfiguration, SessionConfigurationRecord, SessionError, SessionProjection,
+    StorageError, Store, StscriptError, StscriptLimits, StscriptResult, TokenizerError,
+    TokenizerId, TurnCapsule, TurnError, TurnProjection, apply_display_scripts, diff_prompt_plans,
+    extract_character_scripts, st_bridge_capability_tier, transform_preset_content,
 };
 
 pub const DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID: &str = "org.stcli.nemo-directives";
@@ -29,25 +29,30 @@ const NEMO_PLUGIN_SCRIPT: &str = include_str!("../../../plugins/nemo-directives/
 #[derive(Clone, Debug)]
 pub struct StcliEngine {
     database: PathBuf,
+    config_directory: PathBuf,
     egress: Option<crate::EgressBroker>,
     inference: Option<crate::InferenceBroker>,
 }
 
 impl StcliEngine {
     pub fn new(database: impl AsRef<Path>) -> Self {
+        let database = database.as_ref().to_owned();
+        let config_directory = database
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_owned();
         Self {
-            database: database.as_ref().to_owned(),
+            database,
+            config_directory,
             egress: None,
             inference: None,
         }
     }
 
     pub fn with_egress_broker(database: impl AsRef<Path>, broker: crate::EgressBroker) -> Self {
-        Self {
-            database: database.as_ref().to_owned(),
-            egress: Some(broker),
-            inference: None,
-        }
+        let mut engine = Self::new(database);
+        engine.egress = Some(broker);
+        engine
     }
 
     pub fn with_effect_brokers(
@@ -55,11 +60,15 @@ impl StcliEngine {
         egress: crate::EgressBroker,
         inference: crate::InferenceBroker,
     ) -> Self {
-        Self {
-            database: database.as_ref().to_owned(),
-            egress: Some(egress),
-            inference: Some(inference),
-        }
+        let mut engine = Self::new(database);
+        engine.egress = Some(egress);
+        engine.inference = Some(inference);
+        engine
+    }
+
+    pub fn with_config_directory(mut self, directory: impl AsRef<Path>) -> Self {
+        self.config_directory = directory.as_ref().to_owned();
+        self
     }
 
     pub fn database(&self) -> &Path {
@@ -67,12 +76,11 @@ impl StcliEngine {
     }
 
     fn plugin_registry(&self) -> PluginRegistry {
-        PluginRegistry::new(
-            self.database
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join("plugins"),
-        )
+        PluginRegistry::new(self.data_directory().join("plugins"))
+    }
+
+    fn data_directory(&self) -> &Path {
+        self.database.parent().unwrap_or_else(|| Path::new("."))
     }
 
     fn default_plugin_state(&self) -> PathBuf {
@@ -498,6 +506,43 @@ impl StcliEngine {
             EngineCommand::ImportExtension { directory } => Ok(EngineResult::ImportedExtension(
                 self.plugin_registry().import_native_extension(&directory)?,
             )),
+            EngineCommand::EnableGlobalExtension {
+                id,
+                version,
+                digest,
+                settings,
+                egress,
+            } => {
+                let installed = self.installed_plugin(&id, &version, &digest)?;
+                if installed.manifest.runtime != crate::PluginRuntime::StBridge {
+                    return Err(EngineError::ExtensionRuntimeRequired(id));
+                }
+                let capabilities = st_bridge_capability_tier();
+                if !capabilities.is_subset(&installed.manifest.requested_capabilities) {
+                    return Err(EngineError::PluginGrantExceeded);
+                }
+                let selection = GlobalExtensionSelection {
+                    id: installed.manifest.id,
+                    pin: GlobalExtensionPin {
+                        version: installed.manifest.version.to_string(),
+                        digest: installed.manifest.component_sha256,
+                        settings,
+                        egress_allow_list: egress,
+                    },
+                };
+                Config::save_enabled_extension(
+                    &self.config_directory,
+                    &selection.id,
+                    selection.pin.clone(),
+                )?;
+                Ok(EngineResult::GlobalExtensionEnabled(selection))
+            }
+            EngineCommand::DisableGlobalExtension { id } => {
+                Ok(EngineResult::GlobalExtensionDisabled {
+                    removed: Config::remove_enabled_extension(&self.config_directory, &id)?,
+                    id,
+                })
+            }
             EngineCommand::RestoreDefaultPlugins => {
                 self.clear_default_opt_out(DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID)?;
                 self.ensure_default_plugins()?;
@@ -600,21 +645,45 @@ impl StcliEngine {
                 if !capabilities.is_subset(&installed.manifest.requested_capabilities) {
                     return Err(EngineError::PluginGrantExceeded);
                 }
+                let pin = PluginPin {
+                    id,
+                    version: installed.manifest.version.to_string(),
+                    component_hash: installed.manifest.component_sha256,
+                    capabilities,
+                    settings,
+                    egress_allow_list: egress,
+                    enabled: true,
+                };
                 Ok(EngineResult::Configuration(Box::new(
-                    adopt_plugin_configuration(
-                        &mut store,
-                        session_id,
-                        PluginPin {
-                            id,
-                            version: installed.manifest.version.to_string(),
-                            component_hash: installed.manifest.component_sha256,
-                            capabilities,
-                            settings,
-                            egress_allow_list: egress,
-                            enabled: true,
-                        },
-                    )?,
+                    adopt_extension_configuration(&mut store, session_id, pin)?,
                 )))
+            }
+            EngineCommand::SetExtensionEnabled {
+                session_id,
+                id,
+                enabled,
+            } => {
+                let configuration = selected_session_configuration(&store, session_id)?;
+                if configuration.plugins.iter().any(|pin| pin.id == id) {
+                    Ok(EngineResult::Configuration(Box::new(set_plugin_enabled(
+                        &mut store,
+                        &self.plugin_registry(),
+                        session_id,
+                        &id,
+                        enabled,
+                        true,
+                    )?)))
+                } else if enabled {
+                    let pin = Config::load(&self.config_directory)
+                        .map_err(|error| EngineError::Config(Box::new(error)))?
+                        .resolve_enabled_extension(&self.plugin_registry(), &id)
+                        .map_err(|error| EngineError::Config(Box::new(error)))?;
+                    Ok(EngineResult::Configuration(Box::new(
+                        adopt_extension_configuration(&mut store, session_id, pin)?,
+                    )))
+                } else {
+                    Err(EngineError::PluginNotPinned(id))
+                }
             }
             EngineCommand::UpgradePlugin {
                 session_id,
@@ -645,18 +714,14 @@ impl StcliEngine {
                 session_id,
                 id,
                 enabled,
-            } => {
-                let mut configuration = selected_session_configuration(&store, session_id)?;
-                let pin = configuration
-                    .plugins
-                    .iter_mut()
-                    .find(|pin| pin.id == id)
-                    .ok_or_else(|| EngineError::PluginNotPinned(id))?;
-                pin.enabled = enabled;
-                Ok(EngineResult::Configuration(Box::new(
-                    store.update_session_configuration(session_id, configuration)?,
-                )))
-            }
+            } => Ok(EngineResult::Configuration(Box::new(set_plugin_enabled(
+                &mut store,
+                &self.plugin_registry(),
+                session_id,
+                &id,
+                enabled,
+                false,
+            )?))),
             EngineCommand::ImportArtifact { source } => {
                 let bundle = store.import_artifact_bundle(&source)?;
                 Ok(EngineResult::ArtifactBundle {
@@ -679,9 +744,24 @@ impl StcliEngine {
             EngineCommand::CreateSession {
                 configuration,
                 greeting_index,
-            } => Ok(EngineResult::CreatedSession(Box::new(
-                store.create_session(*configuration, greeting_index)?,
-            ))),
+            } => {
+                let mut configuration = *configuration;
+                let explicit_ids = configuration
+                    .plugins
+                    .iter()
+                    .map(|pin| pin.id.as_str())
+                    .collect::<BTreeSet<_>>();
+                let mut enabled_extensions = Config::load(&self.config_directory)
+                    .map_err(|error| EngineError::Config(Box::new(error)))?
+                    .resolve_enabled_extensions(&self.plugin_registry())
+                    .map_err(|error| EngineError::Config(Box::new(error)))?;
+                enabled_extensions.retain(|pin| !explicit_ids.contains(pin.id.as_str()));
+                enabled_extensions.extend(configuration.plugins);
+                configuration.plugins = enabled_extensions;
+                Ok(EngineResult::CreatedSession(Box::new(
+                    store.create_session(configuration, greeting_index)?,
+                )))
+            }
             EngineCommand::CreateBranch {
                 session_id,
                 source_branch_id,
@@ -1020,6 +1100,16 @@ pub enum EngineCommand {
     ImportExtension {
         directory: PathBuf,
     },
+    EnableGlobalExtension {
+        id: String,
+        version: String,
+        digest: ContentHash,
+        settings: serde_json::Value,
+        egress: Vec<crate::EgressAllowance>,
+    },
+    DisableGlobalExtension {
+        id: String,
+    },
     RestoreDefaultPlugins,
     RemovePlugin {
         plugin_id: String,
@@ -1054,6 +1144,11 @@ pub enum EngineCommand {
         digest: ContentHash,
     },
     SetPluginEnabled {
+        session_id: EntityId,
+        id: String,
+        enabled: bool,
+    },
+    SetExtensionEnabled {
         session_id: EntityId,
         id: String,
         enabled: bool,
@@ -1199,6 +1294,11 @@ pub enum EngineCommand {
 pub enum EngineResult {
     InstalledPlugin(InstalledPlugin),
     ImportedExtension(NativeExtensionImport),
+    GlobalExtensionEnabled(GlobalExtensionSelection),
+    GlobalExtensionDisabled {
+        id: String,
+        removed: bool,
+    },
     ArtifactInspectorRegistration(ArtifactInspectorRegistration),
     PluginRemoval(PluginRemovalReceipt),
     ArtifactBundle {
@@ -1231,6 +1331,12 @@ pub enum EngineResult {
     },
     EditedCandidate(EditedCandidate),
     DryRun(Box<DryRunResult>),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct GlobalExtensionSelection {
+    pub id: String,
+    pub pin: GlobalExtensionPin,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1385,6 +1491,82 @@ fn adopt_plugin_configuration(
         .retain(|existing| existing.id != pin.id);
     configuration.plugins.push(pin);
     Ok(store.update_session_configuration(session_id, configuration)?)
+}
+
+fn adopt_extension_configuration(
+    store: &mut Store,
+    session_id: EntityId,
+    pin: PluginPin,
+) -> Result<SessionConfigurationRecord, EngineError> {
+    let mut configuration = selected_session_configuration(store, session_id)?;
+    let already_pinned = configuration
+        .plugins
+        .iter()
+        .any(|existing| existing.id == pin.id);
+    let mid_session = !already_pinned
+        && store
+            .trace_events(Some(session_id))?
+            .iter()
+            .any(|event| event.event_type == "turn.created");
+    configuration
+        .plugins
+        .retain(|existing| existing.id != pin.id);
+    configuration.plugins.push(pin.clone());
+    let record = if mid_session {
+        let warning = CompatibilityWarning {
+            code: "extension-adopted-mid-session".to_owned(),
+            profile_id: configuration.compatibility_profile.clone(),
+            non_blocking: true,
+            source_revision: pin.component_hash.clone(),
+            affected_identifiers: vec![pin.id.clone()],
+            count: 1,
+            detail: format!(
+                "Extension '{}' begins lifecycle observation at Session Configuration Revision adoption; prior lifecycle events are not re-emitted",
+                pin.id
+            ),
+        };
+        store.adopt_extension_configuration(session_id, configuration, &pin, &warning)?
+    } else {
+        store.update_session_configuration(session_id, configuration)?
+    };
+    crate::st_bridge::reset_context(session_id, &pin.id, &pin.component_hash, mid_session)?;
+    Ok(record)
+}
+
+fn set_plugin_enabled(
+    store: &mut Store,
+    registry: &PluginRegistry,
+    session_id: EntityId,
+    id: &str,
+    enabled: bool,
+    extension_required: bool,
+) -> Result<SessionConfigurationRecord, EngineError> {
+    let mut configuration = selected_session_configuration(store, session_id)?;
+    let pin = configuration
+        .plugins
+        .iter_mut()
+        .find(|pin| pin.id == id)
+        .ok_or_else(|| EngineError::PluginNotPinned(id.to_owned()))?;
+    let was_enabled = pin.enabled;
+    let version = semver::Version::parse(&pin.version)
+        .map_err(|_| SessionError::InvalidPluginVersion(pin.version.clone()))?;
+    let installed = registry
+        .find_pinned(id, &version, &pin.component_hash)?
+        .ok_or_else(|| EngineError::PluginNotFound {
+            id: id.to_owned(),
+            version: pin.version.clone(),
+            digest: pin.component_hash.clone(),
+        })?;
+    if extension_required && installed.manifest.runtime != crate::PluginRuntime::StBridge {
+        return Err(EngineError::ExtensionRuntimeRequired(id.to_owned()));
+    }
+    pin.enabled = enabled;
+    let component_hash = pin.component_hash.clone();
+    let record = store.update_session_configuration(session_id, configuration)?;
+    if was_enabled != enabled && installed.manifest.runtime == crate::PluginRuntime::StBridge {
+        crate::st_bridge::reset_context(session_id, id, &component_hash, false)?;
+    }
+    Ok(record)
 }
 
 fn session_summaries(store: &Store) -> Result<Vec<SessionSummary>, EngineError> {
@@ -1603,6 +1785,8 @@ pub enum EngineError {
     #[error(transparent)]
     Plugin(#[from] PluginError),
     #[error(transparent)]
+    Config(Box<ConfigError>),
+    #[error(transparent)]
     Stscript(#[from] StscriptError),
     #[error("Plugin '{0}' remains pinned by a Session Configuration Revision")]
     PluginInUse(String),
@@ -1635,4 +1819,10 @@ pub enum EngineError {
         attempt_id: EntityId,
         selector: String,
     },
+}
+
+impl From<ConfigError> for EngineError {
+    fn from(error: ConfigError) -> Self {
+        Self::Config(Box::new(error))
+    }
 }

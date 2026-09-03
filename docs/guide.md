@@ -212,7 +212,7 @@ Generate another response for a turn:
 ```bash
 cargo run --quiet --bin stcli -- message regenerate <turn-id>
 cargo run --quiet --bin stcli -- message swipe <turn-id>
-cargo run --quiet --bin stcli -- message continue <turn-id>
+
 ```
 
 Add `--dry-run` to preview any alternative with no provider call and no committed state:
@@ -339,6 +339,21 @@ cargo run --quiet --bin stcli -- session purge <session-id>
 cargo run --quiet --bin stcli -- session recover
 ```
 
+
+## Install and enable an Extension
+
+Import a local SillyTavern Extension, then enable its exact installed revision globally:
+
+```bash
+cargo run --quiet --bin stcli -- extension import ./my-extension
+cargo run --quiet --bin stcli -- extension enable my-extension --version 1.0.0 --digest sha256:<digest>
+cargo run --quiet --bin stcli -- extension list
+```
+
+The global selection applies only to Sessions created afterward. Existing Sessions can adopt it
+explicitly with `extension enable my-extension --session <session-id>`, or disable an adopted
+Extension with `extension disable my-extension --session <session-id>`; each Session change is a
+new immutable Session Configuration Revision.
 ## Install and adopt a plugin
 
 Plugins are pure, capability-limited Wasm modules. They contribute declarative behavior to the engine without direct access to engine state. For the plugin design and the capability model, see [`ARCHITECTURE.md`](../ARCHITECTURE.md#plugin-system) and [ADR 0003](adr/0003-pure-wasm-plugins.md).

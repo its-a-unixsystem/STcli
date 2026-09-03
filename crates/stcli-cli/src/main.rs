@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use stcli_core::{
     AppPaths, ArtifactBundle, CapsuleKind, CliEnvelope, CliError, Config, ContentHash,
     CredentialError, EgressAllowance, EngineCommand, EngineInspection, EngineQuery, EngineResult,
-    EntityId, InstalledPlugin, PluginCapability, PromptDiff, PromptSegmentChange,
+    EntityId, InstalledPlugin, PluginCapability, PluginRuntime, PromptDiff, PromptSegmentChange,
     PromptSegmentInspection, PromptTextChangeKind, ProviderEvent, ProviderSettings,
     RegexReplaceRequest, RegexRequest, SessionConfiguration, StcliEngine, TurnCapsule,
     delete_credential, get_credential, run_replace_worker, run_worker, set_credential,
@@ -463,6 +463,25 @@ enum ExtensionCommand {
         #[arg(long = "egress-domain")]
         egress_domain: Vec<String>,
     },
+    Enable {
+        id: String,
+        #[arg(long)]
+        session: Option<EntityId>,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        digest: Option<ContentHash>,
+        #[arg(long)]
+        settings: Option<String>,
+        #[arg(long = "egress-domain")]
+        egress_domain: Vec<String>,
+    },
+    Disable {
+        id: String,
+        #[arg(long)]
+        session: Option<EntityId>,
+    },
+    List,
 }
 
 impl ExtensionCommand {
@@ -470,6 +489,9 @@ impl ExtensionCommand {
         match self {
             Self::Import { .. } => "extension.import",
             Self::Adopt { .. } => "extension.adopt",
+            Self::Enable { .. } => "extension.enable",
+            Self::Disable { .. } => "extension.disable",
+            Self::List => "extension.list",
         }
     }
 }
@@ -997,7 +1019,7 @@ async fn session(output: OutputFormat, command: SessionCommand) -> Result<()> {
     paths.ensure_exists()?;
     let config = Config::load(&paths.config)?;
 
-    let engine = StcliEngine::new(paths.database());
+    let engine = StcliEngine::new(paths.database()).with_config_directory(&paths.config);
     match command {
         SessionCommand::Create(args) => {
             let greeting_index = args.greeting;
@@ -1192,7 +1214,7 @@ async fn message(output: OutputFormat, command: MessageCommand) -> Result<()> {
     let command_name = command.name();
     let paths = AppPaths::discover()?;
     paths.ensure_exists()?;
-    let engine = StcliEngine::new(paths.database());
+    let engine = StcliEngine::new(paths.database()).with_config_directory(&paths.config);
     let result = match command {
         MessageCommand::Send {
             session,
@@ -1466,12 +1488,13 @@ async fn extension(output: OutputFormat, command: ExtensionCommand) -> Result<()
     let command_name = command.name();
     let paths = AppPaths::discover()?;
     paths.ensure_exists()?;
-    let engine = StcliEngine::new(paths.database());
-    let result = match command {
+    let engine = StcliEngine::new(paths.database()).with_config_directory(&paths.config);
+    match command {
         ExtensionCommand::Import { directory } => {
-            engine
+            let result = engine
                 .execute(EngineCommand::ImportExtension { directory }, |_| {})
-                .await?
+                .await?;
+            emit_engine_result(output, command_name, &result)
         }
         ExtensionCommand::Adopt {
             session,
@@ -1483,7 +1506,7 @@ async fn extension(output: OutputFormat, command: ExtensionCommand) -> Result<()
         } => {
             let settings =
                 serde_json::from_str(&settings).context("Extension settings must be valid JSON")?;
-            engine
+            let result = engine
                 .execute(
                     EngineCommand::AdoptExtension {
                         session_id: session,
@@ -1491,27 +1514,119 @@ async fn extension(output: OutputFormat, command: ExtensionCommand) -> Result<()
                         version,
                         digest,
                         settings,
-                        egress: egress_domain
-                            .into_iter()
-                            .map(|domain| EgressAllowance {
-                                domain,
-                                secret: None,
-                            })
-                            .collect(),
+                        egress: extension_egress(egress_domain),
                     },
                     |_| {},
                 )
-                .await?
+                .await?;
+            emit_engine_result(output, command_name, &result)
         }
-    };
-    emit_engine_result(output, command_name, &result)
+        ExtensionCommand::Enable {
+            id,
+            session,
+            version,
+            digest,
+            settings,
+            egress_domain,
+        } => {
+            let command = if let Some(session_id) = session {
+                anyhow::ensure!(
+                    version.is_none()
+                        && digest.is_none()
+                        && settings.is_none()
+                        && egress_domain.is_empty(),
+                    "--version, --digest, --settings, and --egress-domain apply only to global enable"
+                );
+                EngineCommand::SetExtensionEnabled {
+                    session_id,
+                    id,
+                    enabled: true,
+                }
+            } else {
+                let version = version.context("--version is required for global enable")?;
+                let digest = digest.context("--digest is required for global enable")?;
+                let settings = serde_json::from_str(settings.as_deref().unwrap_or("{}"))
+                    .context("Extension settings must be valid JSON")?;
+                EngineCommand::EnableGlobalExtension {
+                    id,
+                    version,
+                    digest,
+                    settings,
+                    egress: extension_egress(egress_domain),
+                }
+            };
+            let result = engine.execute(command, |_| {}).await?;
+            emit_engine_result(output, command_name, &result)
+        }
+        ExtensionCommand::Disable { id, session } => {
+            let command = match session {
+                Some(session_id) => EngineCommand::SetExtensionEnabled {
+                    session_id,
+                    id,
+                    enabled: false,
+                },
+                None => EngineCommand::DisableGlobalExtension { id },
+            };
+            let result = engine.execute(command, |_| {}).await?;
+            emit_engine_result(output, command_name, &result)
+        }
+        ExtensionCommand::List => {
+            let installed = installed_plugins(&engine, None)?
+                .into_iter()
+                .filter(|plugin| plugin.manifest.runtime == PluginRuntime::StBridge)
+                .collect();
+            let enabled = Config::load(&paths.config)?
+                .enabled_extensions
+                .into_iter()
+                .map(|(id, pin)| EnabledExtensionSummary {
+                    id,
+                    version: pin.version,
+                    digest: pin.digest,
+                    egress_domains: pin
+                        .egress_allow_list
+                        .into_iter()
+                        .map(|allowance| allowance.domain)
+                        .collect(),
+                })
+                .collect();
+            emit(
+                output,
+                command_name,
+                &ExtensionInventory { installed, enabled },
+            )
+        }
+    }
+}
+
+fn extension_egress(domains: Vec<String>) -> Vec<EgressAllowance> {
+    domains
+        .into_iter()
+        .map(|domain| EgressAllowance {
+            domain,
+            secret: None,
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+struct ExtensionInventory {
+    installed: Vec<InstalledPlugin>,
+    enabled: Vec<EnabledExtensionSummary>,
+}
+
+#[derive(Serialize)]
+struct EnabledExtensionSummary {
+    id: String,
+    version: String,
+    digest: ContentHash,
+    egress_domains: Vec<String>,
 }
 
 async fn plugin(output: OutputFormat, command: PluginCommand) -> Result<()> {
     let command_name = command.name();
     let paths = AppPaths::discover()?;
     paths.ensure_exists()?;
-    let engine = StcliEngine::new(paths.database());
+    let engine = StcliEngine::new(paths.database()).with_config_directory(&paths.config);
     match command {
         PluginCommand::Doctor { directory } => {
             let EngineInspection::InstalledPlugin(plugin) =
@@ -1927,13 +2042,17 @@ fn read_bounded_file(path: &Path, limit: usize) -> Result<Vec<u8>> {
 fn open_engine() -> Result<StcliEngine> {
     let paths = AppPaths::discover()?;
     paths.ensure_exists()?;
-    Ok(StcliEngine::new(paths.database()))
+    Ok(StcliEngine::new(paths.database()).with_config_directory(&paths.config))
 }
 
 fn emit_engine_result(output: OutputFormat, command: &str, result: &EngineResult) -> Result<()> {
     match result {
         EngineResult::InstalledPlugin(data) => emit(output, command, data),
         EngineResult::ImportedExtension(data) => emit(output, command, data),
+        EngineResult::GlobalExtensionEnabled(data) => emit(output, command, data),
+        EngineResult::GlobalExtensionDisabled { id, removed } => {
+            emit(output, command, &json!({ "id": id, "removed": removed }))
+        }
         EngineResult::ArtifactInspectorRegistration(data) => emit(output, command, data),
         EngineResult::PluginRemoval(data) => emit(output, command, data),
         EngineResult::ArtifactBundle {

@@ -9,9 +9,9 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::{
-    ArtifactKind, ContentHash, ContextFormatting, EntityId, FormatMode, InstructTemplate,
-    PluginCapability, PluginError, PluginRegistry, ProviderError, StateMutation, Store,
-    TraceEventRecord, VariableScope,
+    ArtifactKind, CompatibilityWarning, ContentHash, ContextFormatting, EntityId, FormatMode,
+    InstructTemplate, PluginCapability, PluginError, PluginRegistry, ProviderError, StateMutation,
+    Store, TraceEventRecord, VariableScope,
     artifact::ArtifactError,
     identity::{canonical_json, canonical_json_hash},
     provider::validate_text_completion_settings,
@@ -810,6 +810,25 @@ impl Store {
         session_id: EntityId,
         configuration: SessionConfiguration,
     ) -> Result<SessionConfigurationRecord, SessionError> {
+        self.update_session_configuration_inner(session_id, configuration, None)
+    }
+
+    pub fn adopt_extension_configuration(
+        &mut self,
+        session_id: EntityId,
+        configuration: SessionConfiguration,
+        pin: &PluginPin,
+        warning: &CompatibilityWarning,
+    ) -> Result<SessionConfigurationRecord, SessionError> {
+        self.update_session_configuration_inner(session_id, configuration, Some((pin, warning)))
+    }
+
+    fn update_session_configuration_inner(
+        &mut self,
+        session_id: EntityId,
+        configuration: SessionConfiguration,
+        adoption: Option<(&PluginPin, &CompatibilityWarning)>,
+    ) -> Result<SessionConfigurationRecord, SessionError> {
         self.session(session_id)?
             .ok_or(SessionError::SessionNotFound(session_id))?;
         validate_configuration(self, &configuration)?;
@@ -849,6 +868,21 @@ impl Store {
                 "revision_hash": revision_hash,
             }),
         )?;
+        if let Some((pin, warning)) = adoption {
+            append_event(
+                &transaction,
+                Some(session_id),
+                "extension.adopted-mid-session",
+                &json!({
+                    "session_id": session_id,
+                    "extension_id": pin.id,
+                    "version": pin.version,
+                    "digest": pin.component_hash,
+                    "adoption_configuration_revision": revision_hash,
+                    "warning": warning,
+                }),
+            )?;
+        }
         transaction
             .execute(
                 "UPDATE sessions SET current_config_hash = ?1 WHERE session_id = ?2",

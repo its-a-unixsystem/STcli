@@ -311,6 +311,7 @@ mod tests {
                     stream: false,
                 },
             )]),
+            enabled_extensions: BTreeMap::new(),
         }
     }
 
