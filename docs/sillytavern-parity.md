@@ -159,7 +159,7 @@ SillyTavern ships these bundled extensions. Each row is one of them.
 
 | Feature | Status | Remarks & Implementation Seam |
 | :--- | :---: | :--- |
-| **SillyTavern JS UI extensions** | ⚠️ | Browser and DOM-dependent behavior remains unsupported. Headless Extensions can run through the sandboxed `st-bridge`; compatibility is tracked by the capability rows below. |
+| **SillyTavern JS UI extensions** | ⚠️ | Headless Extensions run through the sandboxed `st-bridge`. Browser compatibility stubs map `console.*` to runtime logs; make `toastr.*` warn and return `undefined`; make global and `SillyTavern.callPopup` warn and resolve to `null`; provide chainable no-op `$`/`jQuery` with brokered `$.ajax`; and provide `window`/`document` no-ops whose queries return `null` or empty arrays and whose created elements are chainable. Stub diagnostics warn once per Extension runtime and API and never enter the roleplay stream. Visual rendering remains unsupported. |
 | **Extension settings and `localStorage`** | ✅ | The `st-bridge` maps `extension_settings[id]` to `local:extension.<id>.settings` and `localStorage[key]` to `local:extension.<id>.ls.<key>`. `saveSettingsDebounced()` writes through synchronously. Values persist across turns and disable/re-enable, and each Extension can access only its own namespace. |
 | **Server plugins** | 🛑 | An MVP non-goal. Trusted sidecars planned for **v1.x**. |
 | **External Wasm codecs** | ❌ | An extensible artifact-parsing interface planned for **v0.2**. |

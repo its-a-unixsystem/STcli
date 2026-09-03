@@ -1126,6 +1126,22 @@ fn install_globals<'js>(
         )?;
     }
     globals.set("console", console)?;
+    let warned_stub_apis = Rc::new(RefCell::new(HashSet::new()));
+    globals.set(
+        "__stcliWarnStub",
+        Function::new(ctx.clone(), {
+            let warned_stub_apis = Rc::clone(&warned_stub_apis);
+            let stub_logs = Rc::clone(&logs);
+            move |api: String, message: String| {
+                if warned_stub_apis.borrow_mut().insert(api) {
+                    stub_logs.borrow_mut().push(crate::ScriptLog {
+                        level: "warn".to_owned(),
+                        message,
+                    });
+                }
+            }
+        })?,
+    )?;
     let event_types = Object::new(ctx.clone())?;
     event_types.set("APP_READY", "app_ready")?;
     event_types.set("CHAT_CHANGED", "chat_id_changed")?;
@@ -1386,6 +1402,18 @@ fn install_globals<'js>(
         "generateRaw",
         ctx.eval::<Function, _>("(prompt, options) => Promise.resolve(__stcliInfer(String(prompt), JSON.stringify(options || {})))")?,
     )?;
+    let call_popup: Function = ctx.eval(
+        r#"
+((warn) => function callPopup() {
+    warn("callPopup", "`callPopup` is unavailable in headless mode; returning resolved null");
+    return Promise.resolve(null);
+})(globalThis.__stcliWarnStub)
+"#,
+    )?;
+    silly_tavern.set("callPopup", call_popup.clone())?;
+    globals.set("callPopup", call_popup)?;
+    ctx.eval::<Value, _>(TOASTR_SHIM)?;
+    ctx.eval::<Value, _>(DOM_SHIM)?;
 
     freeze(ctx, silly_tavern.clone())?;
 
@@ -1477,6 +1505,109 @@ fn install_globals<'js>(
 const DENIED_FETCH_JSON: &str =
     r#"{"ok":false,"status":0,"statusText":"egress denied","headers":{},"body":"","url":""}"#;
 
+const TOASTR_SHIM: &str = r#"
+(() => {
+    const warn = globalThis.__stcliWarnStub;
+    const headlessToast = (method) => function() {
+        warn(
+            `toastr.${method}`,
+            `\`toastr.${method}\` is unavailable in headless mode; no-op`
+        );
+        return undefined;
+    };
+    globalThis.toastr = {
+        success: headlessToast("success"),
+        info: headlessToast("info"),
+        warning: headlessToast("warning"),
+        error: headlessToast("error"),
+    };
+})();
+"#;
+
+const DOM_SHIM: &str = r#"
+(() => {
+    const warn = globalThis.__stcliWarnStub;
+    const unavailable = (api, contract) => {
+        warn(api, `\`${api}\` is unavailable in headless mode; ${contract}`);
+    };
+    const makeNode = (name) => {
+        let node;
+        const target = function() {
+            unavailable(name, "chainable no-op");
+            return node;
+        };
+        node = new Proxy(target, {
+            get(t, prop) {
+                if (prop === "then") return undefined;
+                if (typeof prop === "symbol") {
+                    return prop === Symbol.toPrimitive ? () => "" : undefined;
+                }
+                if (prop === "length") return 0;
+                const api = `${name}.${String(prop)}`;
+                unavailable(api, "chainable no-op");
+                return node;
+            },
+            set(t, prop, value) {
+                t[prop] = value;
+                return true;
+            }
+        });
+        return node;
+    };
+    const domMethod = (api, value) => function() {
+        unavailable(api, value === null ? "returning null" : "no-op");
+        return value;
+    };
+
+    const makeStubObject = (name, target) => new Proxy(target, {
+        get(t, prop) {
+            if (prop === "then" || typeof prop === "symbol") return undefined;
+            if (prop in t) return t[prop];
+            const api = `${name}.${String(prop)}`;
+            unavailable(api, "chainable no-op");
+            const value = makeNode(api);
+            t[prop] = value;
+            return value;
+        },
+        set(t, prop, value) {
+            t[prop] = value;
+            return true;
+        }
+    });
+    const documentTarget = {
+        querySelector: domMethod("document.querySelector", null),
+        querySelectorAll: function() {
+            unavailable("document.querySelectorAll", "returning an empty array");
+            return [];
+        },
+        getElementById: domMethod("document.getElementById", null),
+        createElement: function() {
+            unavailable("document.createElement", "returning a chainable stub");
+            return makeNode("document.element");
+        },
+        addEventListener: domMethod("document.addEventListener", undefined),
+        removeEventListener: domMethod("document.removeEventListener", undefined),
+        dispatchEvent: domMethod("document.dispatchEvent", undefined),
+    };
+    for (const property of ["body", "head", "documentElement"]) {
+        documentTarget[property] = makeNode(`document.${property}`);
+    }
+    const documentStub = makeStubObject("document", documentTarget);
+
+    const windowTarget = {
+        document: documentStub,
+        addEventListener: domMethod("window.addEventListener", undefined),
+        removeEventListener: domMethod("window.removeEventListener", undefined),
+        dispatchEvent: domMethod("window.dispatchEvent", undefined),
+    };
+    const windowStub = makeStubObject("window", windowTarget);
+    windowTarget.window = windowStub;
+    windowTarget.self = windowStub;
+    globalThis.document = documentStub;
+    globalThis.window = windowStub;
+})();
+"#;
+
 const EGRESS_SHIM: &str = r#"
 (() => {
     const respond = (raw) => {
@@ -1518,8 +1649,33 @@ const EGRESS_SHIM: &str = r#"
         if (settings.complete) settings.complete(jqXHR);
         return data;
     }));
-    globalThis.$ = { ajax };
-    globalThis.jQuery = globalThis.$;
+    const warn = globalThis.__stcliWarnStub;
+    const jquery = function() {
+        warn("jQuery", "`jQuery` is using a headless chainable no-op");
+        const wrapper = { length: 0 };
+        for (const method of [
+            "on", "off", "one", "append", "prepend", "before", "after", "remove", "empty",
+            "addClass", "removeClass", "toggleClass", "show", "hide", "fadeIn", "fadeOut"
+        ]) {
+            wrapper[method] = function() { return wrapper; };
+        }
+        for (const method of ["attr", "prop", "data"]) {
+            wrapper[method] = function(...args) {
+                return args.length < 2 ? undefined : wrapper;
+            };
+        }
+        for (const method of ["val", "text", "html"]) {
+            wrapper[method] = function(...args) {
+                return args.length === 0 ? undefined : wrapper;
+            };
+        }
+        return wrapper;
+    };
+    jquery.ajax = ajax;
+    jquery.fn = {};
+    globalThis.$ = jquery;
+    globalThis.jQuery = jquery;
+    delete globalThis.__stcliWarnStub;
 })();
 "#;
 

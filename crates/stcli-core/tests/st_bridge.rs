@@ -1854,6 +1854,165 @@ globalThis.namedInterceptor = function(chat) {
     }
 }
 
+// Seam B regression for ticket 06: browser-only APIs degrade without stopping the Extension.
+#[test]
+fn browser_dom_stubs_are_control_flow_safe_and_warn_once() {
+    let directory = tempdir().unwrap();
+    let source = r##"
+globalThis.namedInterceptor = async function(chat) {
+    let threw = false;
+    let summary = "";
+    try {
+        console.log("browser-log");
+        console.warn("browser-warn");
+        console.error("browser-error");
+
+        const toastResults = [
+            toastr.success("saved"),
+            toastr.success("saved again"),
+            toastr.info("info"),
+            toastr.warning("warning"),
+            toastr.error("error")
+        ];
+        const popup = await SillyTavern.callPopup("hello");
+        const globalPopup = await callPopup("hello again");
+
+        const jq = $("#missing");
+        const jqChain = jq.on("click", () => {}).addClass("active").attr("role", "button")
+            .text("hello").hide().fadeIn() === jq;
+        const jqGetterSafe = jq.attr("missing") === undefined && jq.val() === undefined;
+        const jqAliasSafe = jQuery(document.body).append("x").remove() !== undefined;
+
+        const query = document.querySelector(".missing");
+        document.querySelector(".missing");
+        const queryAll = document.querySelectorAll(".missing");
+        const byId = document.getElementById("missing");
+        const element = document.createElement("div");
+        const elementChain = element.appendChild(document.createElement("span")) === element;
+        const awaitedElement = await Promise.resolve(element);
+        document.addEventListener("ready", () => {});
+        document.removeEventListener("ready", () => {});
+        document.dispatchEvent({});
+        window.addEventListener("resize", () => {});
+        window.removeEventListener("resize", () => {});
+        window.dispatchEvent({});
+        window.alert("ignored");
+        window.alert("ignored again");
+
+        summary = [
+            toastResults.every((value) => value === undefined),
+            popup === null && globalPopup === null,
+            jqChain && jqGetterSafe && jqAliasSafe,
+            query === null && queryAll.length === 0 && byId === null,
+            elementChain && awaitedElement === element
+        ].join(",");
+    } catch (error) {
+        threw = true;
+        summary = String(error);
+    }
+    chat.push({
+        name: "System",
+        is_user: false,
+        is_system: true,
+        mes: `threw=${threw} summary=${summary}`,
+        extra: {},
+        index: chat.length
+    });
+};
+"##;
+    let plugin = write_test_bridge_plugin(
+        &directory.path().join("plugin"),
+        "org.stcli.browser-stubs",
+        source,
+    );
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&plugin)
+        .unwrap();
+    let grant = authorize(&installed);
+
+    let receipt = PluginHost::new(PluginLimits::default())
+        .execute(
+            &installed,
+            &grant,
+            PluginInput {
+                event: PluginEvent::GenerateInterceptor,
+                plugin_id: installed.manifest.id.clone(),
+                settings: json!({}),
+                context: json!({}),
+                payload: json!({
+                    "chat": [{"name": "Alice", "is_user": false, "is_system": false, "mes": "Hi", "extra": {}, "index": 0}],
+                    "has_user_message": false,
+                }),
+                artifact: json!(null),
+                state: json!(null),
+                session: json!({"session_id": EntityId::new(), "branch_id": EntityId::new()}),
+            },
+        )
+        .unwrap();
+
+    match &receipt.effects[0] {
+        PluginEffect::PromptRewrite { messages } => {
+            assert_eq!(
+                messages.last().unwrap().content,
+                "threw=false summary=true,true,true,true,true"
+            );
+        }
+        effect => panic!("expected PromptRewrite, got {effect:?}"),
+    }
+
+    for (level, message) in [
+        ("log", "browser-log"),
+        ("warn", "browser-warn"),
+        ("error", "browser-error"),
+    ] {
+        assert!(
+            receipt
+                .script_logs
+                .iter()
+                .any(|entry| entry.level == level && entry.message == message),
+            "expected console {level} log, got: {:?}",
+            receipt.script_logs
+        );
+    }
+
+    let warnings: Vec<_> = receipt
+        .script_logs
+        .iter()
+        .filter(|entry| entry.level == "warn")
+        .collect();
+    for api in [
+        "toastr.success",
+        "toastr.info",
+        "toastr.warning",
+        "toastr.error",
+        "callPopup",
+        "jQuery",
+        "document.querySelector",
+        "document.querySelectorAll",
+        "document.getElementById",
+        "document.createElement",
+        "document.element.appendChild",
+        "document.addEventListener",
+        "document.removeEventListener",
+        "document.dispatchEvent",
+        "window.addEventListener",
+        "window.removeEventListener",
+        "window.dispatchEvent",
+        "window.alert",
+    ] {
+        let needle = format!("`{api}`");
+        let count = warnings
+            .iter()
+            .filter(|entry| entry.message.contains(&needle))
+            .count();
+        assert_eq!(
+            count, 1,
+            "expected exactly one warning for {api}, got: {:?}",
+            receipt.script_logs
+        );
+    }
+}
+
 #[test]
 fn unknown_sillytavern_member_is_control_flow_safe_noop() {
     let directory = tempdir().unwrap();
