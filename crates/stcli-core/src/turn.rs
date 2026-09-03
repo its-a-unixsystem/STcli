@@ -1498,6 +1498,7 @@ impl Store {
         session_chat: &[ChatMessage],
         tokenizer: TokenizerId,
         segments: &mut Vec<PromptSegment>,
+        state: &mut StateTransaction,
         dry_run: bool,
         effective_generation_settings: &EffectiveGenerationSettings,
     ) -> Result<Vec<PluginReceipt>, TurnError> {
@@ -1542,18 +1543,17 @@ impl Store {
                         context: context.clone(),
                         payload: json!({"chat": chat, "has_user_message": true}),
                         artifact: Value::Null,
-                        state: Value::Null,
+                        state: st_bridge_input_state(state, &installed.manifest.id),
                         session: session.clone(),
                     },
                 )?;
-                if let Some(PluginEffect::PromptRewrite { messages }) = receipt.effects.first() {
-                    apply_st_bridge_rewrite(
-                        tokenizer,
-                        segments,
-                        &installed.manifest.id,
-                        messages.clone(),
-                    );
-                }
+                apply_st_bridge_effects(
+                    tokenizer,
+                    segments,
+                    state,
+                    &installed.manifest.id,
+                    &receipt.effects,
+                )?;
                 receipts.push(receipt);
             }
             if installed
@@ -1575,18 +1575,17 @@ impl Store {
                         context: context.clone(),
                         payload: json!({"chat": current, "dryRun": dry_run}),
                         artifact: Value::Null,
-                        state: Value::Null,
+                        state: st_bridge_input_state(state, &installed.manifest.id),
                         session: session.clone(),
                     },
                 )?;
-                if let Some(PluginEffect::PromptRewrite { messages }) = receipt.effects.first() {
-                    apply_st_bridge_rewrite(
-                        tokenizer,
-                        segments,
-                        &installed.manifest.id,
-                        messages.clone(),
-                    );
-                }
+                apply_st_bridge_effects(
+                    tokenizer,
+                    segments,
+                    state,
+                    &installed.manifest.id,
+                    &receipt.effects,
+                )?;
                 receipts.push(receipt);
             }
         }
@@ -1661,16 +1660,18 @@ impl Store {
         session_id: EntityId,
         branch_id: EntityId,
         content: &str,
-    ) -> Result<Vec<PluginReceipt>, TurnError> {
+    ) -> Result<(Vec<PluginReceipt>, Vec<StateMutation>), TurnError> {
         let configuration = self
             .configuration(&attempt.config_hash)?
             .ok_or_else(|| TurnError::ConfigurationNotFound(attempt.config_hash.clone()))?;
         if configuration.configuration.plugins.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), attempt.prompt_plan.state_mutations.clone()));
         }
         let (ordered, grants) = self.configured_runtime_plugins(&configuration)?;
         let host = PluginHost::new(Default::default());
         let mut receipts = Vec::new();
+        let mut state = self.state_transaction(session_id)?;
+        state.apply_recorded_mutations(&attempt.prompt_plan.state_mutations);
         let mut chat = attempt.prompt_plan.messages.clone();
         chat.push(ChatMessage {
             role: ChatRole::Assistant,
@@ -1705,18 +1706,27 @@ impl Store {
                 &chat,
                 &effective,
             );
-            receipts.push(host.execute(&installed, grant, PluginInput {
-                event: PluginEvent::StBridgeLifecycle,
-                plugin_id: installed.manifest.id.clone(), settings: grant.settings.clone(), context,
-                payload: json!({"events": [
-                    {"name": "message_received", "args": [message_index, attempt.prompt_plan.generation_type]},
-                    {"name": "generation_ended", "args": [chat.len()]}
-                ]}),
-                artifact: Value::Null, state: Value::Null,
-                session: json!({"session_id": session_id, "branch_id": branch_id, "attempt_id": attempt.attempt_id}),
-            })?);
+            let receipt = host.execute(
+                &installed,
+                grant,
+                PluginInput {
+                    event: PluginEvent::StBridgeLifecycle,
+                    plugin_id: installed.manifest.id.clone(),
+                    settings: grant.settings.clone(),
+                    context,
+                    payload: json!({"events": [
+                        {"name": "message_received", "args": [message_index, attempt.prompt_plan.generation_type]},
+                        {"name": "generation_ended", "args": [chat.len()]}
+                    ]}),
+                    artifact: Value::Null,
+                    state: st_bridge_input_state(&state, &installed.manifest.id),
+                    session: json!({"session_id": session_id, "branch_id": branch_id, "attempt_id": attempt.attempt_id}),
+                },
+            )?;
+            apply_st_bridge_state_effects(&mut state, &installed.manifest.id, &receipt.effects)?;
+            receipts.push(receipt);
         }
-        Ok(receipts)
+        Ok((receipts, state.mutations()))
     }
 
     pub fn invoke_plugin_command(
@@ -1774,6 +1784,11 @@ impl Store {
             enabled: true,
         };
         let mut state = self.state_transaction(session_id)?;
+        let state_namespace = if installed.manifest.runtime == PluginRuntime::StBridge {
+            format!("extension.{plugin_id}")
+        } else {
+            plugin_id.to_owned()
+        };
         let receipt = PluginHost::new(Default::default()).execute(
             &installed,
             &grant,
@@ -1784,19 +1799,28 @@ impl Store {
                 context: json!({"command": command, "arguments": arguments}),
                 payload: Value::Null,
                 artifact: Value::Null,
-                state: Value::Object(state.local_namespace(plugin_id).into_iter().collect()),
+                state: Value::Object(
+                    state
+                        .local_namespace(&state_namespace)
+                        .into_iter()
+                        .collect(),
+                ),
                 session: Value::Null,
             },
         )?;
-        for effect in &receipt.effects {
-            if let PluginEffect::StateWrite { key, value } = effect {
-                state.set(
-                    key.scope,
-                    &key.name,
-                    value.clone(),
-                    plugin_id,
-                    "runtime-plugin-command",
-                );
+        if installed.manifest.runtime == PluginRuntime::StBridge {
+            apply_st_bridge_state_effects(&mut state, plugin_id, &receipt.effects)?;
+        } else {
+            for effect in &receipt.effects {
+                if let PluginEffect::StateWrite { key, value } = effect {
+                    state.set(
+                        key.scope,
+                        &key.name,
+                        value.clone(),
+                        plugin_id,
+                        "runtime-plugin-command",
+                    );
+                }
             }
         }
         let state_mutations = state.mutations();
@@ -2483,6 +2507,7 @@ impl Store {
                 &session_chat,
                 tokenizer,
                 &mut segments,
+                &mut state,
                 dry_run,
                 effective_generation_settings,
             )?);
@@ -2810,14 +2835,23 @@ impl Store {
         if attempt.provider_request_hash.as_ref() != Some(&result.request_hash) {
             return Err(TurnError::ProviderRequestHashMismatch);
         }
-        let (lifecycle_receipts, post_commit_receipts) = if replay {
-            (Vec::new(), Vec::new())
+        let (lifecycle_receipts, lifecycle_state_mutations, post_commit_receipts) = if replay {
+            (Vec::new(), None, Vec::new())
         } else {
+            let (receipts, state_mutations) =
+                self.run_st_bridge_lifecycle(&attempt, turn.session_id, turn.branch_id, &content)?;
             (
-                self.run_st_bridge_lifecycle(&attempt, turn.session_id, turn.branch_id, &content)?,
+                receipts,
+                Some(state_mutations),
                 self.run_post_commit_plugins(&attempt, turn.session_id, turn.branch_id, &content)?,
             )
         };
+        if let Some(state_mutations) = lifecycle_state_mutations {
+            attempt.prompt_plan.state_mutations = state_mutations.clone();
+            if let Some(effect_receipt) = attempt.effect_receipt.as_mut() {
+                effect_receipt.state_mutations = state_mutations;
+            }
+        }
         if !lifecycle_receipts.is_empty() || !post_commit_receipts.is_empty() {
             let effect_receipt = attempt
                 .effect_receipt
@@ -3055,6 +3089,52 @@ impl Store {
         Ok(TurnError::AttemptNotRunning { attempt_id, status })
     }
 }
+fn st_bridge_input_state(state: &StateTransaction, plugin_id: &str) -> Value {
+    Value::Object(
+        state
+            .local_namespace(&format!("extension.{plugin_id}"))
+            .into_iter()
+            .collect(),
+    )
+}
+
+fn apply_st_bridge_state_effects(
+    state: &mut StateTransaction,
+    plugin_id: &str,
+    effects: &[PluginEffect],
+) -> Result<(), TurnError> {
+    let namespace = format!("extension.{plugin_id}.");
+    for effect in effects {
+        if let PluginEffect::StateWrite { key, value } = effect {
+            if key.scope != crate::VariableScope::Local || !key.name.starts_with(&namespace) {
+                return Err(PluginError::StateScopeDenied.into());
+            }
+            if value.is_null() {
+                state.delete(key.scope, &key.name);
+            } else {
+                state.set(key.scope, &key.name, value.clone(), plugin_id, "st-bridge");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_st_bridge_effects(
+    tokenizer: TokenizerId,
+    segments: &mut Vec<PromptSegment>,
+    state: &mut StateTransaction,
+    plugin_id: &str,
+    effects: &[PluginEffect],
+) -> Result<(), TurnError> {
+    apply_st_bridge_state_effects(state, plugin_id, effects)?;
+    for effect in effects {
+        if let PluginEffect::PromptRewrite { messages } = effect {
+            apply_st_bridge_rewrite(tokenizer, segments, plugin_id, messages.clone());
+        }
+    }
+    Ok(())
+}
+
 fn apply_st_bridge_rewrite(
     tokenizer: TokenizerId,
     segments: &mut Vec<PromptSegment>,

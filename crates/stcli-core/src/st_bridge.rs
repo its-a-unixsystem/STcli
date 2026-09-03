@@ -14,7 +14,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet, hash_map::DefaultHasher},
+    collections::{BTreeMap, HashMap, HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     rc::Rc,
     sync::{OnceLock, mpsc},
@@ -33,10 +33,11 @@ use serde_json::Value as JsonValue;
 use crate::{
     ChatMessage, ChatRole, ContentHash, EgressInvocation, EgressReceipt, EgressRequest, EntityId,
     InstalledPlugin, PluginEffect, PluginError, PluginEvent, PluginInput, PromptRewriteMessage,
-    ScriptLimits, ScriptOutcome,
+    ScriptLimits, ScriptOutcome, StateKey, VariableScope,
 };
 
 type Listener = Persistent<Function<'static>>;
+type StorageHydrate = Persistent<Function<'static>>;
 
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct ContextKey {
@@ -72,6 +73,7 @@ struct BridgeContext {
     listeners: Rc<RefCell<HashMap<String, Vec<Listener>>>>,
     commands: Rc<RefCell<HashSet<String>>>,
     snapshot: Rc<RefCell<JsonValue>>,
+    storage_hydrate: StorageHydrate,
     ticks: Rc<Cell<u64>>,
     last_branch_id: Rc<RefCell<Option<EntityId>>>,
     app_ready_emitted: Rc<Cell<bool>>,
@@ -88,6 +90,7 @@ struct BridgeEffectState {
     inference: Option<crate::InferenceInvocation>,
     egress_receipts: Vec<EgressReceipt>,
     inference_receipts: Vec<crate::InferenceReceipt>,
+    state_writes: BTreeMap<StateKey, JsonValue>,
 }
 
 struct Xoshiro128PlusPlus {
@@ -230,8 +233,14 @@ impl Worker {
     ) -> Result<ScriptOutcome, PluginError> {
         let key = ContextKey::from_request(&installed, &input)?;
         if !self.contexts.contains_key(&key) {
-            let context =
-                BridgeContext::new(&key, &installed.manifest.id, source, &input.context, limits)?;
+            let context = BridgeContext::new(
+                &key,
+                &installed.manifest.id,
+                source,
+                &input.context,
+                &input.state,
+                limits,
+            )?;
             self.contexts.insert(key.clone(), context);
         }
 
@@ -251,7 +260,9 @@ impl Worker {
             inference,
             egress_receipts: Vec::new(),
             inference_receipts: Vec::new(),
+            state_writes: BTreeMap::new(),
         };
+        context.hydrate_storage(&input.state)?;
         if context.abandoned.get() {
             return Ok(ScriptOutcome {
                 effects: Vec::new(),
@@ -547,6 +558,11 @@ impl Worker {
         let mut effects = context.effects.borrow_mut();
         outcome.egress_receipts = std::mem::take(&mut effects.egress_receipts);
         outcome.inference_receipts = std::mem::take(&mut effects.inference_receipts);
+        outcome.effects.extend(
+            std::mem::take(&mut effects.state_writes)
+                .into_iter()
+                .map(|(key, value)| PluginEffect::StateWrite { key, value }),
+        );
         Ok(outcome)
     }
 }
@@ -557,6 +573,7 @@ impl BridgeContext {
         plugin_id: &str,
         source: &str,
         initial_snapshot: &JsonValue,
+        initial_state: &JsonValue,
         limits: ScriptLimits,
     ) -> Result<Self, PluginError> {
         let runtime =
@@ -600,10 +617,12 @@ impl BridgeContext {
             inference: None,
             egress_receipts: Vec::new(),
             inference_receipts: Vec::new(),
+            state_writes: BTreeMap::new(),
         }));
-        let initialization = context.with(|ctx| {
-            install_globals(
+        let storage_hydrate = context.with(|ctx| {
+            let storage_hydrate = install_globals(
                 &ctx,
+                plugin_id,
                 Rc::clone(&listeners),
                 Rc::clone(&commands),
                 Rc::clone(&snapshot),
@@ -614,6 +633,10 @@ impl BridgeContext {
                 Rc::clone(&effects),
             )
             .map_err(|error| PluginError::ScriptRuntime(error.to_string()))?;
+            hydrate_storage(&ctx, &storage_hydrate, initial_state)?;
+            Ok::<_, PluginError>(storage_hydrate)
+        })?;
+        let initialization = context.with(|ctx| {
             let globals = ctx.globals();
             globals
                 .remove("eval")
@@ -641,6 +664,7 @@ impl BridgeContext {
             listeners,
             commands,
             snapshot,
+            storage_hydrate,
             ticks,
             last_branch_id,
             initialization_error,
@@ -654,6 +678,11 @@ impl BridgeContext {
 
     fn take_logs(&self) -> Vec<crate::ScriptLog> {
         std::mem::take(&mut *self.logs.borrow_mut())
+    }
+
+    fn hydrate_storage(&self, state: &JsonValue) -> Result<(), PluginError> {
+        self.context
+            .with(|ctx| hydrate_storage(&ctx, &self.storage_hydrate, state))
     }
 
     fn invoke_command(
@@ -882,9 +911,151 @@ fn install_timer<'js>(
     )
 }
 
+fn valid_storage_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+fn hydrate_storage(
+    ctx: &Ctx<'_>,
+    hydrate: &StorageHydrate,
+    state: &JsonValue,
+) -> Result<(), PluginError> {
+    let settings = state
+        .get("settings")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let storage = state
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(name, value)| {
+            let key = name.strip_prefix("ls.")?;
+            if !valid_storage_key(key) {
+                return None;
+            }
+            value.as_str().map(|value| (key, value))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let settings = serde_json::to_string(&settings)
+        .map_err(|error| PluginError::StBridgePayload(error.to_string()))?;
+    let storage = serde_json::to_string(&storage)
+        .map_err(|error| PluginError::StBridgePayload(error.to_string()))?;
+    let hydrate = hydrate
+        .clone()
+        .restore(ctx)
+        .map_err(|error| PluginError::StBridgePayload(error.to_string()))?;
+    hydrate
+        .call::<_, ()>((settings, storage))
+        .map_err(|error| PluginError::StBridgePayload(error.to_string()))
+}
+
+fn install_storage<'js>(
+    ctx: &Ctx<'js>,
+    globals: &Object<'js>,
+    plugin_id: &str,
+) -> rquickjs::Result<StorageHydrate> {
+    globals.set("__stcliExtensionId", plugin_id)?;
+    let hydrate: Function = ctx.eval(
+        r#"
+(function() {
+    const extensionId = globalThis.__stcliExtensionId;
+    const writeState = globalThis.__stcliWriteExtensionState;
+    delete globalThis.__stcliExtensionId;
+    delete globalThis.__stcliWriteExtensionState;
+
+    let settings = {};
+    const values = new Map();
+    const storageKey = value => {
+        const key = String(value);
+        if (!/^[A-Za-z0-9_-]+$/.test(key)) {
+            throw new TypeError(`invalid localStorage key '${key}'`);
+        }
+        return key;
+    };
+    const saveSettingsDebounced = () => {
+        writeState('settings', settings);
+    };
+    const extensionSettings = new Proxy({}, {
+        get(_target, property) {
+            return property === extensionId ? settings : undefined;
+        },
+        set(_target, property, value) {
+            if (property !== extensionId) {
+                throw new TypeError('extension_settings access is limited to the current Extension');
+            }
+            settings = value;
+            saveSettingsDebounced();
+            return true;
+        },
+        ownKeys() {
+            return [extensionId];
+        },
+        getOwnPropertyDescriptor(_target, property) {
+            return property === extensionId
+                ? { configurable: true, enumerable: true }
+                : undefined;
+        }
+    });
+    const localStorage = {
+        getItem(key) {
+            key = storageKey(key);
+            return values.has(key) ? values.get(key) : null;
+        },
+        setItem(key, value) {
+            key = storageKey(key);
+            value = String(value);
+            values.set(key, value);
+            writeState(`ls.${key}`, value);
+        },
+        removeItem(key) {
+            key = storageKey(key);
+            values.delete(key);
+            writeState(`ls.${key}`, null);
+        },
+        clear() {
+            for (const key of values.keys()) {
+                writeState(`ls.${key}`, null);
+            }
+            values.clear();
+        },
+        key(index) {
+            index = Number(index);
+            if (!Number.isInteger(index) || index < 0) return null;
+            return Array.from(values.keys())[index] ?? null;
+        }
+    };
+    Object.defineProperty(localStorage, 'length', {
+        enumerable: true,
+        get() {
+            return values.size;
+        }
+    });
+    globalThis.extension_settings = extensionSettings;
+    globalThis.localStorage = localStorage;
+    globalThis.saveSettingsDebounced = saveSettingsDebounced;
+
+    return function hydrate(settingsJson, storageJson) {
+        const hydratedSettings = JSON.parse(settingsJson);
+        settings = hydratedSettings === null ? {} : hydratedSettings;
+        values.clear();
+        for (const [key, value] of Object.entries(JSON.parse(storageJson))) {
+            values.set(key, value);
+        }
+    };
+})()
+"#,
+    )?;
+    Ok(Persistent::save(ctx, hydrate))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn install_globals<'js>(
     ctx: &Ctx<'js>,
+    plugin_id: &str,
     listeners: Rc<RefCell<HashMap<String, Vec<Listener>>>>,
     commands: Rc<RefCell<HashSet<String>>>,
     snapshot: Rc<RefCell<JsonValue>>,
@@ -893,8 +1064,42 @@ fn install_globals<'js>(
     logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
     warned_delayed_timer: Rc<Cell<bool>>,
     effects: Rc<RefCell<BridgeEffectState>>,
-) -> rquickjs::Result<()> {
+) -> rquickjs::Result<StorageHydrate> {
     let globals = ctx.globals();
+    let state_effects = Rc::clone(&effects);
+    let state_prefix = format!("extension.{plugin_id}.");
+    globals.set(
+        "__stcliWriteExtensionState",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, relative: String, value: Value<'js>| {
+                let valid = relative == "settings"
+                    || relative.strip_prefix("ls.").is_some_and(valid_storage_key);
+                if !valid {
+                    return Err(Exception::throw_type(&ctx, "invalid extension state key"));
+                }
+                let text = ctx.json_stringify(value)?.ok_or_else(|| {
+                    Exception::throw_type(&ctx, "extension state value must be JSON-serializable")
+                })?;
+                let value =
+                    serde_json::from_str::<JsonValue>(&text.to_string()?).map_err(|_| {
+                        Exception::throw_type(
+                            &ctx,
+                            "extension state value must be JSON-serializable",
+                        )
+                    })?;
+                state_effects.borrow_mut().state_writes.insert(
+                    StateKey {
+                        scope: VariableScope::Local,
+                        name: format!("{state_prefix}{relative}"),
+                    },
+                    value,
+                );
+                Ok(())
+            },
+        )?,
+    )?;
+    let storage_hydrate = install_storage(ctx, &globals, plugin_id)?;
     globals.set("__stcliSlashCommands", Object::new(ctx.clone())?)?;
     let console = Object::new(ctx.clone())?;
     for level in ["log", "warn", "error"] {
@@ -1169,7 +1374,7 @@ fn install_globals<'js>(
     )?;
     silly_tavern.set(
         "saveSettingsDebounced",
-        make_stub(ctx, "saveSettingsDebounced")?,
+        globals.get::<_, Function>("saveSettingsDebounced")?,
     )?;
     silly_tavern.set("saveMetadata", make_stub(ctx, "saveMetadata")?)?;
     silly_tavern.set("updateChatMetadata", make_stub(ctx, "updateChatMetadata")?)?;
@@ -1266,7 +1471,7 @@ fn install_globals<'js>(
     globals.set("clearInterval", Function::new(ctx.clone(), || ())?)?;
     install_egress(ctx, &globals, effects.clone(), Rc::clone(&logs))?;
     install_inference(ctx, &globals, effects, Rc::clone(&logs))?;
-    Ok(())
+    Ok(storage_hydrate)
 }
 
 const DENIED_FETCH_JSON: &str =

@@ -1209,9 +1209,12 @@ fn validate_effects(
                 PluginCapability::ContributePrompt
             }
             PluginEffect::StateWrite { key, .. } => {
-                if key.scope != crate::VariableScope::Local
-                    || !key.name.starts_with(&format!("{}.", installed.manifest.id))
-                {
+                let namespace = if installed.manifest.runtime == PluginRuntime::StBridge {
+                    format!("extension.{}.", installed.manifest.id)
+                } else {
+                    format!("{}.", installed.manifest.id)
+                };
+                if key.scope != crate::VariableScope::Local || !key.name.starts_with(&namespace) {
                     return Err(PluginError::StateScopeDenied);
                 }
                 PluginCapability::WriteOwnState

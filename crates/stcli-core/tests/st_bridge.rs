@@ -12,7 +12,8 @@ use stcli_core::{
     EngineError, EngineResult, EntityId, ExtensionCommandTrace, InstalledPlugin, PluginEffect,
     PluginEvent, PluginGrant, PluginHost, PluginInput, PluginLimits, PluginPin, PluginReceipt,
     PluginRegistry, StcliEngine, Store, StscriptError, StscriptLimits, StscriptProgram,
-    StscriptResult, StubTransport, canonical_json_hash, content_blob_hash, plugin_digest,
+    StscriptResult, StubTransport, VariableScope, canonical_json_hash, content_blob_hash,
+    plugin_digest,
 };
 use stcli_testkit::{MockProvider, configuration as base_configuration, fixtures};
 use tempfile::tempdir;
@@ -142,6 +143,24 @@ fn write_bridge_plugin(directory: &Path) -> PathBuf {
 }
 
 fn write_test_bridge_plugin(directory: &Path, id: &str, source: &str) -> PathBuf {
+    write_bridge_plugin_with_capabilities(directory, id, source, &["contribute-prompt"])
+}
+
+fn write_storage_bridge_plugin(directory: &Path, id: &str, source: &str) -> PathBuf {
+    write_bridge_plugin_with_capabilities(
+        directory,
+        id,
+        source,
+        &["contribute-prompt", "write-own-state"],
+    )
+}
+
+fn write_bridge_plugin_with_capabilities(
+    directory: &Path,
+    id: &str,
+    source: &str,
+    requested_capabilities: &[&str],
+) -> PathBuf {
     std::fs::create_dir_all(directory).unwrap();
     std::fs::write(directory.join("extension.js"), source).unwrap();
     let manifest = json!({
@@ -159,7 +178,7 @@ fn write_test_bridge_plugin(directory: &Path, id: &str, source: &str) -> PathBuf
         "commands": [],
         "macros": [],
         "settings_schema": null,
-        "requested_capabilities": ["contribute-prompt"],
+        "requested_capabilities": requested_capabilities,
         "before": [],
         "after": [],
         "generate_interceptor": "namedInterceptor"
@@ -560,6 +579,255 @@ fn bridge_dispatches_lifecycle_events_and_interceptor_with_async_settlement() {
         PluginEffect::Observe { .. } => {}
         effect => panic!("expected Observe, got {effect:?}"),
     }
+}
+
+#[test]
+fn bridge_hydrates_and_records_extension_storage() {
+    const ID: &str = "org.stcli.storage-proof";
+    const STORAGE_SOURCE: &str = r#"
+function namedInterceptor(chat) {
+  if (localStorage.getItem('token') === null) {
+    extension_settings['org.stcli.storage-proof'] = { theme: 'light' };
+    extension_settings['org.stcli.storage-proof'] = { theme: 'dark' };
+    localStorage.setItem('token', 'abc');
+    localStorage.setItem('discarded', 'value');
+    localStorage.removeItem('discarded');
+    saveSettingsDebounced();
+    return;
+  }
+  chat.push({
+    name: 'System',
+    is_user: false,
+    is_system: true,
+    mes: `${extension_settings['org.stcli.storage-proof'].theme}:${localStorage.getItem('token')}:${localStorage.length}:${localStorage.key(0)}`,
+    extra: {},
+    index: chat.length
+  });
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+    let directory = tempdir().unwrap();
+    let registry = PluginRegistry::new(directory.path().join("registry"));
+    let installed = registry
+        .install(&write_storage_bridge_plugin(
+            &directory.path().join("plugin"),
+            ID,
+            STORAGE_SOURCE,
+        ))
+        .unwrap();
+    let host = PluginHost::new(PluginLimits::default());
+    let session_id = EntityId::new();
+
+    // Regression test for ticket 05: bridge writes must be namespaced and deduplicated.
+    let first = host
+        .execute(
+            &installed,
+            &authorize(&installed),
+            interceptor_input(&installed, session_id),
+        )
+        .unwrap();
+    assert!(first.effects.iter().any(|effect| matches!(
+        effect,
+        PluginEffect::StateWrite { key, value }
+            if key.scope == VariableScope::Local
+                && key.name == format!("extension.{ID}.settings")
+                && value == &json!({"theme": "dark"})
+    )));
+    assert!(first.effects.iter().any(|effect| matches!(
+        effect,
+        PluginEffect::StateWrite { key, value }
+            if key.name == format!("extension.{ID}.ls.token") && value == "abc"
+    )));
+    assert!(first.effects.iter().any(|effect| matches!(
+        effect,
+        PluginEffect::StateWrite { key, value }
+            if key.name == format!("extension.{ID}.ls.discarded") && value.is_null()
+    )));
+    assert_eq!(
+        first
+            .effects
+            .iter()
+            .filter(|effect| matches!(
+                effect,
+                PluginEffect::StateWrite { key, .. }
+                    if key.name == format!("extension.{ID}.settings")
+            ))
+            .count(),
+        1
+    );
+
+    let mut later = interceptor_input(&installed, session_id);
+    later.state = json!({
+        "settings": {"theme": "dark"},
+        "ls.token": "abc"
+    });
+    let later = host
+        .execute(&installed, &authorize(&installed), later)
+        .unwrap();
+    let PluginEffect::PromptRewrite { messages } = &later.effects[0] else {
+        panic!("expected prompt rewrite");
+    };
+    assert_eq!(messages.last().unwrap().content, "dark:abc:1:token");
+}
+
+#[tokio::test]
+async fn extension_storage_is_isolated_and_survives_disable_reenable() {
+    const OWNER_ID: &str = "org.stcli.storage-owner";
+    const OBSERVER_ID: &str = "org.stcli.storage-observer";
+    const OWNER_SOURCE: &str = r#"
+function namedInterceptor(chat) {
+  if (localStorage.getItem('token') === null) {
+    extension_settings['org.stcli.storage-owner'] = { theme: 'dark' };
+    localStorage.setItem('token', 'abc');
+    saveSettingsDebounced();
+  } else {
+    chat.push({ name: 'System', is_user: false, is_system: true, mes: `owner:${extension_settings['org.stcli.storage-owner'].theme}:${localStorage.getItem('token')}`, extra: {}, index: chat.length });
+  }
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+    const OBSERVER_SOURCE: &str = r#"
+function namedInterceptor(chat) {
+  let qualifiedDenied = false;
+  try {
+    localStorage.getItem('extension.org.stcli.storage-owner.ls.token');
+  } catch (_) {
+    qualifiedDenied = true;
+  }
+  let assignmentDenied = false;
+  try {
+    extension_settings['org.stcli.storage-owner'] = { stolen: true };
+  } catch (_) {
+    assignmentDenied = true;
+  }
+  chat.push({ name: 'System', is_user: false, is_system: true, mes: `observer:${extension_settings['org.stcli.storage-owner'] === undefined}:${qualifiedDenied}:${assignmentDenied}`, extra: {}, index: chat.length });
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("data");
+    let registry = PluginRegistry::new(data.join("plugins"));
+    let owner = registry
+        .install(&write_storage_bridge_plugin(
+            &directory.path().join("owner"),
+            OWNER_ID,
+            OWNER_SOURCE,
+        ))
+        .unwrap();
+    let observer = registry
+        .install(&write_storage_bridge_plugin(
+            &directory.path().join("observer"),
+            OBSERVER_ID,
+            OBSERVER_SOURCE,
+        ))
+        .unwrap();
+    let mock = MockProvider::spawn(["Generated response"]).await.unwrap();
+    let database = data.join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.provider = mock.provider_settings();
+    configuration.plugins = [&owner, &observer]
+        .into_iter()
+        .map(|installed| PluginPin {
+            id: installed.manifest.id.clone(),
+            version: installed.manifest.version.to_string(),
+            component_hash: installed.manifest.component_sha256.clone(),
+            capabilities: installed.manifest.requested_capabilities.clone(),
+            settings: json!({}),
+            egress_allow_list: Vec::new(),
+            enabled: true,
+        })
+        .collect();
+    let created = store.create_session(configuration.clone(), 0).unwrap();
+
+    // Regression test for ticket 05: live writes persist, but Dry Run writes do not commit.
+    let completed = store
+        .send_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "write storage".to_owned(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let mutations = &completed
+        .attempt
+        .effect_receipt
+        .as_ref()
+        .unwrap()
+        .state_mutations;
+    assert!(mutations.iter().any(|mutation| {
+        mutation.key.name == format!("extension.{OWNER_ID}.settings")
+            && mutation
+                .after
+                .as_ref()
+                .is_some_and(|cell| cell.value == json!({"theme": "dark"}))
+    }));
+    assert!(mutations.iter().any(|mutation| {
+        mutation.key.name == format!("extension.{OWNER_ID}.ls.token")
+            && mutation
+                .after
+                .as_ref()
+                .is_some_and(|cell| cell.value == "abc")
+    }));
+    assert!(
+        completed
+            .attempt
+            .effect_receipt
+            .as_ref()
+            .unwrap()
+            .provider_request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["content"] == "observer:true:true:true")
+    );
+
+    configuration.plugins[0].enabled = false;
+    store
+        .update_session_configuration(created.session.session_id, configuration.clone())
+        .unwrap();
+    configuration.plugins[0].enabled = true;
+    store
+        .update_session_configuration(created.session.session_id, configuration)
+        .unwrap();
+
+    let dry_run = store
+        .dry_run_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "read storage",
+        )
+        .unwrap();
+    assert!(
+        dry_run.provider_request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["content"] == "owner:dark:abc")
+    );
+    let persisted = store.state_transaction(created.session.session_id).unwrap();
+    assert_eq!(
+        persisted
+            .get(
+                VariableScope::Local,
+                &format!("extension.{OWNER_ID}.ls.token")
+            )
+            .unwrap()
+            .value,
+        "abc"
+    );
+    assert!(
+        persisted
+            .get(
+                VariableScope::Local,
+                &format!("extension.{OBSERVER_ID}.ls.token")
+            )
+            .is_none()
+    );
 }
 
 #[tokio::test]
