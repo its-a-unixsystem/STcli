@@ -215,6 +215,13 @@ impl StateTransaction {
             .collect()
     }
 
+    pub(crate) fn apply_recorded_mutations(&mut self, mutations: &[StateMutation]) {
+        for mutation in mutations {
+            self.writes
+                .insert(mutation.key.clone(), mutation.after.clone());
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.writes.is_empty()
     }
@@ -300,6 +307,14 @@ pub(crate) fn apply_state_mutations(
             "mutations": mutations,
         }),
     )?;
+    project_state_mutations(transaction, session_id, mutations)
+}
+
+pub(crate) fn project_state_mutations(
+    transaction: &Transaction<'_>,
+    session_id: EntityId,
+    mutations: &[StateMutation],
+) -> Result<(), StateError> {
     for mutation in mutations {
         let scope_id = match mutation.key.scope {
             VariableScope::Local => session_id.to_string(),
@@ -351,37 +366,7 @@ pub(crate) fn apply_plugin_command_state_mutations(
             "mutations": mutations,
         }),
     )?;
-    for mutation in mutations {
-        let scope_id = match mutation.key.scope {
-            VariableScope::Local => session_id.to_string(),
-            VariableScope::Global => "global".to_owned(),
-        };
-        if let Some(cell) = &mutation.after {
-            transaction
-                .execute(
-                    "INSERT INTO state_cells(scope_kind, scope_id, name, value, raw_value, owner, origin, revision) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(scope_kind, scope_id, name) DO UPDATE SET value = excluded.value, raw_value = excluded.raw_value, owner = excluded.owner, origin = excluded.origin, revision = excluded.revision",
-                    params![
-                        cell.key.scope.as_str(),
-                        scope_id,
-                        cell.key.name,
-                        canonical_json(&cell.value)?,
-                        cell.raw_value,
-                        cell.owner,
-                        cell.origin,
-                        cell.revision as i64,
-                    ],
-                )
-                .map_err(StorageError::Sqlite)?;
-        } else {
-            transaction
-                .execute(
-                    "DELETE FROM state_cells WHERE scope_kind = ?1 AND scope_id = ?2 AND name = ?3",
-                    params![mutation.key.scope.as_str(), scope_id, mutation.key.name],
-                )
-                .map_err(StorageError::Sqlite)?;
-        }
-    }
-    Ok(())
+    project_state_mutations(transaction, session_id, mutations)
 }
 
 fn raw_value(value: &Value) -> String {

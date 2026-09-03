@@ -130,8 +130,8 @@ pub use storage::{
     AssetRecord, AssetReference, RecoveryReport, StorageError, Store, TraceEventRecord,
 };
 pub use stscript::{
-    StscriptCommand, StscriptError, StscriptLimits, StscriptProgram, StscriptReplayOutcome,
-    StscriptResult, parse_stscript,
+    ExtensionCommandTrace, StscriptCommand, StscriptError, StscriptLimits, StscriptProgram,
+    StscriptReplayOutcome, StscriptResult, parse_stscript,
 };
 pub use text_completion::{ContextFormatting, FormatMode, InstructTemplate, NamesBehavior};
 pub use tokenizer::{TokenizerError, TokenizerId};

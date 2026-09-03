@@ -1341,7 +1341,7 @@ impl Store {
         Ok(turns)
     }
 
-    fn session_configuration(
+    pub(crate) fn session_configuration(
         &self,
         session_id: EntityId,
     ) -> Result<(ContentHash, SessionConfigurationRecord), TurnError> {
@@ -1354,7 +1354,7 @@ impl Store {
         Ok((session.current_config_hash, configuration))
     }
 
-    fn configured_runtime_plugins(
+    pub(crate) fn configured_runtime_plugins(
         &self,
         configuration: &SessionConfigurationRecord,
     ) -> Result<(Vec<InstalledPlugin>, BTreeMap<String, PluginGrant>), TurnError> {

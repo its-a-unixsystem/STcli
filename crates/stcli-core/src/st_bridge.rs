@@ -14,15 +14,18 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     rc::Rc,
     sync::{OnceLock, mpsc},
 };
 
 use rquickjs::{
-    CatchResultExt, CaughtError, Context, Ctx, Exception, Function, Module, Object, Persistent,
-    Runtime, Value, context::intrinsic, function::Args, promise::PromiseState,
+    CatchResultExt, CaughtError, Coerced, Context, Ctx, Exception, FromJs, Function, Module,
+    Object, Persistent, Runtime, Value,
+    context::intrinsic,
+    function::{Args, Opt, Rest},
+    promise::PromiseState,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -67,11 +70,13 @@ impl ContextKey {
 struct BridgeContext {
     context: Context,
     listeners: Rc<RefCell<HashMap<String, Vec<Listener>>>>,
+    commands: Rc<RefCell<HashSet<String>>>,
     snapshot: Rc<RefCell<JsonValue>>,
     ticks: Rc<Cell<u64>>,
     last_branch_id: Rc<RefCell<Option<EntityId>>>,
     app_ready_emitted: Rc<Cell<bool>>,
     abandoned: Rc<Cell<bool>>,
+    initialization_error: Option<String>,
     prng_seed: u64,
     logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
     effects: Rc<RefCell<BridgeEffectState>>,
@@ -234,6 +239,12 @@ impl Worker {
             .contexts
             .get_mut(&key)
             .ok_or(PluginError::StBridgeWorkerStopped)?;
+        if let Some(message) = &context.initialization_error {
+            return Err(PluginError::StBridgeInitialization {
+                plugin: installed.manifest.id.clone(),
+                message: message.clone(),
+            });
+        }
         *context.effects.borrow_mut() = BridgeEffectState {
             caller: installed.manifest.id.clone(),
             egress,
@@ -468,7 +479,6 @@ impl Worker {
                 }
             }
             PluginEvent::StBridgeLifecycle => {
-                // Dispatch batch of lifecycle events
                 if let Some(events) = input.payload.get("events").and_then(|v| v.as_array()) {
                     for event_obj in events {
                         if let Some(event_name) = event_obj.get("name").and_then(|v| v.as_str()) {
@@ -487,6 +497,44 @@ impl Worker {
                 Ok(ScriptOutcome {
                     effects: vec![PluginEffect::Observe {
                         value: serde_json::json!({}),
+                    }],
+                    logs: context.take_logs(),
+                    egress_receipts: Vec::new(),
+                    inference_receipts: Vec::new(),
+                    prng_seed: Some(context.prng_seed),
+                })
+            }
+            PluginEvent::Command => {
+                let command = input
+                    .payload
+                    .get("command")
+                    .and_then(JsonValue::as_str)
+                    .ok_or_else(|| {
+                        PluginError::StBridgePayload(
+                            "command payload missing 'command' string".to_owned(),
+                        )
+                    })?;
+                let named = input
+                    .payload
+                    .get("named")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let unnamed = input
+                    .payload
+                    .get("unnamed")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or_default();
+                let output = context.invoke_command(
+                    &installed.manifest.id,
+                    command,
+                    &input.context,
+                    &named,
+                    unnamed,
+                    limits,
+                )?;
+                Ok(ScriptOutcome {
+                    effects: vec![PluginEffect::Observe {
+                        value: serde_json::json!({"output": output}),
                     }],
                     logs: context.take_logs(),
                     egress_receipts: Vec::new(),
@@ -536,6 +584,7 @@ impl BridgeContext {
         )>(&runtime)
         .map_err(|error| PluginError::ScriptRuntime(error.to_string()))?;
         let listeners = Rc::new(RefCell::new(HashMap::new()));
+        let commands = Rc::new(RefCell::new(HashSet::new()));
         let snapshot = Rc::new(RefCell::new(initial_snapshot.clone()));
         let last_branch_id = Rc::new(RefCell::new(None));
         let app_ready_emitted = Rc::new(Cell::new(false));
@@ -552,10 +601,11 @@ impl BridgeContext {
             egress_receipts: Vec::new(),
             inference_receipts: Vec::new(),
         }));
-        context.with(|ctx| {
+        let initialization = context.with(|ctx| {
             install_globals(
                 &ctx,
                 Rc::clone(&listeners),
+                Rc::clone(&commands),
                 Rc::clone(&snapshot),
                 prng,
                 next_timer_id,
@@ -568,12 +618,9 @@ impl BridgeContext {
             globals
                 .remove("eval")
                 .map_err(|error| PluginError::ScriptRuntime(error.to_string()))?;
-            let promise = Module::evaluate(ctx.clone(), plugin_id, source).map_err(|error| {
-                PluginError::StBridgeInitialization {
-                    plugin: plugin_id.to_owned(),
-                    message: error.to_string(),
-                }
-            })?;
+            let promise = Module::evaluate(ctx.clone(), plugin_id, source)
+                .catch(&ctx)
+                .map_err(|error| map_caught(&ctx, plugin_id, &ticks, error, true))?;
             if promise.state() == PromiseState::Pending {
                 return Err(PluginError::StBridgeInitialization {
                     plugin: plugin_id.to_owned(),
@@ -584,13 +631,19 @@ impl BridgeContext {
                 .finish::<()>()
                 .catch(&ctx)
                 .map_err(|error| map_caught(&ctx, plugin_id, &ticks, error, true))
-        })?;
+        });
+        let initialization_error = initialization.err().map(|error| match error {
+            PluginError::StBridgeInitialization { message, .. } => message,
+            error => error.to_string(),
+        });
         Ok(Self {
             context,
             listeners,
+            commands,
             snapshot,
             ticks,
             last_branch_id,
+            initialization_error,
             app_ready_emitted,
             abandoned,
             prng_seed,
@@ -601,6 +654,81 @@ impl BridgeContext {
 
     fn take_logs(&self) -> Vec<crate::ScriptLog> {
         std::mem::take(&mut *self.logs.borrow_mut())
+    }
+
+    fn invoke_command(
+        &mut self,
+        plugin_id: &str,
+        command: &str,
+        snapshot: &JsonValue,
+        named: &JsonValue,
+        unnamed: &str,
+        limits: ScriptLimits,
+    ) -> Result<String, PluginError> {
+        *self.snapshot.borrow_mut() = snapshot.clone();
+        self.ticks.set(limits.interrupt_ticks);
+        if !self.commands.borrow().contains(command) {
+            return Err(PluginError::StBridgeCommandNotRegistered(
+                command.to_owned(),
+            ));
+        }
+        self.context.with(|ctx| {
+            let callbacks: Object = ctx
+                .globals()
+                .get("__stcliSlashCommands")
+                .map_err(|error| PluginError::StBridgePayload(error.to_string()))?;
+            let callback: Function =
+                callbacks
+                    .get(command)
+                    .map_err(|error| PluginError::StBridgeHandler {
+                        plugin: plugin_id.to_owned(),
+                        message: error.to_string(),
+                    })?;
+            let named = ctx
+                .json_parse(
+                    serde_json::to_string(named)
+                        .map_err(|error| PluginError::StBridgePayload(error.to_string()))?,
+                )
+                .map_err(|error| PluginError::StBridgePayload(error.to_string()))?;
+            let mut result = callback
+                .call::<_, Value>((named, unnamed))
+                .catch(&ctx)
+                .map_err(|error| map_caught(&ctx, plugin_id, &self.ticks, error, false))?;
+            let promise = result.as_promise();
+            drain_pending_jobs(&ctx, limits.microtask_jobs, &self.abandoned)?;
+            if let Some(promise) = promise {
+                result = match promise.state() {
+                    PromiseState::Resolved => promise
+                        .result::<Value>()
+                        .ok_or_else(|| {
+                            PluginError::StBridgePayload(
+                                "slash command promise has no result".to_owned(),
+                            )
+                        })?
+                        .map_err(|error| PluginError::StBridgeHandler {
+                            plugin: plugin_id.to_owned(),
+                            message: error.to_string(),
+                        })?,
+                    PromiseState::Rejected => {
+                        return Err(PluginError::StBridgeHandler {
+                            plugin: plugin_id.to_owned(),
+                            message: "slash command promise rejected".to_owned(),
+                        });
+                    }
+                    PromiseState::Pending => {
+                        self.abandoned.set(true);
+                        return Err(PluginError::StBridgeAsyncTimeout);
+                    }
+                };
+            }
+            if result.is_undefined() {
+                Ok(String::new())
+            } else {
+                Coerced::<String>::from_js(&ctx, result)
+                    .map(|value| value.0)
+                    .map_err(|error| PluginError::StBridgePayload(error.to_string()))
+            }
+        })
     }
 
     fn dispatch(
@@ -685,6 +813,22 @@ impl BridgeContext {
     }
 }
 
+impl Drop for BridgeContext {
+    fn drop(&mut self) {
+        self.listeners.borrow_mut().clear();
+        self.commands.borrow_mut().clear();
+        self.context.with(clear_bridge_globals);
+    }
+}
+
+fn clear_bridge_globals(ctx: Ctx<'_>) {
+    let _ = ctx.catch();
+    let _ = ctx.eval::<(), _>(
+        "for (const key of Object.getOwnPropertyNames(globalThis)) { if (key !== 'globalThis') delete globalThis[key]; }",
+    );
+    ctx.run_gc();
+}
+
 fn drain_pending_jobs(
     ctx: &Ctx<'_>,
     max_jobs: usize,
@@ -742,6 +886,7 @@ fn install_timer<'js>(
 fn install_globals<'js>(
     ctx: &Ctx<'js>,
     listeners: Rc<RefCell<HashMap<String, Vec<Listener>>>>,
+    commands: Rc<RefCell<HashSet<String>>>,
     snapshot: Rc<RefCell<JsonValue>>,
     prng: Rc<RefCell<Xoshiro128PlusPlus>>,
     next_timer_id: Rc<Cell<u32>>,
@@ -750,6 +895,32 @@ fn install_globals<'js>(
     effects: Rc<RefCell<BridgeEffectState>>,
 ) -> rquickjs::Result<()> {
     let globals = ctx.globals();
+    globals.set("__stcliSlashCommands", Object::new(ctx.clone())?)?;
+    let console = Object::new(ctx.clone())?;
+    for level in ["log", "warn", "error"] {
+        let logs = Rc::clone(&logs);
+        console.set(
+            level,
+            Function::new(
+                ctx.clone(),
+                move |call_ctx: Ctx<'js>, args: Rest<Value<'js>>| {
+                    let message = args
+                        .0
+                        .into_iter()
+                        .filter_map(|value| Coerced::<String>::from_js(&call_ctx, value).ok())
+                        .map(|value| value.0)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    logs.borrow_mut().push(crate::ScriptLog {
+                        level: level.to_owned(),
+                        message,
+                    });
+                    Ok::<(), rquickjs::Error>(())
+                },
+            )?,
+        )?;
+    }
+    globals.set("console", console)?;
     let event_types = Object::new(ctx.clone())?;
     event_types.set("APP_READY", "app_ready")?;
     event_types.set("CHAT_CHANGED", "chat_id_changed")?;
@@ -909,7 +1080,52 @@ fn install_globals<'js>(
     silly_tavern.set("setExtensionPrompt", make_stub(ctx, "setExtensionPrompt")?)?;
     silly_tavern.set(
         "registerSlashCommand",
-        make_stub(ctx, "registerSlashCommand")?,
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, registration: Value<'js>, callback: Opt<Value<'js>>| {
+                let (name, callback) = if let Some(name) = registration.as_string() {
+                    let name = name.to_string()?;
+                    let callback = callback.0.and_then(Value::into_function).ok_or_else(|| {
+                        Exception::throw_type(
+                            &ctx,
+                            "registerSlashCommand callback must be a function",
+                        )
+                    })?;
+                    (name, callback)
+                } else if let Some(registration) = registration.as_object() {
+                    let name = registration.get::<_, String>("name").map_err(|_| {
+                        Exception::throw_type(
+                            &ctx,
+                            "registerSlashCommand command object requires a string name",
+                        )
+                    })?;
+                    let callback = registration.get::<_, Function>("callback").map_err(|_| {
+                        Exception::throw_type(
+                            &ctx,
+                            "registerSlashCommand command object requires a callback function",
+                        )
+                    })?;
+                    (name, callback)
+                } else {
+                    return Err(Exception::throw_type(
+                        &ctx,
+                        "registerSlashCommand requires a name or command object",
+                    ));
+                };
+                let name = name.trim().trim_start_matches('/');
+                if name.is_empty() || name.chars().any(char::is_whitespace) {
+                    return Err(Exception::throw_type(
+                        &ctx,
+                        "registerSlashCommand name must be a non-empty command name",
+                    ));
+                }
+                ctx.globals()
+                    .get::<_, Object>("__stcliSlashCommands")?
+                    .set(name, callback)?;
+                commands.borrow_mut().insert(name.to_owned());
+                Ok(())
+            },
+        )?,
     )?;
     silly_tavern.set(
         "executeSlashCommands",

@@ -9,9 +9,10 @@ use serde_json::json;
 use stcli_core::{
     CredentialError, CredentialResolver, EGRESS_REQUEST_DOMAIN, EgressAllowance, EgressBroker,
     EgressRequest, EgressResponse, EgressSecretInjection, EgressTransport, EngineCommand,
-    EngineResult, EntityId, InstalledPlugin, PluginEffect, PluginEvent, PluginGrant, PluginHost,
-    PluginInput, PluginLimits, PluginPin, PluginReceipt, PluginRegistry, StcliEngine, Store,
-    StubTransport, canonical_json_hash, content_blob_hash, plugin_digest,
+    EngineError, EngineResult, EntityId, ExtensionCommandTrace, InstalledPlugin, PluginEffect,
+    PluginEvent, PluginGrant, PluginHost, PluginInput, PluginLimits, PluginPin, PluginReceipt,
+    PluginRegistry, StcliEngine, Store, StscriptError, StscriptLimits, StscriptProgram,
+    StscriptResult, StubTransport, canonical_json_hash, content_blob_hash, plugin_digest,
 };
 use stcli_testkit::{MockProvider, configuration as base_configuration, fixtures};
 use tempfile::tempdir;
@@ -171,6 +172,37 @@ fn write_test_bridge_plugin(directory: &Path, id: &str, source: &str) -> PathBuf
     directory.to_owned()
 }
 
+fn write_command_bridge_plugin(directory: &Path, id: &str, source: &str) -> PathBuf {
+    std::fs::create_dir_all(directory).unwrap();
+    std::fs::write(directory.join("extension.js"), source).unwrap();
+    let manifest = json!({
+        "schema": "stcli.plugin-manifest/v1",
+        "id": id,
+        "version": "0.1.0",
+        "engine": ">=0.1.0, <0.2.0",
+        "runtime": "st-bridge",
+        "component": "extension.js",
+        "component_sha256": plugin_digest(source.as_bytes()),
+        "dependencies": [],
+        "license": "MIT",
+        "subscriptions": [],
+        "prompt_slots": [],
+        "commands": [],
+        "macros": [],
+        "settings_schema": null,
+        "requested_capabilities": ["register-command", "write-own-state"],
+        "before": [],
+        "after": [],
+        "generate_interceptor": null
+    });
+    std::fs::write(
+        directory.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    directory.to_owned()
+}
+
 fn authorize(installed: &InstalledPlugin) -> PluginGrant {
     PluginGrant {
         id: installed.manifest.id.clone(),
@@ -194,6 +226,215 @@ fn interceptor_input(installed: &InstalledPlugin, session_id: EntityId) -> Plugi
         state: json!(null),
         session: json!({"session_id": session_id, "branch_id": EntityId::new()}),
     }
+}
+
+#[test]
+fn bridge_registers_both_slash_command_forms_and_invokes_persistent_callbacks() {
+    let directory = tempdir().unwrap();
+    let source = r#"
+SillyTavern.registerSlashCommand('/greet', (named, unnamed) => `${named.who}:${unnamed}:old`);
+SillyTavern.registerSlashCommand('greet', (named, unnamed) => `${named.who}:${unnamed}:latest`);
+SillyTavern.registerSlashCommand({
+  name: '/object',
+  callback: (named, unnamed) => `${named.mode}:${unnamed}`,
+  description: 'object registration'
+});
+"#;
+    let plugin = write_command_bridge_plugin(
+        &directory.path().join("plugin"),
+        "org.stcli.command-registration",
+        source,
+    );
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&plugin)
+        .unwrap();
+    let host = PluginHost::new(Default::default());
+    let session_id = EntityId::new();
+    let invoke = |command: &str, named, unnamed: &str| {
+        host.execute(
+            &installed,
+            &authorize(&installed),
+            PluginInput {
+                event: PluginEvent::Command,
+                plugin_id: installed.manifest.id.clone(),
+                settings: json!({}),
+                context: json!({"session_id": session_id}),
+                payload: json!({"command": command, "named": named, "unnamed": unnamed}),
+                artifact: json!(null),
+                state: json!({}),
+                session: json!({"session_id": session_id}),
+            },
+        )
+        .unwrap()
+    };
+
+    assert_eq!(
+        invoke("greet", json!({"who": "Sam"}), "hello").effects,
+        vec![PluginEffect::Observe {
+            value: json!({"output": "Sam:hello:latest"})
+        }]
+    );
+    assert_eq!(
+        invoke("object", json!({"mode": "async"}), "works").effects,
+        vec![PluginEffect::Observe {
+            value: json!({"output": "async:works"})
+        }]
+    );
+}
+
+#[tokio::test]
+async fn engine_routes_extension_slash_commands_and_replays_recorded_output() {
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("data");
+    let source = r#"
+SillyTavern.registerSlashCommand('/greet', (named, unnamed) => {
+  return `${named.who}:${unnamed}`;
+});
+"#;
+    let plugin = write_command_bridge_plugin(
+        &directory.path().join("plugin"),
+        "org.stcli.extension-command",
+        source,
+    );
+    let installed = PluginRegistry::new(data.join("plugins"))
+        .install(&plugin)
+        .unwrap();
+    let database = data.join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    drop(store);
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.plugins = vec![PluginPin {
+        id: installed.manifest.id.clone(),
+        version: installed.manifest.version.to_string(),
+        component_hash: installed.manifest.component_sha256.clone(),
+        capabilities: installed.manifest.requested_capabilities.clone(),
+        settings: json!({}),
+        egress_allow_list: Vec::new(),
+        enabled: true,
+    }];
+    let engine = StcliEngine::new(&database);
+    let EngineResult::CreatedSession(created) = engine
+        .execute(
+            EngineCommand::CreateSession {
+                configuration: Box::new(configuration),
+                greeting_index: 0,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected create result");
+    };
+    let session_id = created.session.session_id;
+    let script = "/greet who=Sam hello";
+    let result = engine
+        .execute(
+            EngineCommand::ExecuteStscript {
+                session_id,
+                execution_id: EntityId::new(),
+                source: script.to_owned(),
+                limits: StscriptLimits::default(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        EngineResult::Stscript(StscriptResult::Completed { output })
+            if output == "Sam:hello"
+    ));
+
+    let store = Store::open(&database).unwrap();
+    let events = store.trace_events(Some(session_id)).unwrap();
+    let extension_events = events
+        .iter()
+        .filter(|event| event.event_type == "extension.command")
+        .collect::<Vec<_>>();
+    assert_eq!(extension_events.len(), 1);
+    let recorded: ExtensionCommandTrace =
+        serde_json::from_value(extension_events[0].payload.clone()).unwrap();
+    assert_eq!(recorded.command, "greet");
+    assert_eq!(
+        recorded.named,
+        BTreeMap::from([("who".to_owned(), "Sam".to_owned())])
+    );
+    assert_eq!(recorded.unnamed, "hello");
+    assert_eq!(recorded.output, "Sam:hello");
+    let receipt = recorded.receipt.as_ref().unwrap();
+    assert_eq!(receipt.event, PluginEvent::Command);
+    assert_eq!(
+        receipt.effects,
+        vec![PluginEffect::Observe {
+            value: json!({"output": "Sam:hello"})
+        }]
+    );
+    assert!(receipt.script_logs.is_empty());
+
+    let missing = engine
+        .execute(
+            EngineCommand::ExecuteStscript {
+                session_id,
+                execution_id: EntityId::new(),
+                source: "/missing".to_owned(),
+                limits: StscriptLimits::default(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        missing,
+        EngineError::Stscript(StscriptError::UnknownCommand(command)) if command == "missing"
+    ));
+
+    std::fs::remove_file(installed.directory.join(&installed.manifest.component)).unwrap();
+    let replay = StscriptProgram::parse(script)
+        .unwrap()
+        .evaluate_replay_with_extension_commands(
+            StscriptLimits::default(),
+            std::slice::from_ref(&recorded),
+        )
+        .unwrap();
+    assert_eq!(replay.output, "Sam:hello");
+    assert_eq!(replay.state_mutations, recorded.state_mutations);
+}
+#[test]
+fn bridge_rejects_malformed_slash_command_registration() {
+    let directory = tempdir().unwrap();
+    let plugin = write_command_bridge_plugin(
+        &directory.path().join("plugin"),
+        "org.stcli.command-registration-invalid",
+        "SillyTavern.registerSlashCommand({ name: '/broken' });",
+    );
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&plugin)
+        .unwrap();
+    let error = PluginHost::new(Default::default())
+        .execute(
+            &installed,
+            &authorize(&installed),
+            PluginInput {
+                event: PluginEvent::Command,
+                plugin_id: installed.manifest.id.clone(),
+                settings: json!({}),
+                context: json!({}),
+                payload: json!({"command": "broken", "named": {}, "unnamed": ""}),
+                artifact: json!(null),
+                state: json!({}),
+                session: json!({"session_id": EntityId::new()}),
+            },
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        stcli_core::PluginError::StBridgeInitialization { .. }
+    ));
 }
 
 #[test]

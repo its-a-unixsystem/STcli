@@ -8,8 +8,9 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::{
-    EntityId, StateTransaction, Store, VariableScope,
-    state::{StateError, apply_state_mutations},
+    EntityId, InstalledPlugin, PluginEffect, PluginEvent, PluginGrant, PluginHost, PluginInput,
+    PluginReceipt, PluginRuntime, StateMutation, StateTransaction, Store, VariableScope,
+    state::{StateError, apply_plugin_command_state_mutations, apply_state_mutations},
     storage::{StorageError, append_event},
 };
 
@@ -55,6 +56,22 @@ pub enum StscriptResult {
 pub struct StscriptReplayOutcome {
     pub output: String,
     pub delays: Vec<Duration>,
+    pub state_mutations: Vec<StateMutation>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ExtensionCommandTrace {
+    pub command_execution_id: EntityId,
+    pub session_id: EntityId,
+    pub plugin_id: String,
+    pub command: String,
+    pub named: BTreeMap<String, String>,
+    pub unnamed: String,
+    pub output: String,
+    pub receipt: Option<PluginReceipt>,
+    pub state_mutations: Vec<StateMutation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 pub fn parse_stscript(source: &str) -> Result<StscriptProgram, StscriptError> {
@@ -74,14 +91,149 @@ impl StscriptProgram {
         &self,
         limits: StscriptLimits,
     ) -> Result<StscriptReplayOutcome, StscriptError> {
-        let session_id = EntityId::new();
+        self.evaluate_replay_with_extension_commands(limits, &[])
+    }
+
+    pub fn evaluate_replay_with_extension_commands(
+        &self,
+        limits: StscriptLimits,
+        extension_commands: &[ExtensionCommandTrace],
+    ) -> Result<StscriptReplayOutcome, StscriptError> {
+        let session_id = extension_commands
+            .first()
+            .map_or_else(EntityId::new, |command| command.session_id);
         let mut state = StateTransaction::empty(session_id);
-        let mut evaluator = Evaluator::new(&mut state, limits, true);
+        let mut evaluator = Evaluator::replay(&mut state, limits, extension_commands);
         let result = evaluator.evaluate(self, 0)?;
         Ok(StscriptReplayOutcome {
             output: result.output().to_owned(),
             delays: evaluator.delays,
+            state_mutations: extension_commands
+                .iter()
+                .flat_map(|command| command.state_mutations.iter().cloned())
+                .collect(),
         })
+    }
+}
+
+struct ExtensionCommandRuntime {
+    session_id: EntityId,
+    plugins: Vec<InstalledPlugin>,
+    grants: BTreeMap<String, PluginGrant>,
+    host: PluginHost,
+}
+
+impl ExtensionCommandRuntime {
+    fn load(store: &Store, session_id: EntityId) -> Result<Self, StscriptError> {
+        let (_, configuration) = store.session_configuration(session_id)?;
+        let (plugins, grants) = store.configured_runtime_plugins(&configuration)?;
+        Ok(Self {
+            session_id,
+            plugins: plugins
+                .into_iter()
+                .filter(|plugin| plugin.manifest.runtime == PluginRuntime::StBridge)
+                .collect(),
+            grants,
+            host: PluginHost::new(Default::default()),
+        })
+    }
+
+    fn resolve(
+        &self,
+        command: &str,
+        named: &BTreeMap<String, String>,
+        unnamed: &str,
+        state: &mut StateTransaction,
+        traces: &mut Vec<ExtensionCommandTrace>,
+    ) -> Result<Option<String>, StscriptError> {
+        for installed in &self.plugins {
+            let grant = &self.grants[&installed.manifest.id];
+            let input = PluginInput {
+                event: PluginEvent::Command,
+                plugin_id: installed.manifest.id.clone(),
+                settings: grant.settings.clone(),
+                context: json!({
+                    "session_id": self.session_id,
+                    "command": command,
+                    "named": named,
+                    "unnamed": unnamed,
+                }),
+                payload: json!({
+                    "command": command,
+                    "named": named,
+                    "unnamed": unnamed,
+                }),
+                state: json!(state.local_namespace(&installed.manifest.id)),
+                artifact: serde_json::Value::Null,
+                session: json!({"session_id": self.session_id}),
+            };
+            let command_execution_id = EntityId::new();
+            let receipt = match self.host.execute(installed, grant, input) {
+                Ok(receipt) => receipt,
+                Err(crate::PluginError::StBridgeCommandNotRegistered(_)) => continue,
+                Err(error) => {
+                    let message = error.to_string();
+                    traces.push(ExtensionCommandTrace {
+                        command_execution_id,
+                        session_id: self.session_id,
+                        plugin_id: installed.manifest.id.clone(),
+                        command: command.to_owned(),
+                        named: named.clone(),
+                        unnamed: unnamed.to_owned(),
+                        output: String::new(),
+                        receipt: None,
+                        state_mutations: Vec::new(),
+                        error: Some(message),
+                    });
+                    return Err(error.into());
+                }
+            };
+            let output = receipt
+                .effects
+                .iter()
+                .find_map(|effect| match effect {
+                    PluginEffect::Observe { value } => {
+                        value.get("output").and_then(serde_json::Value::as_str)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default()
+                .to_owned();
+            let mut state_mutations = Vec::new();
+            for effect in &receipt.effects {
+                if let PluginEffect::StateWrite { key, value } = effect {
+                    let before = state.get(key.scope, &key.name).cloned();
+                    let after = state
+                        .set(
+                            key.scope,
+                            &key.name,
+                            value.clone(),
+                            &installed.manifest.id,
+                            "extension-command",
+                        )
+                        .clone();
+                    state_mutations.push(StateMutation {
+                        key: key.clone(),
+                        before,
+                        after: Some(after),
+                    });
+                }
+            }
+            traces.push(ExtensionCommandTrace {
+                command_execution_id,
+                session_id: self.session_id,
+                plugin_id: installed.manifest.id.clone(),
+                command: command.to_owned(),
+                named: named.clone(),
+                unnamed: unnamed.to_owned(),
+                output: output.clone(),
+                receipt: Some(receipt),
+                state_mutations,
+                error: None,
+            });
+            return Ok(Some(output));
+        }
+        Ok(None)
     }
 }
 
@@ -95,18 +247,20 @@ impl Store {
     ) -> Result<StscriptResult, StscriptError> {
         let program = StscriptProgram::parse_with_depth_limit(source, limits.max_depth)?;
         let mut state = self.state_transaction(session_id)?;
-        let mut evaluator = Evaluator::new(&mut state, limits, false);
+        let mut evaluator = Evaluator::live(&mut state, limits, self, session_id);
         let result = match evaluator.evaluate(&program, 0) {
             Ok(result) => result,
             Err(error) => {
                 let steps = evaluator.steps;
                 let message = error.to_string();
+                let command_traces = std::mem::take(&mut evaluator.command_traces);
                 drop(evaluator);
                 drop(state);
                 let transaction = self
                     .connection
                     .transaction()
                     .map_err(StorageError::Sqlite)?;
+                append_extension_command_traces(&transaction, &command_traces)?;
                 append_event(
                     &transaction,
                     Some(session_id),
@@ -124,12 +278,14 @@ impl Store {
         };
         let steps = evaluator.steps;
         let delays = evaluator.delays.clone();
+        let command_traces = std::mem::take(&mut evaluator.command_traces);
         drop(evaluator);
         let mutations = state.mutations();
         let transaction = self
             .connection
             .transaction()
             .map_err(StorageError::Sqlite)?;
+        append_extension_command_traces(&transaction, &command_traces)?;
         apply_state_mutations(&transaction, session_id, execution_id, &mutations)?;
         append_event(
             &transaction,
@@ -148,6 +304,27 @@ impl Store {
     }
 }
 
+fn append_extension_command_traces(
+    transaction: &rusqlite::Transaction<'_>,
+    traces: &[ExtensionCommandTrace],
+) -> Result<(), StscriptError> {
+    for trace in traces {
+        append_event(
+            transaction,
+            Some(trace.session_id),
+            "extension.command",
+            &json!(trace),
+        )?;
+        apply_plugin_command_state_mutations(
+            transaction,
+            trace.session_id,
+            trace.command_execution_id,
+            &trace.state_mutations,
+        )?;
+    }
+    Ok(())
+}
+
 struct Evaluator<'a> {
     state: &'a mut StateTransaction,
     locals: BTreeMap<String, String>,
@@ -158,10 +335,41 @@ struct Evaluator<'a> {
     started: Instant,
     replay: bool,
     delays: Vec<Duration>,
+    store: Option<&'a Store>,
+    session_id: EntityId,
+    extension_runtime: Option<ExtensionCommandRuntime>,
+    replay_commands: &'a [ExtensionCommandTrace],
+    replay_command_index: usize,
+    command_traces: Vec<ExtensionCommandTrace>,
 }
 
 impl<'a> Evaluator<'a> {
-    fn new(state: &'a mut StateTransaction, limits: StscriptLimits, replay: bool) -> Self {
+    fn live(
+        state: &'a mut StateTransaction,
+        limits: StscriptLimits,
+        store: &'a Store,
+        session_id: EntityId,
+    ) -> Self {
+        Self::new(state, limits, false, Some(store), session_id, &[])
+    }
+
+    fn replay(
+        state: &'a mut StateTransaction,
+        limits: StscriptLimits,
+        commands: &'a [ExtensionCommandTrace],
+    ) -> Self {
+        let session_id = state.session_id();
+        Self::new(state, limits, true, None, session_id, commands)
+    }
+
+    fn new(
+        state: &'a mut StateTransaction,
+        limits: StscriptLimits,
+        replay: bool,
+        store: Option<&'a Store>,
+        session_id: EntityId,
+        replay_commands: &'a [ExtensionCommandTrace],
+    ) -> Self {
         Self {
             state,
             locals: BTreeMap::new(),
@@ -172,6 +380,12 @@ impl<'a> Evaluator<'a> {
             started: Instant::now(),
             replay,
             delays: Vec::new(),
+            store,
+            session_id,
+            extension_runtime: None,
+            replay_commands,
+            replay_command_index: 0,
+            command_traces: Vec::new(),
         }
     }
 
@@ -341,9 +555,55 @@ impl<'a> Evaluator<'a> {
                     output: self.pipe.clone(),
                 }));
             }
-            name => return Err(StscriptError::UnknownCommand(name.to_owned())),
+            name => {
+                let Some(output) = self.resolve_extension_command(name, &named, &unnamed)? else {
+                    return Err(StscriptError::UnknownCommand(name.to_owned()));
+                };
+                self.pipe = output;
+            }
         }
         Ok(None)
+    }
+
+    fn resolve_extension_command(
+        &mut self,
+        command: &str,
+        named: &BTreeMap<String, String>,
+        unnamed: &str,
+    ) -> Result<Option<String>, StscriptError> {
+        if self.replay {
+            let Some(recorded) = self.replay_commands.get(self.replay_command_index) else {
+                return Ok(None);
+            };
+            if recorded.command != command
+                || &recorded.named != named
+                || recorded.unnamed != unnamed
+            {
+                return Err(StscriptError::ReplayCommandMismatch {
+                    expected: recorded.command.clone(),
+                    actual: command.to_owned(),
+                });
+            }
+            self.replay_command_index += 1;
+            if let Some(error) = &recorded.error {
+                return Err(StscriptError::RecordedExtensionCommandFailed(error.clone()));
+            }
+            self.state
+                .apply_recorded_mutations(&recorded.state_mutations);
+            return Ok(Some(recorded.output.clone()));
+        }
+
+        if self.extension_runtime.is_none() {
+            let store = self.store.expect("live evaluator has a Store");
+            self.extension_runtime = Some(ExtensionCommandRuntime::load(store, self.session_id)?);
+        }
+        self.extension_runtime.as_ref().unwrap().resolve(
+            command,
+            named,
+            unnamed,
+            self.state,
+            &mut self.command_traces,
+        )
     }
 
     fn command_condition(&self, command: &StscriptCommand) -> Result<bool, StscriptError> {
@@ -919,6 +1179,14 @@ pub enum StscriptError {
     DepthLimit { limit: usize },
     #[error("STscript exceeded its {timeout:?} timeout")]
     Timeout { timeout: Duration },
+    #[error("recorded Extension command '/{expected}' does not match replay command '/{actual}'")]
+    ReplayCommandMismatch { expected: String, actual: String },
+    #[error("recorded Extension command failed: {0}")]
+    RecordedExtensionCommandFailed(String),
+    #[error(transparent)]
+    Plugin(#[from] crate::PluginError),
+    #[error(transparent)]
+    Turn(#[from] crate::TurnError),
     #[error(transparent)]
     State(#[from] StateError),
     #[error(transparent)]

@@ -1167,6 +1167,7 @@ fn validate_effects(
             && matches!(
                 (event, effect),
                 (PluginEvent::StBridgeLifecycle, PluginEffect::Observe { .. })
+                    | (PluginEvent::Command, PluginEffect::Observe { .. })
                     | (
                         PluginEvent::GenerateInterceptor | PluginEvent::ChatCompletionPromptReady,
                         PluginEffect::PromptRewrite { .. }
@@ -1436,6 +1437,8 @@ pub enum PluginError {
     StBridgeWorkerStopped,
     #[error("st-bridge only supports CHAT_COMPLETION_PROMPT_READY in this build")]
     UnsupportedStBridgeEvent,
+    #[error("st-bridge slash command '/{0}' is not registered")]
+    StBridgeCommandNotRegistered(String),
     #[error("st-bridge Extension '{plugin}' initialization failed: {message}")]
     StBridgeInitialization { plugin: String, message: String },
     #[error("st-bridge Extension '{plugin}' handler failed: {message}")]

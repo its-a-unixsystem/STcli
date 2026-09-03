@@ -102,6 +102,35 @@ Promise settlement is bounded to 64 microtasks by default. If a handler remains 
 bound, STcli abandons the Extension context, discards its effects, and records a Compatibility
 Warning. Later calls to the abandoned context produce no effects.
 
+### Extension slash commands
+
+An `st-bridge` Extension may register a command in either SillyTavern-compatible form:
+
+```js
+SillyTavern.registerSlashCommand('/greet', (namedArgs, unnamedArg) =>
+  `${namedArgs.who}: ${unnamedArg}`
+);
+SillyTavern.registerSlashCommand({
+  name: 'summarize',
+  callback: (namedArgs, unnamedArg) => `${namedArgs.mode}: ${unnamedArg}`,
+  description: 'Example command'
+});
+```
+
+The leading slash is optional during registration and is normalized away. The callback receives
+the STscript named arguments as a JSON object first, followed by the single unnamed argument
+string. Its string-compatible return value becomes the STscript pipe output; `undefined` produces
+an empty output. The latest registration for a name wins within that persistent Session/Extension
+context.
+
+Slash commands use the existing STscript unknown-command fallback, so `/greet` is not a second
+command language. A missing registration remains the normal `StscriptError::UnknownCommand`.
+Each attempted Extension invocation is recorded as exactly one `extension.command` Turn-Trace
+event, including arguments, output, callback logs/effects, and state mutations.
+
+Replay consumes that recorded output and receipt and reapplies the recorded state mutations. It
+never resolves the component, starts QuickJS, executes JavaScript, invokes timers, or contacts the
+network.
 Replay does not initialize the PRNG or run timer callbacks. It reads the recorded seed and effects
 from the Turn Trace and reapplies the effects.
 

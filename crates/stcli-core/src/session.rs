@@ -15,6 +15,7 @@ use crate::{
     artifact::ArtifactError,
     identity::{canonical_json, canonical_json_hash},
     provider::validate_text_completion_settings,
+    state::project_state_mutations,
     storage::{StorageError, append_event},
     turn::{
         AttemptProjection, AttemptStatus, CandidateProjection, decode_attempt, decode_candidate,
@@ -1654,6 +1655,19 @@ impl Store {
                             .map_err(StorageError::Sqlite)?;
                     }
                 }
+                "extension.command" => {
+                    let session_id = event
+                        .session_id
+                        .ok_or(SessionError::InvalidTrace("session_id"))?;
+                    let mutations = serde_json::from_value::<Vec<StateMutation>>(
+                        event
+                            .payload
+                            .get("state_mutations")
+                            .cloned()
+                            .ok_or(SessionError::InvalidTrace("state_mutations"))?,
+                    )?;
+                    project_state_mutations(&transaction, session_id, &mutations)?;
+                }
                 "state.committed" => {
                     let session_id = event
                         .session_id
@@ -2717,6 +2731,8 @@ fn required_u64(value: &Value, key: &'static str) -> Result<u64, SessionError> {
 pub enum SessionError {
     #[error("session storage failed: {0}")]
     Storage(#[from] StorageError),
+    #[error(transparent)]
+    State(#[from] crate::StateError),
     #[error("artifact operation failed: {0}")]
     Artifact(#[from] ArtifactError),
     #[error("session configuration JSON failed: {0}")]
