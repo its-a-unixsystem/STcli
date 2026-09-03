@@ -70,7 +70,7 @@ impl ContextKey {
 
 struct BridgeContext {
     listeners: Rc<RefCell<HashMap<String, Vec<Listener>>>>,
-    storage_hydrate: Option<StorageHydrate>,
+    storage_hydrate: StorageHydrate,
     commands: Rc<RefCell<HashSet<String>>>,
     snapshot: Rc<RefCell<JsonValue>>,
     ticks: Rc<Cell<u64>>,
@@ -748,7 +748,7 @@ impl BridgeContext {
         });
         Ok(Self {
             listeners,
-            storage_hydrate: Some(storage_hydrate),
+            storage_hydrate,
             commands,
             snapshot,
             ticks,
@@ -782,15 +782,8 @@ impl BridgeContext {
     }
 
     fn hydrate_storage(&self, state: &JsonValue) -> Result<(), PluginError> {
-        self.context.with(|ctx| {
-            hydrate_storage(
-                &ctx,
-                self.storage_hydrate
-                    .as_ref()
-                    .expect("bridge storage hydrate is installed"),
-                state,
-            )
-        })
+        self.context
+            .with(|ctx| hydrate_storage(&ctx, &self.storage_hydrate, state))
     }
 
     fn invoke_command(
@@ -952,10 +945,8 @@ impl BridgeContext {
 
 impl Drop for BridgeContext {
     fn drop(&mut self) {
-        let hydrate = self.storage_hydrate.take();
         self.listeners.borrow_mut().clear();
         self.commands.borrow_mut().clear();
-        drop(hydrate);
         self.context.with(clear_bridge_globals);
     }
 }

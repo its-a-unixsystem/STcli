@@ -881,6 +881,10 @@ impl PluginRegistry {
         Ok(installed)
     }
 
+    pub fn contains(&self, id: &str) -> bool {
+        self.root.join(id).is_dir()
+    }
+
     pub fn find(
         &self,
         id: &str,

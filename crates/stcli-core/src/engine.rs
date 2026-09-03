@@ -124,11 +124,7 @@ impl StcliEngine {
             == Some(&registration)
             && self
                 .plugin_registry()
-                .find(
-                    DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID,
-                    &manifest.component_sha256,
-                )?
-                .is_some()
+                .contains(DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID)
         {
             return Ok(());
         }
@@ -173,12 +169,7 @@ impl StcliEngine {
     }
 
     pub fn inspect(&self, query: EngineQuery) -> Result<EngineInspection, EngineError> {
-        if !matches!(
-            query,
-            EngineQuery::ReplayCapsule { .. } | EngineQuery::DryRunRerun { .. }
-        ) {
-            self.ensure_default_plugins()?;
-        }
+        self.ensure_default_plugins()?;
         if let EngineQuery::DoctorPlugin { directory } = &query {
             return Ok(EngineInspection::InstalledPlugin(
                 self.plugin_registry().doctor(directory)?,
