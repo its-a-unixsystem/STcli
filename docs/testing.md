@@ -1,6 +1,6 @@
 # Test strategy
 
-This document defines how STcli is tested: the layers, where a new test belongs, the workstreams that close the current gaps, and how the suites keep future frontends (TUI, daemon, browser) honest without retesting the engine. It implements the evaluation strategy in [PRD §3](../PRD.md) and defends the invariants in [ADRs 0001–0005](adr/).
+This document defines how STcli is tested: the layers, where a new test belongs, the workstreams that close the current gaps, and how the suites keep future frontends (TUI, daemon, browser) honest without retesting the engine. It implements the evaluation strategy in [PRD §3](../PRD.md) and defends the implemented invariants recorded in the architecture decision records under [`docs/adr/`](adr/).
 
 ## 1. Principles
 
@@ -17,6 +17,8 @@ This document defines how STcli is tested: the layers, where a new test belongs,
 | 0003 | Plugins are pure Wasm declarative effects, digest-pinned | `stcli-core/tests/plugins.rs`, `stcli-cli/tests/plugins.rs`, `plugin-wasm` CI job |
 | 0004 | Preset settings precedence; embedded scripts execute only under grants | Preset settings/grant tests in `turn_transactions.rs`, `regex_scripts.rs` |
 | 0005 | Deletion is tombstones; compaction is reference-safe | Compaction tests in `turn_transactions.rs`, migration fixtures reproducing the 20a7fa1 ancestry shape |
+| 0009 | Extensions are imported and digest-pinned per Session; live JavaScript effects are recorded and Replay does not execute the Extension | `st_bridge.rs`: `imports_native_extension_and_adopts_fixed_bridge_grant`, `mid_session_extension_adoption_is_nonretroactive_and_resets_transient_state`, and `real_extension_complete_session_workflow_replays_offline` |
+| 0010 | Egress and Secondary Inference cross brokered, receipt-producing boundaries and replay offline | `st_bridge.rs`: `allowed_fetch_records_receipt_and_replays_offline`, `real_extension_egress_uses_local_tls_wire_path`, `secondary_inference_replay_uses_recorded_text_with_zero_calls`, and `real_extension_complete_session_workflow_replays_offline` |
 
 ## 2. The five layers
 

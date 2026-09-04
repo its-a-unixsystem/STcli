@@ -32,7 +32,7 @@ STcli supports three runtimes for the component:
 - **Script**: A JavaScript file (`.js`) that runs in a sandboxed QuickJS engine. It is quick to write and needs no build step. It can contribute to the prompt, write its own state, and log messages.
 - **st-bridge Extension**: A SillyTavern-compatible JavaScript Extension (`.js`) run headlessly in a persistent QuickJS context. It is an **Extension**, not a Plugin: it uses the normalized Plugin manifest and grants, but its sanctioned mutable surfaces are the ST-shaped `generate_interceptor` chat array, `CHAT_COMPLETION_PROMPT_READY` payload, and `SillyTavern.setExtensionPrompt`. `getContext()` remains a frozen snapshot.
 
-Both Plugin runtimes use the same manifest, capability model, and effect types. The `st-bridge` runtime is an Extension compatibility surface with recorded prompt rewrites and contributions; Replay and Rerun reuse those recorded effects without executing JavaScript.
+All three runtimes use the same manifest, capability model, and effect types. The `st-bridge` runtime is an Extension compatibility surface with recorded prompt rewrites and contributions; Replay and Rerun reuse those recorded effects without executing JavaScript.
 
 A plugin can do these things when its manifest requests them and the session grants them:
 
@@ -43,7 +43,7 @@ A plugin can do these things when its manifest requests them and the session gra
 - Write to its own state namespace.
 - Abort a turn before the provider request (Wasm only).
 
-A plugin can never open a socket, read a file, call a model, or read a secret. These limits come from [ADR 0003](adr/0003-pure-wasm-plugins.md). The later [ADR 0006](adr/0006-layered-plugins-and-brokered-effects.md) plans live effects through one brokered boundary, but that is roadmap work and is not in the engine today.
+Plugin code never receives raw socket, filesystem, provider, or secret access. Wasm and Script components remain declarative and offline. An `st-bridge` Extension may request Brokered HTTPS Egress or Secondary Inference through the host-controlled boundaries defined by [ADR 0006](adr/0006-layered-plugins-and-brokered-effects.md) and [ADR 0010](adr/0010-brokered-egress-and-secondary-inference.md); the host enforces grants, injects secrets out of band, and records receipts.
 
 ## How a plugin runs
 
@@ -71,19 +71,20 @@ This path is read-only. The host rejects prompt contributions, state writes, abo
 
 ## Choose a runtime
 
-Use this table to pick a runtime.
+Use this table to pick a runtime. `st-bridge` is for importing SillyTavern Extensions; use Script or Wasm when authoring a native STcli Plugin.
 
-| Question | Script | Wasm |
-|---|---|---|
-| Contribute prompt segments? | Yes | Yes |
-| Write own state? | Yes | Yes |
-| Log messages? | Yes | Yes |
-| Register macros and commands? | No | Yes |
-| Abort a turn before the request? | No | Yes |
-| Needs a build toolchain? | No | Yes (Rust and `wasm-tools`) |
-| Best for | Small prompt and state logic | Full effects and heavy logic |
+| Question | Script | Wasm | st-bridge Extension |
+|---|---|---|---|
+| Contribute prompt segments? | Yes | Yes | Yes, through supported SillyTavern mutation surfaces |
+| Write own state? | Yes | Yes | Yes, in its namespaced settings and `localStorage` |
+| Log messages? | Yes | Yes | Yes |
+| Register macros and commands? | No | Yes | Slash commands only |
+| Abort a turn before the request? | No | Yes | No |
+| Brokered HTTPS or Secondary Inference? | No | Through declared effects | Yes, with the fixed bridge grant and configured policy |
+| Needs a build toolchain? | No | Yes (Rust and `wasm-tools`) | No |
+| Best for | Small prompt and state logic | Full effects and heavy logic | Headless-compatible SillyTavern Extensions |
 
-Start with a script plugin for narrative logic, such as a counter, a clock, or an ambient prompt line. Move to a Wasm plugin when you need a macro, a command, an abort, or heavy computation.
+Start with a Script Plugin for native narrative logic, such as a counter, a clock, or an ambient prompt line. Move to Wasm when you need a macro, an abort, or heavy computation. Use `st-bridge` only when importing or adapting a SillyTavern Extension.
 
 The Script runtime needs the `scripting` build feature. This feature is on by default. When STcli is built without it, a script plugin returns an error.
 
