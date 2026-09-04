@@ -2621,6 +2621,133 @@ globalThis.namedInterceptor = namedInterceptor;
     assert_eq!(InferenceMode::DryRun, InferenceMode::DryRun);
 }
 
+#[tokio::test]
+async fn engine_config_directory_supplies_secondary_inference_profile() {
+    use stcli_core::{Config, InferenceStatus, ProviderSettings, validate_inference_receipt};
+
+    let directory = tempdir().unwrap();
+    let config_directory = directory.path().join("config");
+    let data_directory = directory.path().join("data");
+    let extension_directory = directory.path().join("extension");
+    std::fs::create_dir_all(&extension_directory).unwrap();
+    std::fs::write(
+        extension_directory.join("index.js"),
+        r#"
+async function namedInterceptor(chat) {
+    await SillyTavern.generateQuietPrompt("Summarize this", { provider: "summary" });
+    return chat;
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        extension_directory.join("manifest.json"),
+        serde_json::to_vec_pretty(&json!({
+            "display_name": "Config Directory Inference",
+            "generate_interceptor": "namedInterceptor",
+            "js": "index.js",
+            "version": "1.0.0"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    Config::add_provider_profile(
+        &config_directory,
+        "summary",
+        ProviderSettings {
+            id: "summary".to_owned(),
+            base_url: "https://example.invalid".to_owned(),
+            chat_completions_path: "/v1/chat/completions".to_owned(),
+            format_mode: Default::default(),
+            completions_path: None,
+            instruct_template: None,
+            context_formatting: None,
+            api_key_env: None,
+            credential_key: None,
+            static_headers: BTreeMap::new(),
+            timeout_seconds: 30,
+            ca_certificate_pem: None,
+            model: "dry-run".to_owned(),
+            stream: false,
+        },
+    )
+    .unwrap();
+
+    let database = data_directory.join("stcli.sqlite3");
+    let engine = StcliEngine::new(&database).with_config_directory(&config_directory);
+    let EngineResult::ImportedExtension(imported) = engine
+        .execute(
+            EngineCommand::ImportExtension {
+                directory: extension_directory,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected extension import result");
+    };
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    drop(store);
+    let EngineResult::CreatedSession(created) = engine
+        .execute(
+            EngineCommand::CreateSession {
+                configuration: Box::new(base_configuration(character.revision_hash)),
+                greeting_index: 0,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected create result");
+    };
+    engine
+        .execute(
+            EngineCommand::AdoptExtension {
+                session_id: created.session.session_id,
+                id: imported.plugin.manifest.id.clone(),
+                version: imported.plugin.manifest.version.to_string(),
+                digest: imported.plugin.manifest.component_sha256,
+                settings: json!({}),
+                egress: Vec::new(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    // Regression: the engine config directory, not the database parent, owns provider profiles.
+    let EngineResult::DryRun(result) = engine
+        .execute(
+            EngineCommand::DryRunSend {
+                session_id: created.session.session_id,
+                branch_id: created.branch.branch_id,
+                content: "Hello".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected Dry Run result");
+    };
+    let receipt = result
+        .prompt_plan
+        .plugin_receipts
+        .iter()
+        .find(|receipt| receipt.event == PluginEvent::GenerateInterceptor)
+        .unwrap();
+    assert_eq!(receipt.inference.len(), 1);
+    assert_eq!(receipt.inference[0].profile_name, "summary");
+    assert_eq!(receipt.inference[0].status, InferenceStatus::Completed);
+    validate_inference_receipt(&receipt.inference[0]).unwrap();
+}
+
 #[test]
 fn secondary_inference_replay_uses_recorded_text_with_zero_calls() {
     use stcli_core::{

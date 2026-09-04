@@ -1,5 +1,8 @@
 use serde_json::Value;
-use stcli_core::{AttemptStatus, CapsuleKind, EntityId, Store};
+use stcli_core::{
+    AttemptStatus, CapsuleKind, Config, EntityId, InferenceStatus, PluginEvent, ProviderSettings,
+    Store, validate_inference_receipt,
+};
 use stcli_testkit::{TestHome, stcli_cmd};
 use std::{
     env,
@@ -11,6 +14,8 @@ use std::{
 
 const API_KEY_ENV: &str = "STCLI_LIVE_API_KEY";
 const GENERATION_SETTINGS: &str = r#"{"max_tokens":512,"stream_options":{"include_usage":true}}"#;
+const EXTENSION_GENERATION_SETTINGS: &str =
+    r#"{"max_tokens":64,"stream_options":{"include_usage":true}}"#;
 
 struct LiveConfiguration {
     base_url: String,
@@ -37,6 +42,11 @@ fn example(name: &str) -> String {
         .join(format!("../../examples/{name}"))
         .to_string_lossy()
         .into_owned()
+}
+
+fn metamorph_lifecycle_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/stcli-core/tests/fixtures/real_extensions/metamorph-lifecycle")
 }
 
 fn run(home: &TestHome, api_key: &str, args: &[&dyn AsRef<OsStr>]) -> Output {
@@ -217,5 +227,184 @@ fn real_provider_completes_two_streamed_turns_without_persisting_credentials() {
     let rebuilt = run(&home, &configuration.api_key, &[&"session", &"rebuild"]);
     envelope_data(&rebuilt, &configuration.api_key);
     assert_eq!(projection_hash(&database, attempt_ids[1]), hash_before);
+    assert_files_do_not_contain_secret(home.root(), &configuration.api_key);
+}
+
+#[test]
+fn extension_real_provider_smoke() {
+    let Some(configuration) = LiveConfiguration::from_environment() else {
+        return;
+    };
+    let home = TestHome::new().unwrap();
+    let database = home.paths().database();
+
+    Config::add_provider_profile(
+        &home.paths().config,
+        "summary",
+        ProviderSettings {
+            id: "summary".to_owned(),
+            base_url: configuration.base_url.clone(),
+            chat_completions_path: "/v1/chat/completions".to_owned(),
+            format_mode: Default::default(),
+            completions_path: None,
+            instruct_template: None,
+            context_formatting: None,
+            api_key_env: Some(API_KEY_ENV.to_owned()),
+            credential_key: None,
+            static_headers: Default::default(),
+            timeout_seconds: 120,
+            ca_certificate_pem: None,
+            model: configuration.model.clone(),
+            stream: false,
+        },
+    )
+    .unwrap();
+
+    let fixture = metamorph_lifecycle_fixture();
+    let extension = home.root().join("metamorph-lifecycle");
+    fs::create_dir_all(&extension).unwrap();
+    fs::copy(
+        fixture.join("manifest.json"),
+        extension.join("manifest.json"),
+    )
+    .unwrap();
+    let mut script = fs::read_to_string(fixture.join("index.js")).unwrap();
+    for (original, capped) in [
+        (
+            "{ provider: current.providerProfile, temperature: 0 }",
+            "{ provider: current.providerProfile, temperature: 0, max_tokens: 64 }",
+        ),
+        (
+            "{ providerProfile: current.providerProfile, temperature: 0 }",
+            "{ providerProfile: current.providerProfile, temperature: 0, max_tokens: 64 }",
+        ),
+    ] {
+        assert_eq!(
+            script.matches(original).count(),
+            1,
+            "expected exactly one lifecycle fixture option object: {original}"
+        );
+        script = script.replace(original, capped);
+    }
+    fs::write(extension.join("index.js"), script).unwrap();
+
+    let imported_character = run(
+        &home,
+        &configuration.api_key,
+        &[&"artifact", &"import", &example("character.json")],
+    );
+    let character = envelope_data(&imported_character, &configuration.api_key);
+    let character_hash = character["primary"]["revision_hash"].as_str().unwrap();
+    let created = run(
+        &home,
+        &configuration.api_key,
+        &[
+            &"session",
+            &"create",
+            &"--character",
+            &character_hash,
+            &"--provider-base-url",
+            &configuration.base_url,
+            &"--provider-api-key-env",
+            &API_KEY_ENV,
+            &"--model",
+            &configuration.model,
+            &"--generation-settings",
+            &EXTENSION_GENERATION_SETTINGS,
+        ],
+    );
+    let session = envelope_data(&created, &configuration.api_key);
+    let session_id = session["session"]["session_id"].as_str().unwrap();
+
+    let imported_extension = run(
+        &home,
+        &configuration.api_key,
+        &[&"extension", &"import", &extension],
+    );
+    let imported_extension = envelope_data(&imported_extension, &configuration.api_key);
+    let manifest = &imported_extension["plugin"]["manifest"];
+    let extension_id = manifest["id"].as_str().unwrap();
+    let version = manifest["version"].as_str().unwrap();
+    let digest = manifest["component_sha256"].as_str().unwrap();
+    let adopted = run(
+        &home,
+        &configuration.api_key,
+        &[
+            &"extension",
+            &"adopt",
+            &"--session",
+            &session_id,
+            &"--version",
+            &version,
+            &"--digest",
+            &digest,
+            &"--settings",
+            &r#"{"providerProfile":"summary"}"#,
+            &extension_id,
+        ],
+    );
+    envelope_data(&adopted, &configuration.api_key);
+
+    let sent = run(
+        &home,
+        &configuration.api_key,
+        &[
+            &"message",
+            &"send",
+            &"--session",
+            &session_id,
+            &"Reply briefly.",
+        ],
+    );
+    let completed = assert_completed_stream(&sent, &configuration.api_key);
+    assert!(
+        !completed["candidate"]["content"]
+            .as_str()
+            .unwrap()
+            .is_empty()
+    );
+    let attempt_id = completed["attempt"]["attempt_id"]
+        .as_str()
+        .unwrap()
+        .parse::<EntityId>()
+        .unwrap();
+
+    let store = Store::open(&database).unwrap();
+    let attempt = store.attempt(attempt_id).unwrap().unwrap();
+    assert_eq!(attempt.status, AttemptStatus::Completed);
+    let effect = attempt.effect_receipt.as_ref().unwrap();
+    assert_eq!(effect.provider_request["max_tokens"], 64);
+    let receipt = effect
+        .plugins
+        .iter()
+        .find(|receipt| {
+            receipt.id == extension_id && receipt.event == PluginEvent::GenerateInterceptor
+        })
+        .unwrap();
+    assert_eq!(receipt.inference.len(), 2);
+    for inference in &receipt.inference {
+        assert_eq!(inference.status, InferenceStatus::Completed);
+        assert!(inference.error.is_none());
+        assert_eq!(inference.effective_settings["max_tokens"], 64);
+        validate_inference_receipt(inference).unwrap();
+    }
+    assert!(receipt.egress.is_empty());
+    assert_secret_absent(
+        &serde_json::to_vec(&attempt).unwrap(),
+        &configuration.api_key,
+    );
+    let capsule = store
+        .export_turn_capsule(attempt_id, CapsuleKind::Thin, false)
+        .unwrap();
+    assert_secret_absent(
+        &serde_json::to_vec(&capsule).unwrap(),
+        &configuration.api_key,
+    );
+    drop(store);
+
+    let hash_before = projection_hash(&database, attempt_id);
+    let rebuilt = run(&home, &configuration.api_key, &[&"session", &"rebuild"]);
+    envelope_data(&rebuilt, &configuration.api_key);
+    assert_eq!(projection_hash(&database, attempt_id), hash_before);
     assert_files_do_not_contain_secret(home.root(), &configuration.api_key);
 }

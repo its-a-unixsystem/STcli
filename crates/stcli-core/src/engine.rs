@@ -482,9 +482,11 @@ impl StcliEngine {
         if let Some(broker) = &self.egress {
             store.set_egress_broker(broker.clone());
         }
-        if let Some(broker) = &self.inference {
-            store.set_inference_broker(broker.clone());
-        }
+        let inference = match &self.inference {
+            Some(broker) => broker.clone(),
+            None => crate::InferenceBroker::live(Config::load(&self.config_directory)?),
+        };
+        store.set_inference_broker(inference);
         match command {
             EngineCommand::InstallPlugin { directory } => {
                 let installed = self.plugin_registry().install(&directory)?;

@@ -109,6 +109,10 @@ Fixture updates are explicit reviewed changes:
 
 Tests never download or refresh these fixtures.
 
+The opt-in live smoke never downloads an Extension. It copies `manifest.json` and a token-capped
+derivation of `index.js` from the pinned `metamorph-lifecycle` fixture into `TestHome`; the checked-in
+fixture bytes remain unchanged.
+
 The `real_extension_complete_session_workflow_replays_offline` test is the public-engine L2
 deterministic Extension seam. It copies both pinned fixtures into a temporary directory, rewrites
 only the wire fixture URLs and lifecycle observation-only callbacks, then drives import, global
@@ -209,19 +213,11 @@ Effort: 1–2 days.
 
 ### I. CI evolution
 
-Target layout for `.github/workflows/ci.yml`:
-
-```yaml
-lint:          # ubuntu: fmt --check, clippy -D warnings, cargo-deny (advisories + licenses + bans)
-test-linux:    # ubuntu: cargo test --workspace --locked, compat verify (strict after A)
-plugin-wasm:   # rebuild plugins/proof from source (wasm32-unknown-unknown + wasm-tools
-               # component new), hash-compare against the checked-in component.wasm;
-               # paths-filtered to plugins/proof/** + weekly cron
-coverage:      # main + weekly cron: cargo-llvm-cov --workspace --lcov,
-               # upload artifact + PR summary; no threshold gate
-live-smoke:    # weekly cron + workflow_dispatch only, secret-gated, non-required:
-               # 1-2 turn live roleplay against a cheap real model (workstream J)
-```
+The required jobs in `.github/workflows/ci.yml` cover lint, locked Linux tests, dependency policy,
+and the aggregate `quality` gate. Coverage remains informational in that workflow. The live-provider
+smoke is deliberately separate in `.github/workflows/live-smoke.yml`: it runs only on the Monday
+weekly schedule or `workflow_dispatch`, is named `Live provider smoke (informational)`, and is not a
+dependency of `quality`.
 
 - **Caching**: `Swatinem/rust-cache@v2` in every job, keyed on `Cargo.lock` and the toolchain. The biggest wall-clock win — wasmtime and bundled-SQLite currently rebuild from scratch on every run.
 - **`cargo-deny`** in `lint`: an AGPL project on top of the wasmtime/axum/reqwest trees has real license- and advisory-drift risk, and the cost is one `deny.toml`. No separate `cargo-audit` (a subset of deny).
@@ -235,12 +231,32 @@ live-smoke:    # weekly cron + workflow_dispatch only, secret-gated, non-require
 
 The one deliberate exception to "determinism is the harness". Everything else in this strategy runs against the mock, which by construction cannot catch real-world provider behavior: actual TLS stacks, provider-specific SSE framing quirks, auth handling, rate-limit responses from a real endpoint.
 
-- `crates/stcli-cli/tests/live_smoke.rs`, self-skipping unless `STCLI_LIVE_BASE_URL` / `STCLI_LIVE_API_KEY` / `STCLI_LIVE_MODEL` are set (point them at any cheap, fast model — the test is provider-agnostic and must not hardcode a vendor).
-- One short roleplay: import the example card → create session → send → assert a non-empty streamed candidate → swipe or continue → assert the second turn. **Assert structure only, never content**: the SSE stream completes with a terminal event, candidate text is non-empty, usage and attempt status land in the trace, projection rebuild still matches — a live model's output is non-deterministic, so content assertions would only produce flakes.
-- CI: the `live-smoke` job runs on the weekly cron and `workflow_dispatch` only — never on PRs (secret exposure, cost, flake blast-radius). A repository secret holds the key; the job is non-required.
-- Budget guard: cap `max_tokens` low in the pinned settings so a run costs fractions of a cent.
+- `crates/stcli-cli/tests/live_smoke.rs` requires all three non-empty variables:
+  `STCLI_LIVE_BASE_URL`, `STCLI_LIVE_API_KEY`, and `STCLI_LIVE_MODEL`. The base URL must be an
+  OpenAI-compatible HTTPS endpoint whose certificate is trusted by the platform. When any variable
+  is absent or empty, each live test returns before constructing `TestHome` or contacting a provider.
+- The baseline smoke keeps its established two-Turn contract. `extension_real_provider_smoke` adds
+  one primary Turn plus the pinned lifecycle fixture's two Secondary Inference API calls
+  (`generateQuietPrompt` and `generateRaw`). All three requests use the same provider-independent
+  endpoint, model, and environment key, and each is capped at `max_tokens: 64`. The Extension has an
+  empty egress allow-list and issues no egress request.
+- Assertions are structural only: the streamed Turn terminates with text and usage events, the
+  Candidate is non-empty, the attempt and both inference receipts complete and validate, and the
+  projection hash survives `session rebuild`. The test does not assert generated text, token count,
+  model identity, or endpoint vendor.
+- The API key remains environment-only. Configuration persists only the environment-variable name,
+  and the test scans every CLI stdout/stderr stream, the loaded attempt and receipt trace, exported
+  capsule data, projections, and all files under `TestHome` for the secret value.
+- `.github/workflows/live-smoke.yml` scopes the three repository secrets to its weekly/manual
+  informational job. The workflow stays outside `.github/workflows/ci.yml` and is never required for
+  pull requests.
 
-Effort: ~½ day once D exists (it reuses the loop suite's helpers with the mock swapped for the live endpoint).
+The deterministic broker tests use a different TLS lifecycle: `BrokerTestServer` spawns a local
+HTTPS server with a generated certificate, the test explicitly builds a client that trusts that
+certificate, and dropping the server aborts its task. The opt-in live smoke does not spawn or trust a
+local certificate authority; it follows the normal platform trust path to the configured endpoint.
+Neither path launches Chromium or Electron, renders graphical panes or fixture HTML/CSS, or claims
+visual Extension compatibility.
 
 ## 4. Roadmap-proofing: future frontends
 

@@ -136,6 +136,13 @@ egress, and inference. After the TLS server stops and installed JavaScript is re
 projection hash without executing Extension code or issuing new requests. Secrets injected by the
 host never enter Extension memory, receipts, capsules, or projections.
 
+The opt-in `extension_real_provider_smoke` uses a test-local, `max_tokens: 64` derivation of the
+pinned lifecycle fixture. Its primary Turn and both Secondary Inference APIs share the same three
+provider-agnostic environment variables, require no Extension egress, and assert only structural
+completion plus secret exclusion. It does not launch Chromium or Electron, render a graphical pane
+or HTML/CSS, or make a visual compatibility claim. See the
+[live-provider smoke operator policy](testing.md#live-provider-smoke-test-opt-in).
+
 ### Extension slash commands
 
 An `st-bridge` Extension may register a command in either SillyTavern-compatible form:
