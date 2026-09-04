@@ -7,13 +7,14 @@ use std::{
 use parking_lot::Mutex;
 use serde_json::json;
 use stcli_core::{
-    CredentialError, CredentialResolver, EGRESS_REQUEST_DOMAIN, EgressAllowance, EgressBroker,
-    EgressRequest, EgressResponse, EgressSecretInjection, EgressTransport, EngineCommand,
-    EngineError, EngineInspection, EngineQuery, EngineResult, EntityId, ExtensionCommandTrace,
-    InstalledPlugin, PluginCapability, PluginEffect, PluginEvent, PluginGrant, PluginHost,
-    PluginInput, PluginLimits, PluginPin, PluginReceipt, PluginRegistry, ReqwestTransport,
-    StcliEngine, Store, StscriptError, StscriptLimits, StscriptProgram, StscriptResult,
-    StubTransport, VariableScope, canonical_json_hash, content_blob_hash, plugin_digest,
+    AttemptStatus, CredentialError, CredentialResolver, EGRESS_REQUEST_DOMAIN, EgressAllowance,
+    EgressBroker, EgressRequest, EgressResponse, EgressSecretInjection, EgressTransport,
+    EngineCommand, EngineError, EngineInspection, EngineQuery, EngineResult, EntityId,
+    ExtensionCommandTrace, InstalledPlugin, PluginCapability, PluginEffect, PluginEvent,
+    PluginGrant, PluginHost, PluginInput, PluginLimits, PluginPin, PluginReceipt, PluginRegistry,
+    PromptSlot, ReqwestTransport, StcliEngine, Store, StscriptError, StscriptLimits,
+    StscriptProgram, StscriptResult, StubTransport, VariableScope, canonical_json_hash,
+    content_blob_hash, plugin_digest,
 };
 use stcli_testkit::{MockProvider, configuration as base_configuration, fixtures};
 use tempfile::tempdir;
@@ -220,6 +221,30 @@ fn write_command_bridge_plugin(directory: &Path, id: &str, source: &str) -> Path
     )
     .unwrap();
     directory.to_owned()
+}
+
+fn write_ordered_bridge_plugin(
+    directory: &Path,
+    id: &str,
+    source: &str,
+    loading_order: i64,
+) -> PathBuf {
+    let plugin = write_bridge_plugin_with_capabilities(
+        directory,
+        id,
+        source,
+        &["contribute-prompt", "write-own-state"],
+    );
+    let manifest_path = plugin.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["loading_order"] = json!(loading_order);
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    plugin
 }
 
 fn authorize(installed: &InstalledPlugin) -> PluginGrant {
@@ -3789,4 +3814,320 @@ async fn real_extension_complete_session_workflow_replays_offline() {
     std::fs::write(lifecycle_component, lifecycle_source).unwrap();
     assert_eq!(report.projection_hash, projection_hash);
     assert_files_do_not_contain_secret(directory.path(), SECRET);
+}
+
+#[test]
+fn real_extension_headless_stub_warnings_deduplicate_without_aborting() {
+    const DOCUMENT_WARNING: &str =
+        "`document.querySelector` is unavailable in headless mode; returning null";
+    const JQUERY_WARNING: &str = "`jQuery` is using a headless chainable no-op";
+    const TOASTR_WARNING: &str = "`toastr.info` is unavailable in headless mode; no-op";
+    const INFERENCE_WARNING: &str = "`generateQuietPrompt`/`generateRaw` unavailable: secondary inference is unavailable in this host";
+
+    let directory = tempdir().unwrap();
+    let registry = PluginRegistry::new(directory.path().join("registry"));
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/real_extensions/metamorph-lifecycle");
+    let imported = registry.import_native_extension(&fixture).unwrap();
+    let installed = &imported.plugin;
+    let grant = authorize(installed);
+    let host = PluginHost::new(PluginLimits::default());
+    let input = interceptor_input(installed, EntityId::new());
+
+    let first = host.execute(installed, &grant, input.clone()).unwrap();
+    let second = host.execute(installed, &grant, input).unwrap();
+    let warning_count = |receipt: &PluginReceipt, expected: &str| {
+        receipt
+            .script_logs
+            .iter()
+            .filter(|log| log.level == "warn" && log.message == expected)
+            .count()
+    };
+
+    assert_eq!(warning_count(&first, DOCUMENT_WARNING), 1);
+    assert_eq!(warning_count(&first, JQUERY_WARNING), 1);
+    assert_eq!(warning_count(&first, TOASTR_WARNING), 1);
+    assert_eq!(warning_count(&first, INFERENCE_WARNING), 2);
+    assert!(first.effects.iter().any(|effect| matches!(
+        effect,
+        PluginEffect::PromptRewrite { messages }
+            if messages.last().is_some_and(|message| message.content.starts_with(
+                "metamorph:persistent=1:transient=1:"
+            ))
+    )));
+    assert!(first.effects.iter().any(|effect| matches!(
+        effect,
+        PluginEffect::Prompt { contribution }
+            if contribution.name == "metamorph.fixture"
+                && contribution.slot == PromptSlot::InChat
+    )));
+
+    assert_eq!(warning_count(&second, DOCUMENT_WARNING), 0);
+    assert_eq!(warning_count(&second, JQUERY_WARNING), 0);
+    assert_eq!(warning_count(&second, TOASTR_WARNING), 0);
+    assert_eq!(warning_count(&second, INFERENCE_WARNING), 2);
+    assert!(second.effects.iter().any(|effect| matches!(
+        effect,
+        PluginEffect::PromptRewrite { messages }
+            if messages.last().is_some_and(|message| message.content.starts_with(
+                "metamorph:persistent=1:transient=2:"
+            ))
+    )));
+}
+
+#[tokio::test]
+async fn egress_transport_failure_records_safe_receipt_without_secret() {
+    struct FailingTransport {
+        requests: Mutex<Vec<EgressRequest>>,
+    }
+
+    impl EgressTransport for FailingTransport {
+        fn roundtrip(
+            &self,
+            request: &EgressRequest,
+        ) -> Result<EgressResponse, stcli_core::EgressTransportError> {
+            self.requests.lock().push(request.clone());
+            Err(stcli_core::EgressTransportError(format!(
+                "connection refused while posting to {}",
+                request.url
+            )))
+        }
+    }
+
+    const SECRET: &str = "failing-transport-secret";
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("data");
+    let plugin = write_egress_plugin(&data);
+    let registry = PluginRegistry::new(data.join("plugins"));
+    let installed = registry.install(&plugin).unwrap();
+    let mock = MockProvider::spawn(["Generated response"]).await.unwrap();
+    let database = data.join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.provider = mock.provider_settings();
+    configuration.plugins = vec![egress_pin(
+        &installed,
+        vec![EgressAllowance {
+            domain: "api.example.com".to_owned(),
+            secret: Some(EgressSecretInjection {
+                credential_key: "test-key".to_owned(),
+                header: "Authorization".to_owned(),
+                value_template: "Bearer {secret}".to_owned(),
+            }),
+        }],
+    )];
+    let created = store.create_session(configuration, 0).unwrap();
+    let transport = Arc::new(FailingTransport {
+        requests: Mutex::new(Vec::new()),
+    });
+    let credentials = MapCredentialResolver {
+        secrets: BTreeMap::from([("test-key".to_owned(), SECRET.to_owned())]),
+    };
+    store.set_egress_broker(EgressBroker::stub(transport.clone(), Arc::new(credentials)));
+
+    let completed = store
+        .send_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "Hello".to_owned(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(completed.attempt.status, AttemptStatus::Completed);
+    let requests = transport.requests.lock();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].headers.get("Authorization"),
+        Some(&format!("Bearer {SECRET}"))
+    );
+    drop(requests);
+
+    let receipt = completed
+        .attempt
+        .effect_receipt
+        .as_ref()
+        .unwrap()
+        .plugins
+        .iter()
+        .find(|receipt| receipt.event == PluginEvent::GenerateInterceptor)
+        .unwrap();
+    assert_eq!(receipt.egress.len(), 1);
+    let egress = &receipt.egress[0];
+    let expected_body = "egress transport failed: connection refused while posting to https://api.example.com/v1/data";
+    assert_eq!(egress.status, 0);
+    assert_eq!(egress.body, expected_body);
+    assert_eq!(
+        egress.response_hash,
+        content_blob_hash(expected_body.as_bytes())
+    );
+    assert_eq!(egress.url, "https://api.example.com/v1/data");
+    assert_eq!(egress.method, "GET");
+    assert_eq!(
+        egress.request_hash,
+        canonical_json_hash(
+            EGRESS_REQUEST_DOMAIN,
+            &json!({
+                "method": "GET",
+                "url": "https://api.example.com/v1/data",
+                "body": null,
+                "injected_headers": ["Authorization"],
+            }),
+        )
+        .unwrap()
+    );
+
+    let provider_messages = serde_json::to_string(
+        &completed
+            .attempt
+            .effect_receipt
+            .as_ref()
+            .unwrap()
+            .provider_request["messages"],
+    )
+    .unwrap();
+    assert!(
+        provider_messages.contains(
+            "fetch:0:egress transport failed: connection refused while posting to https://api.example.com/v1/data"
+        ),
+        "{provider_messages}"
+    );
+    let attempt_json = serde_json::to_string(&completed.attempt).unwrap();
+    assert!(!attempt_json.contains(SECRET), "{attempt_json}");
+    assert_files_do_not_contain_secret(directory.path(), SECRET);
+}
+
+#[tokio::test]
+async fn two_extensions_contribute_in_loading_order_and_cannot_read_each_other() {
+    const OMEGA_ID: &str = "org.stcli.zeta-first";
+    const ALPHA_ID: &str = "org.stcli.alpha-second";
+    const OMEGA_SOURCE: &str = r#"
+function namedInterceptor(chat) {
+  extension_settings['org.stcli.zeta-first'] = { owner: 'omega' };
+  localStorage.setItem('token', 'omega-token');
+  let peerKeyDenied = false;
+  try {
+    localStorage.setItem('extension.org.stcli.alpha-second.ls.token', 'stolen');
+  } catch (_) {
+    peerKeyDenied = true;
+  }
+  chat.push({
+    name: 'System',
+    is_user: false,
+    is_system: true,
+    mes: `omega:${extension_settings['org.stcli.alpha-second'] === undefined}:${peerKeyDenied}:${localStorage.getItem('token')}`,
+    extra: {},
+    index: chat.length
+  });
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+    const ALPHA_SOURCE: &str = r#"
+function namedInterceptor(chat) {
+  extension_settings['org.stcli.alpha-second'] = { owner: 'alpha' };
+  localStorage.setItem('token', 'alpha-token');
+  let peerWriteDenied = false;
+  try {
+    extension_settings['org.stcli.zeta-first'] = { stolen: true };
+  } catch (_) {
+    peerWriteDenied = true;
+  }
+  chat.push({
+    name: 'System',
+    is_user: false,
+    is_system: true,
+    mes: `alpha:${extension_settings['org.stcli.zeta-first'] === undefined}:${peerWriteDenied}:${localStorage.getItem('token')}`,
+    extra: {},
+    index: chat.length
+  });
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("data");
+    let registry = PluginRegistry::new(data.join("plugins"));
+    let omega = registry
+        .install(&write_ordered_bridge_plugin(
+            &directory.path().join("omega"),
+            OMEGA_ID,
+            OMEGA_SOURCE,
+            -50,
+        ))
+        .unwrap();
+    let alpha = registry
+        .install(&write_ordered_bridge_plugin(
+            &directory.path().join("alpha"),
+            ALPHA_ID,
+            ALPHA_SOURCE,
+            10,
+        ))
+        .unwrap();
+    let mock = MockProvider::spawn(["one", "two"]).await.unwrap();
+    let database = data.join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.provider = mock.provider_settings();
+    configuration.plugins = [&alpha, &omega]
+        .into_iter()
+        .map(|installed| PluginPin {
+            id: installed.manifest.id.clone(),
+            version: installed.manifest.version.to_string(),
+            component_hash: installed.manifest.component_sha256.clone(),
+            capabilities: installed.manifest.requested_capabilities.clone(),
+            settings: json!({}),
+            egress_allow_list: Vec::new(),
+            enabled: true,
+        })
+        .collect();
+    let created = store.create_session(configuration, 0).unwrap();
+
+    let first = store
+        .send_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "first".to_owned(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let second = store
+        .send_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "second".to_owned(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    let assert_ordered_and_isolated = |completed: &stcli_core::CompletedTurn| {
+        let messages = serde_json::to_string(
+            &completed
+                .attempt
+                .effect_receipt
+                .as_ref()
+                .unwrap()
+                .provider_request["messages"],
+        )
+        .unwrap();
+        let omega = "omega:true:true:omega-token";
+        let alpha = "alpha:true:true:alpha-token";
+        let omega_index = messages
+            .find(omega)
+            .unwrap_or_else(|| panic!("missing {omega} in {messages}"));
+        let alpha_index = messages
+            .find(alpha)
+            .unwrap_or_else(|| panic!("missing {alpha} in {messages}"));
+        assert!(omega_index < alpha_index, "{messages}");
+    };
+    assert_ordered_and_isolated(&first);
+    assert_ordered_and_isolated(&second);
 }

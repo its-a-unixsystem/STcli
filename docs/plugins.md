@@ -105,6 +105,13 @@ Promise settlement is bounded to 64 microtasks by default. If a handler remains 
 bound, STcli abandons the Extension context, discards its effects, and records a Compatibility
 Warning. Later calls to the abandoned context produce no effects.
 
+Browser and UI surfaces the headless runtime does not implement (`document`, `window`, `$`/`jQuery`
+outside `$.ajax`, `toastr`, `callPopup`) are control-flow-safe stubs. Each unsupported API warns once
+per API name for the lifetime of the Extension's persistent context: the warning appears in the
+Plugin Receipt's `script_logs` and is not re-emitted on later invocations of that context. A stub
+warning never fails the Turn. Warnings reappear only after the context resets, which happens on
+Session adoption and on an enable toggle.
+
 ### Pinned real-world Extension fixtures
 
 The repository keeps two modified/derived MIT-licensed Extension fixtures under
@@ -340,7 +347,7 @@ installed bridge Extensions and global selections while omitting secret values.
 | `generate_interceptor` | `generate_interceptor` plus the corresponding event subscription. |
 | `dependencies`, `requires` | Required Plugin dependencies with an unrestricted version range. |
 | `optional` | Optional Plugin dependencies with an unrestricted version range. |
-| `loading_order` | Numeric ordering tie-breaker after dependency edges. |
+| `loading_order` | Numeric ordering tie-breaker after dependency edges. Among Extensions with no ordering edge between them, a lower value runs first, so its prompt changes precede later Extensions' changes in the provider request. |
 | `css`, `html`, `i18n` | Ignored with non-blocking Compatibility Warnings. |
 | `auto_update` | Ignored. The normalized value is always `false`. |
 
