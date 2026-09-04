@@ -3069,6 +3069,335 @@ globalThis.rewrite = function (chat) {
     );
 }
 
+#[tokio::test]
+async fn mid_session_extension_adoption_is_nonretroactive_and_resets_transient_state() {
+    const ID: &str = "mid-session-lifecycle";
+    const SOURCE: &str = r#"
+let transientTurns = 0;
+let appReady = 0;
+let chatChanged = 0;
+let generationStarted = 0;
+let messageSent = 0;
+let messageReceived = 0;
+let generationEnded = 0;
+
+eventSource.on(event_types.APP_READY, () => appReady += 1);
+eventSource.on(event_types.CHAT_CHANGED, () => chatChanged += 1);
+eventSource.on(event_types.GENERATION_STARTED, () => generationStarted += 1);
+eventSource.on(event_types.MESSAGE_SENT, () => messageSent += 1);
+eventSource.on(event_types.MESSAGE_RECEIVED, () => messageReceived += 1);
+eventSource.on(event_types.GENERATION_ENDED, () => generationEnded += 1);
+
+function namedInterceptor(chat) {
+  const settings = extension_settings['mid-session-lifecycle'];
+  settings.turns ??= 0;
+  settings.turns += 1;
+  transientTurns += 1;
+  saveSettingsDebounced();
+  const history = SillyTavern.getContext().chat.map(message => message.content).join('|');
+  chat.push({
+    name: 'System',
+    is_user: false,
+    is_system: true,
+    mes: `mid-session:persistent=${settings.turns}:transient=${transientTurns}:history=${history}:events=${appReady},${chatChanged},${generationStarted},${messageSent},${messageReceived},${generationEnded}`,
+    extra: {},
+    index: chat.length,
+  });
+}
+
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("data");
+    let source = directory.path().join(ID);
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("index.js"), SOURCE).unwrap();
+    std::fs::write(
+        source.join("manifest.json"),
+        serde_json::to_vec_pretty(&json!({
+            "display_name": "Mid-session lifecycle",
+            "version": "0.1.0",
+            "js": "index.js",
+            "generate_interceptor": "namedInterceptor"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mock = MockProvider::spawn(["before response", "after response", "re-enabled response"])
+        .await
+        .unwrap();
+    let database = data.join("stcli.sqlite3");
+    let engine = StcliEngine::new(&database);
+    let EngineResult::ImportedExtension(imported) = engine
+        .execute(EngineCommand::ImportExtension { directory: source }, |_| {})
+        .await
+        .unwrap()
+    else {
+        panic!("extension import")
+    };
+
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    drop(store);
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.provider = mock.provider_settings();
+    let EngineResult::CreatedSession(existing) = engine
+        .execute(
+            EngineCommand::CreateSession {
+                configuration: Box::new(configuration.clone()),
+                greeting_index: 0,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("existing session")
+    };
+    let initial_revision = existing.configuration.revision_hash.clone();
+    let session_id = existing.session.session_id;
+    let branch_id = existing.branch.branch_id;
+
+    engine
+        .execute(
+            EngineCommand::EnableGlobalExtension {
+                id: imported.plugin.manifest.id.clone(),
+                version: imported.plugin.manifest.version.to_string(),
+                digest: imported.plugin.manifest.component_sha256.clone(),
+                settings: json!({}),
+                egress: Vec::new(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    let EngineInspection::Configuration(unchanged) = engine
+        .inspect(EngineQuery::Configuration { session_id })
+        .unwrap()
+    else {
+        panic!("existing configuration")
+    };
+    assert_eq!(unchanged.revision_hash, initial_revision);
+    assert!(unchanged.configuration.plugins.is_empty());
+
+    let EngineResult::CreatedSession(new_session) = engine
+        .execute(
+            EngineCommand::CreateSession {
+                configuration: Box::new(configuration),
+                greeting_index: 0,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("new session")
+    };
+    let auto_adopted = new_session
+        .configuration
+        .configuration
+        .plugins
+        .iter()
+        .find(|pin| pin.id == ID)
+        .unwrap();
+    assert_eq!(auto_adopted.version, "0.1.0");
+    assert_eq!(
+        auto_adopted.component_hash,
+        imported.plugin.manifest.component_sha256
+    );
+
+    let EngineResult::CompletedTurn(before) = engine
+        .execute(
+            EngineCommand::Send {
+                session_id,
+                branch_id,
+                content: "before adoption".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("turn before adoption")
+    };
+    assert_eq!(before.attempt.config_hash, initial_revision);
+    assert!(
+        !serde_json::to_string(
+            &before
+                .attempt
+                .effect_receipt
+                .as_ref()
+                .unwrap()
+                .provider_request
+        )
+        .unwrap()
+        .contains("mid-session:")
+    );
+
+    // Regression test for ticket 11: adoption starts at this configuration boundary only.
+    let EngineResult::Configuration(adopted) = engine
+        .execute(
+            EngineCommand::SetExtensionEnabled {
+                session_id,
+                id: ID.to_owned(),
+                enabled: true,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("mid-session adoption")
+    };
+    assert_ne!(adopted.revision_hash, initial_revision);
+
+    let EngineResult::CompletedTurn(after) = engine
+        .execute(
+            EngineCommand::Send {
+                session_id,
+                branch_id,
+                content: "after adoption".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("turn after adoption")
+    };
+    assert_eq!(after.attempt.config_hash, adopted.revision_hash);
+    let after_request = serde_json::to_string(
+        &after
+            .attempt
+            .effect_receipt
+            .as_ref()
+            .unwrap()
+            .provider_request,
+    )
+    .unwrap();
+    assert!(after_request.contains("before adoption"), "{after_request}");
+    assert!(after_request.contains("before response"), "{after_request}");
+    assert!(
+        after_request.contains("mid-session:persistent=1:transient=1:history="),
+        "{after_request}"
+    );
+    assert!(
+        after_request.contains(":events=0,0,1,1,0,0"),
+        "{after_request}"
+    );
+
+    let store = Store::open(&database).unwrap();
+    let original_configuration = store.configuration(&initial_revision).unwrap().unwrap();
+    assert!(original_configuration.configuration.plugins.is_empty());
+    assert_eq!(
+        store
+            .attempt(before.attempt.attempt_id)
+            .unwrap()
+            .unwrap()
+            .config_hash,
+        initial_revision
+    );
+    let events = store.trace_events(Some(session_id)).unwrap();
+    let adoption_events = events
+        .iter()
+        .filter(|event| event.event_type == "extension.adopted-mid-session")
+        .collect::<Vec<_>>();
+    assert_eq!(adoption_events.len(), 1);
+    let adoption = adoption_events[0];
+    assert_eq!(adoption.payload["extension_id"], ID);
+    assert_eq!(
+        adoption.payload["adoption_configuration_revision"],
+        adopted.revision_hash.to_string()
+    );
+    assert_eq!(
+        adoption.payload["warning"]["code"],
+        "extension-adopted-mid-session"
+    );
+    assert_eq!(adoption.payload["warning"]["count"], 1);
+    let before_completed = events
+        .iter()
+        .find(|event| Some(event.event_id.to_string()) == before.attempt.completed_event_id)
+        .unwrap();
+    let after_created = events
+        .iter()
+        .find(|event| event.event_id.to_string() == after.turn.created_event_id)
+        .unwrap();
+    assert!(before_completed.sequence < adoption.sequence);
+    assert!(adoption.sequence < after_created.sequence);
+    drop(store);
+
+    engine
+        .execute(
+            EngineCommand::SetExtensionEnabled {
+                session_id,
+                id: ID.to_owned(),
+                enabled: false,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    engine
+        .execute(
+            EngineCommand::SetExtensionEnabled {
+                session_id,
+                id: ID.to_owned(),
+                enabled: true,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    let EngineResult::CompletedTurn(re_enabled) = engine
+        .execute(
+            EngineCommand::Send {
+                session_id,
+                branch_id,
+                content: "after re-enable".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("turn after re-enable")
+    };
+    let re_enabled_request = serde_json::to_string(
+        &re_enabled
+            .attempt
+            .effect_receipt
+            .as_ref()
+            .unwrap()
+            .provider_request,
+    )
+    .unwrap();
+    assert!(
+        re_enabled_request.contains("mid-session:persistent=2:transient=1:history="),
+        "{re_enabled_request}"
+    );
+    assert!(
+        re_enabled_request.contains(":events=1,1,1,1,0,0"),
+        "{re_enabled_request}"
+    );
+    let store = Store::open(&database).unwrap();
+    assert_eq!(
+        store
+            .trace_events(Some(session_id))
+            .unwrap()
+            .iter()
+            .filter(|event| event.event_type == "extension.adopted-mid-session")
+            .count(),
+        1
+    );
+    mock.shutdown().await;
+}
+
 #[test]
 fn native_extension_import_rejects_invalid_component_declarations() {
     let directory = tempdir().unwrap();
