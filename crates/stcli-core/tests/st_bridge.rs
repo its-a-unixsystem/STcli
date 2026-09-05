@@ -2633,6 +2633,114 @@ globalThis.namedInterceptor = namedInterceptor;
     assert_eq!(InferenceMode::DryRun, InferenceMode::DryRun);
 }
 
+#[test]
+fn secondary_inference_zero_response_length_does_not_force_max_tokens() {
+    // Regression test for Summarize parity: zero means inherit the provider/preset response budget.
+    use stcli_core::{
+        Config, InferenceBroker, InferenceMode, InferenceStatus, StubInferenceTransport,
+    };
+
+    let directory = tempdir().unwrap();
+    let source = r#"
+async function namedInterceptor(chat) {
+    const summary = await SillyTavern.generateRaw({
+        prompt: "Summarize this",
+        systemPrompt: "System instructions",
+        responseLength: 0,
+        providerProfile: "summary",
+        reasoning_effort: "high",
+    });
+    chat.push({ mes: summary, is_user: false, is_system: false });
+    return chat;
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+    let plugin_dir = write_test_bridge_plugin(
+        &directory.path().join("plugin"),
+        "org.stcli.secondary-inference-inherited-budget",
+        source,
+    );
+    let manifest_path = plugin_dir.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["requested_capabilities"] = json!(["contribute-prompt", "secondary-inference"]);
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let installed = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&plugin_dir)
+        .unwrap();
+    let grant = PluginGrant {
+        id: installed.manifest.id.clone(),
+        version: installed.manifest.version.clone(),
+        component_sha256: installed.manifest.component_sha256.clone(),
+        capabilities: installed.manifest.requested_capabilities.clone(),
+        settings: json!({}),
+        egress_allow_list: Vec::new(),
+        enabled: true,
+    };
+    let settings = stcli_core::ProviderSettings {
+        id: "summary".to_owned(),
+        base_url: "https://example.invalid".to_owned(),
+        chat_completions_path: "/v1/chat/completions".to_owned(),
+        format_mode: Default::default(),
+        completions_path: None,
+        instruct_template: None,
+        context_formatting: None,
+        api_key_env: None,
+        credential_key: None,
+        static_headers: BTreeMap::new(),
+        timeout_seconds: 30,
+        ca_certificate_pem: None,
+        model: "stub".to_owned(),
+        stream: false,
+    };
+    let broker = InferenceBroker::stub(
+        Config {
+            providers: BTreeMap::from([("summary".to_owned(), settings)]),
+            enabled_extensions: BTreeMap::new(),
+        },
+        Arc::new(StubInferenceTransport {
+            responses: BTreeMap::from([("summary".to_owned(), "stub summary".to_owned())]),
+        }),
+    );
+
+    let receipt = PluginHost::new(PluginLimits::default())
+        .with_inference(broker)
+        .execute(
+            &installed,
+            &grant,
+            PluginInput {
+                event: PluginEvent::GenerateInterceptor,
+                plugin_id: installed.manifest.id.clone(),
+                settings: json!({}),
+                context: json!({}),
+                payload: json!({"chat": [], "has_user_message": false}),
+                artifact: json!(null),
+                state: json!(null),
+                session: json!({"session_id": EntityId::new(), "branch_id": EntityId::new(), "provider_profile": "summary", "dry_run": true}),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(receipt.inference.len(), 1);
+    assert_eq!(receipt.inference[0].status, InferenceStatus::Completed);
+    assert_eq!(
+        receipt.inference[0].effective_settings["reasoning_effort"],
+        "high"
+    );
+    assert!(
+        receipt.inference[0]
+            .effective_settings
+            .get("max_tokens")
+            .is_none(),
+        "zero responseLength must not impose an Extension-specific token cap"
+    );
+    assert_eq!(InferenceMode::DryRun, InferenceMode::DryRun);
+}
+
 #[tokio::test]
 async fn live_secondary_inference_records_linked_background_attempt_without_history_mutation() {
     use stcli_core::{
