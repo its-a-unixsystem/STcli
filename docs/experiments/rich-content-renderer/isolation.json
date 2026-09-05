@@ -33,25 +33,25 @@
     "path": "/user.slice/user-1000.slice/user@1000.service/app.slice/stcli-rich-isolation.scope",
     "values": {
       "cpu.max": "200000 100000",
-      "cpu.stat": "usage_usec 387678\nuser_usec 208531\nsystem_usec 179146\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 3\nnr_throttled 1\nthrottled_usec 67333\nnr_bursts 0\nburst_usec 0",
+      "cpu.stat": "usage_usec 388935\nuser_usec 217880\nsystem_usec 171055\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 2\nnr_throttled 1\nthrottled_usec 4397\nnr_bursts 0\nburst_usec 0",
       "memory.max": "1073741824",
-      "memory.peak": "188256256",
+      "memory.peak": "158621696",
       "memory.swap.max": "0",
-      "pids.current": "115",
+      "pids.current": "117",
       "pids.max": "128",
-      "pids.peak": "115"
+      "pids.peak": "117"
     }
   },
   "cleanup": {
     "graceful": true,
     "reaped": true,
-    "stderr": "RuntimeError: [2:21:0905/211713.275646:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory [2:21:0905/211713.275663:ERROR:dbus/bus.cc:405] Failed to connect to the bus: C ... 4:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:  [2:82:0905/211713.453165:ERROR:content/browser/devtools/devtools_pipe_handler.cc:188] Connection termina",
+    "stderr": "RuntimeError: [2:20:0905/212152.201464:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory [2:20:0905/212152.201484:ERROR:dbus/bus.cc:405] Failed to connect to the bus: C ... 590:ERROR:base/threading/platform_thread_posix.cc:162] pthread_create: Resource temporarily unavailable (11) [138:1:0905/212152.348746:ERROR:base/threading/platform_thread_posix.cc:162] pthread_create: Resource temporarily unavailable (11) [0905/212152.",
     "temporary_removed": true
   },
   "experiment": "ticket-01",
   "initial_target": {
     "attached": false,
-    "targetId": "99D0AF91EEA7F5BE68F31453961F1FEB",
+    "targetId": "F8104EED9DD4AD019A6C737CC975FC92",
     "url": "about:blank"
   },
   "mode": "isolation",
@@ -78,7 +78,7 @@
     ],
     [
       "--ro-bind",
-      "/tmp/stcli-rich-probe-3ojs973f/fonts.conf",
+      "/tmp/stcli-rich-probe-ldt8qfx9/fonts.conf",
       "/etc/fonts/fonts.conf"
     ],
     [
@@ -93,32 +93,36 @@
     ]
   ],
   "namespaces": {
-    "cgroup": "cgroup:[4026533494]",
-    "ipc": "ipc:[4026533258]",
-    "mnt": "mnt:[4026533256]",
-    "net": "net:[4026533497]",
-    "pid": "pid:[4026533493]",
-    "user": "user:[4026533598]",
-    "uts": "uts:[4026533257]"
+    "cgroup": "cgroup:[4026533256]",
+    "ipc": "ipc:[4026533251]",
+    "mnt": "mnt:[4026533237]",
+    "net": "net:[4026533257]",
+    "pid": "pid:[4026533252]",
+    "user": "user:[4026533589]",
+    "uts": "uts:[4026533244]"
   },
   "no_backend": "RuntimeError: CDP Target.createTarget failed: Failed to open new tab - no browser is open",
   "positive_controls": {
     "host_file_readable_outside": true,
     "loopback_listener_outside": true,
-    "loopback_port": 34099
+    "loopback_port": 48219
   },
   "process": {
     "listening_sockets": [],
-    "observed_pid": 3203499,
+    "observed_pid": 3207778,
     "status": {
       "CapEff": "0000000000000000",
-      "NSpid": "3203499\t1",
+      "NSpid": "3207778\t1",
       "NoNewPrivs": "1",
-      "PPid": "3203498",
-      "Pid": "3203499",
+      "PPid": "3207777",
+      "Pid": "3207778",
       "Seccomp": "0",
       "Seccomp_filters": "0",
       "Threads": "1"
     }
+  },
+  "target_diagnostic": {
+    "default_context_target": "created",
+    "fresh_context_target": "RuntimeError: CDP Target.createTarget failed: Failed to open new tab - no browser is open"
   }
 }

@@ -12,11 +12,11 @@ The candidate was system Chromium rendered through an isolated Bubblewrap proces
 
 ## Decision
 
-**No backend approved.** Chromium's private `Browser.getVersion` CDP pipe handshake succeeded through Bubblewrap with the required `/lib` and `/lib64` symlinks and an initial `about:blank` CLI target. The next benign operation, `Target.createTarget` for another `about:blank` page, still failed with `Failed to open new tab - no browser is open` before any untrusted input was supplied. The required isolated positive render therefore could not begin.
+**No backend approved.** Chromium's private `Browser.getVersion` CDP pipe handshake succeeded through Bubblewrap with the required `/lib` and `/lib64` symlinks. The initial CLI `about:blank` target was observed, and a second benign target in the default browser context succeeded. Creating the required fresh incognito BrowserContext also succeeded, but `Target.createTarget` inside that context failed with `Failed to open new tab - no browser is open` before any untrusted input was supplied. The required per-job isolated positive render therefore could not begin.
 
 Opening a DevTools TCP port, weakening Bubblewrap isolation, using `--no-sandbox`, or feeding hostile fixtures to an unprotected browser would violate the approved trust model. The experiment therefore stopped before untrusted rendering and did not substitute a weaker backend.
 
-The candidate finite ceilings remain candidate values, not selected production policy. Renderer-dependent work must repeat the proof and establish why this installed Chromium process cannot create a target under the required boundary.
+The candidate finite ceilings remain candidate values, not selected production policy. Reusing the initial/default-context target would weaken the approved fresh-context isolation and is not accepted. Renderer-dependent work must repeat the proof with a backend/configuration that can create a page inside a fresh incognito BrowserContext.
 
 ## Observed configuration
 

@@ -312,6 +312,33 @@ class Browser:
         if self.process_info["listening_sockets"]:
             self.close()
             raise RuntimeError("sandbox exposes a listening network socket")
+    def target_diagnostic(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        try:
+            target = self.cdp.call("Target.createTarget", {"url": "about:blank", "newWindow": False},
+                                   timeout=RENDER_TIMEOUT)["targetId"]
+            result["default_context_target"] = "created"
+            self.cdp.call("Target.closeTarget", {"targetId": target}, timeout=RENDER_TIMEOUT)
+        except Exception as exc:
+            result["default_context_target"] = compact_error(exc)
+        context = None
+        try:
+            context = self.cdp.call("Target.createBrowserContext", {"disposeOnDetach": True},
+                                    timeout=RENDER_TIMEOUT)["browserContextId"]
+            target = self.cdp.call("Target.createTarget", {"url": "about:blank", "browserContextId": context,
+                                                           "newWindow": False}, timeout=RENDER_TIMEOUT)["targetId"]
+            result["fresh_context_target"] = "created"
+            self.cdp.call("Target.closeTarget", {"targetId": target}, timeout=RENDER_TIMEOUT)
+        except Exception as exc:
+            result["fresh_context_target"] = compact_error(exc)
+        finally:
+            if context:
+                try:
+                    self.cdp.call("Target.disposeBrowserContext", {"browserContextId": context}, timeout=1.0)
+                except Exception:
+                    pass
+        return result
+
     def _reply(self, method: str, params: dict[str, Any], session: str) -> None:
         self.cdp.call(method, params, session=session, timeout=RENDER_TIMEOUT)
 
@@ -504,8 +531,9 @@ def isolation(renderer: Path, evidence: Path) -> int:
     try:
         browser = Browser(renderer)
         result.update({"browser_version": browser.version, "initial_target": browser.initial_target,
-                       "mounts": browser.mounts, "cgroup": browser.cgroup,
-                       "namespaces": browser.namespaces, "process": browser.process_info})
+                       "target_diagnostic": browser.target_diagnostic(), "mounts": browser.mounts,
+                       "cgroup": browser.cgroup, "namespaces": browser.namespaces,
+                       "process": browser.process_info})
         try:
             rendered = browser.render("card", 800)
             result.update({"backend_approved": True, "browser_version": browser.version, "mounts": browser.mounts,
