@@ -54,6 +54,18 @@ _Avoid_: Message, generation
 One provider execution with pinned configuration, effective settings, request and response hashes, status, usage, and receipts. A **Primary Attempt** belongs to a Turn and may create/select a Candidate. A **Background Attempt** belongs to a Session and Branch, links to its initiating Attempt and caller, and never creates a Turn, Candidate, or Selection.
 _Avoid_: Turn, request, background turn
 
+**Summary Checkpoint**:
+An immutable record of a condensed dialogue prefix on a Branch, containing the raw summary text, covered dialogue cursor, covered history prefix digest, and producing background Generation Attempt ID.
+_Avoid_: Memory snapshot, summary turn, conversation summary
+
+**Dialogue Cursor**:
+The position within a Branch's active dialogue projection up to which a Summary Checkpoint covers history.
+_Avoid_: Turn index, message pointer, summary offset
+
+**History Prefix Digest**:
+A content hash computed over the ordered dialogue entries covered by a Summary Checkpoint, used to verify whether the checkpoint remains valid after branch or candidate changes.
+_Avoid_: Branch hash, history checksum
+
 **Dry Run**:
 A pure preview of turn preparation that builds compatibility decisions and a provider request without creating a generation attempt, calling the provider, or committing state.
 _Avoid_: Failed attempt, replay, test turn

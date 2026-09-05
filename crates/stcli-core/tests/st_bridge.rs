@@ -2520,9 +2520,11 @@ fn secondary_inference_bridge_calls_both_apis_and_records_receipt() {
     let directory = tempdir().unwrap();
     let source = r#"
 async function namedInterceptor(chat) {
-    const quiet = await SillyTavern.generateQuietPrompt("Summarize this", { provider: "summary", temperature: 0.2 });
-    const raw = await SillyTavern.generateRaw("Summarize this", { providerProfile: "summary", temperature: 0.2 });
-    chat.push({ mes: quiet + " / " + raw, is_user: false, is_system: false });
+    const before = SillyTavern.getLastInferenceReceipt();
+    const quiet = await SillyTavern.generateQuietPrompt({ quietPrompt: "Quiet", systemPrompt: "Quiet system", responseLength: 7, provider: "summary", temperature: 0.1 });
+    const raw = await SillyTavern.generateRaw({ prompt: "Summarize this", systemPrompt: "System instructions", responseLength: 42, providerProfile: "summary", temperature: 0.2 });
+    const receipt = SillyTavern.getLastInferenceReceipt();
+    chat.push({ mes: `${before === null}:${quiet} / ${raw}:${receipt.system_prompt}:${receipt.effective_settings.max_tokens}`, is_user: false, is_system: false });
     return chat;
 }
 globalThis.namedInterceptor = namedInterceptor;
@@ -2606,6 +2608,16 @@ globalThis.namedInterceptor = namedInterceptor;
             .iter()
             .all(|item| stcli_core::validate_inference_receipt(item).is_ok())
     );
+    assert_eq!(
+        receipt.inference[0].system_prompt.as_deref(),
+        Some("Quiet system")
+    );
+    assert_eq!(receipt.inference[0].effective_settings["max_tokens"], 7);
+    assert_eq!(
+        receipt.inference[1].system_prompt.as_deref(),
+        Some("System instructions")
+    );
+    assert_eq!(receipt.inference[1].effective_settings["max_tokens"], 42);
     assert!(
         receipt
             .inference
@@ -3016,6 +3028,7 @@ fn secondary_inference_replay_uses_recorded_text_with_zero_calls() {
         .infer(
             &invocation,
             &InferenceRequest {
+                system_prompt: None,
                 prompt: "Summarize this".to_owned(),
                 profile_name: "summary".to_owned(),
                 generation_settings: json!({}),
@@ -4802,4 +4815,448 @@ globalThis.namedInterceptor = namedInterceptor;
     };
     assert_ordered_and_isolated(&first);
     assert_ordered_and_isolated(&second);
+}
+
+#[tokio::test]
+async fn bundled_memory_automatically_refreshes_and_injects_summary() {
+    // Regression test for GH-25: summary refresh is a background Attempt, not dialogue.
+    use stcli_core::{
+        Config, DEFAULT_MEMORY_EXTENSION_ID, InferenceBroker, InferenceTransport,
+        InferenceTransportError, ProviderResult, ProviderSettings,
+    };
+
+    struct CaptureInference {
+        requests: Arc<Mutex<Vec<serde_json::Value>>>,
+    }
+    impl InferenceTransport for CaptureInference {
+        fn generate(
+            &self,
+            _settings: &ProviderSettings,
+            request: &serde_json::Value,
+        ) -> Result<ProviderResult, InferenceTransportError> {
+            self.requests.lock().push(request.clone());
+            Ok(ProviderResult {
+                text: "Remembered facts".to_owned(),
+                request_hash: stcli_core::provider_request_hash(request)
+                    .map_err(|error| InferenceTransportError(error.to_string()))?,
+                receipt: json!({"stub": true}),
+                events: Vec::new(),
+            })
+        }
+    }
+
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let primary = MockProvider::spawn(["First reply", "Second reply", "Second reply"])
+        .await
+        .unwrap();
+    let engine = StcliEngine::new(&database);
+    let EngineInspection::Plugins(plugins) = engine
+        .inspect(EngineQuery::Plugins {
+            plugin_id: Some(DEFAULT_MEMORY_EXTENSION_ID.to_owned()),
+        })
+        .unwrap()
+    else {
+        panic!("plugin inventory")
+    };
+    let memory = plugins.into_iter().next().unwrap();
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    drop(store);
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.provider = primary.provider_settings();
+    let EngineResult::CreatedSession(created) = engine
+        .execute(
+            EngineCommand::CreateSession {
+                configuration: Box::new(configuration),
+                greeting_index: 0,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("session creation")
+    };
+    engine.execute(EngineCommand::AdoptExtension {
+        session_id: created.session.session_id,
+        id: memory.manifest.id.clone(),
+        version: memory.manifest.version.to_string(),
+        digest: memory.manifest.component_sha256,
+        settings: json!({"promptInterval": 3, "promptForceWords": 0, "overrideResponseLength": 42, "providerProfile": "summary"}),
+        egress: Vec::new(),
+    }, |_| {}).await.unwrap();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let mut summary_profile = primary.provider_settings();
+    summary_profile.id = "summary".to_owned();
+    let engine = StcliEngine::with_effect_brokers(
+        &database,
+        EgressBroker::live(),
+        InferenceBroker::stub(
+            Config {
+                providers: BTreeMap::from([
+                    ("summary".to_owned(), summary_profile),
+                    (
+                        primary.provider_settings().id.clone(),
+                        primary.provider_settings(),
+                    ),
+                ]),
+                enabled_extensions: BTreeMap::new(),
+            },
+            Arc::new(CaptureInference {
+                requests: captured.clone(),
+            }),
+        ),
+    );
+    let first = engine
+        .execute(
+            EngineCommand::Send {
+                session_id: created.session.session_id,
+                branch_id: created.branch.branch_id,
+                content: "First user fact".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let EngineResult::CompletedTurn(first) = first else {
+        panic!("first turn")
+    };
+    assert_eq!(captured.lock().len(), 0);
+    let second = engine
+        .execute(
+            EngineCommand::Send {
+                session_id: created.session.session_id,
+                branch_id: created.branch.branch_id,
+                content: "Newest excluded fact".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let EngineResult::CompletedTurn(second) = second else {
+        panic!("second turn")
+    };
+    {
+        let requests = captured.lock();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["max_tokens"], 42);
+        let messages = requests[0]["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "system");
+        let user_prompt = messages[1]["content"].as_str().unwrap();
+        assert!(user_prompt.contains("First user fact"));
+        assert!(user_prompt.contains("First reply"));
+        assert!(!user_prompt.contains("Newest excluded fact"));
+    }
+    let store = Store::open(&database).unwrap();
+    let background = store
+        .background_attempts(created.session.session_id, Some(created.branch.branch_id))
+        .unwrap();
+    assert_eq!(background.len(), 1);
+    assert_eq!(
+        background[0].parent_attempt_id,
+        Some(second.attempt.attempt_id)
+    );
+    assert_eq!(
+        store
+            .turns_for_branch(created.branch.branch_id)
+            .unwrap()
+            .len(),
+        2
+    );
+    let state = store.state_transaction(created.session.session_id).unwrap();
+    let settings = state
+        .get(VariableScope::Local, "extension.memory.settings")
+        .unwrap()
+        .value
+        .clone();
+    let checkpoint = settings["checkpoints"].as_array().unwrap().last().unwrap();
+    assert_eq!(
+        checkpoint["attempt_id"],
+        background[0].attempt_id.to_string()
+    );
+    assert_eq!(checkpoint["raw_summary"], "Remembered facts");
+    assert!(checkpoint["history_prefix_digest"].as_str().unwrap().len() == 64);
+    assert!(first.candidate.content.contains("First reply"));
+    let dry = engine
+        .execute(
+            EngineCommand::DryRunSend {
+                session_id: created.session.session_id,
+                branch_id: created.branch.branch_id,
+                content: "Following turn".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let rerun = engine
+        .execute(
+            EngineCommand::Rerun {
+                session_id: created.session.session_id,
+                attempt_id: second.attempt.attempt_id,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let EngineResult::CompletedTurn(rerun) = rerun else {
+        panic!("rerun")
+    };
+    assert_eq!(rerun.candidate.content, "Second reply");
+    let EngineResult::DryRun(dry) = dry else {
+        panic!("dry run")
+    };
+    assert!(
+        serde_json::to_string(&dry.provider_request["messages"])
+            .unwrap()
+            .contains("[Summary: Remembered facts]")
+    );
+}
+
+#[tokio::test]
+async fn bundled_memory_force_bypasses_freeze_and_rejects_stale_selection() {
+    // Regression test for GH-25: a changed covered Selection cannot replace a valid checkpoint.
+    use parking_lot::Mutex as ParkingMutex;
+    use stcli_core::{
+        Config, DEFAULT_MEMORY_EXTENSION_ID, InferenceBroker, InferenceTransport,
+        InferenceTransportError, ProviderResult, ProviderSettings, validate_recorded_receipt,
+    };
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+
+    struct BlockingInference {
+        calls: AtomicUsize,
+        started: mpsc::Sender<()>,
+        release: ParkingMutex<mpsc::Receiver<()>>,
+    }
+    impl InferenceTransport for BlockingInference {
+        fn generate(
+            &self,
+            _settings: &ProviderSettings,
+            request: &serde_json::Value,
+        ) -> Result<ProviderResult, InferenceTransportError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 1 {
+                self.started.send(()).unwrap();
+                self.release.lock().recv().unwrap();
+            }
+            Ok(ProviderResult {
+                text: if call == 0 {
+                    "Stable summary"
+                } else {
+                    "Stale summary"
+                }
+                .to_owned(),
+                request_hash: stcli_core::provider_request_hash(request)
+                    .map_err(|error| InferenceTransportError(error.to_string()))?,
+                receipt: json!({"stub": true}),
+                events: Vec::new(),
+            })
+        }
+    }
+
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let primary = MockProvider::spawn(["Reply one", "Reply two", "Alternate one", "Reply three"])
+        .await
+        .unwrap();
+    let bootstrap = StcliEngine::new(&database);
+    let EngineInspection::Plugins(plugins) = bootstrap
+        .inspect(EngineQuery::Plugins {
+            plugin_id: Some(DEFAULT_MEMORY_EXTENSION_ID.to_owned()),
+        })
+        .unwrap()
+    else {
+        panic!("memory inventory")
+    };
+    let memory = plugins.into_iter().next().unwrap();
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    drop(store);
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.provider = primary.provider_settings();
+    let EngineResult::CreatedSession(created) = bootstrap
+        .execute(
+            EngineCommand::CreateSession {
+                configuration: Box::new(configuration),
+                greeting_index: 0,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("session")
+    };
+    bootstrap.execute(EngineCommand::AdoptExtension {
+        session_id: created.session.session_id,
+        id: memory.manifest.id.clone(),
+        version: memory.manifest.version.to_string(),
+        digest: memory.manifest.component_sha256.clone(),
+        settings: json!({"memoryFrozen": true, "promptInterval": 999, "providerProfile": "summary"}),
+        egress: Vec::new(),
+    }, |_| {}).await.unwrap();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let transport = Arc::new(BlockingInference {
+        calls: AtomicUsize::new(0),
+        started: started_tx,
+        release: ParkingMutex::new(release_rx),
+    });
+    let mut summary_profile = primary.provider_settings();
+    summary_profile.id = "summary".to_owned();
+    let broker = InferenceBroker::stub(
+        Config {
+            providers: BTreeMap::from([
+                ("summary".to_owned(), summary_profile),
+                (
+                    primary.provider_settings().id.clone(),
+                    primary.provider_settings(),
+                ),
+            ]),
+            enabled_extensions: BTreeMap::new(),
+        },
+        transport.clone(),
+    );
+    let engine = StcliEngine::with_effect_brokers(&database, EgressBroker::live(), broker.clone());
+    let EngineResult::CompletedTurn(first) = engine
+        .execute(
+            EngineCommand::Send {
+                session_id: created.session.session_id,
+                branch_id: created.branch.branch_id,
+                content: "First".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("first")
+    };
+    let EngineResult::CompletedTurn(second) = engine
+        .execute(
+            EngineCommand::Send {
+                session_id: created.session.session_id,
+                branch_id: created.branch.branch_id,
+                content: "Second".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("second")
+    };
+    let EngineResult::CompletedTurn(alternate) = engine
+        .execute(
+            EngineCommand::GenerateSwipe {
+                turn_id: first.turn.turn_id,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("swipe")
+    };
+    engine
+        .execute(
+            EngineCommand::SelectCandidate {
+                turn_id: first.turn.turn_id,
+                candidate_id: first.candidate.candidate_id,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        transport.calls.load(Ordering::SeqCst),
+        0,
+        "freeze suppresses automatic refresh"
+    );
+
+    let EngineResult::PluginCommand(forced) = engine
+        .execute(
+            EngineCommand::InvokePlugin {
+                session_id: created.session.session_id,
+                branch_id: Some(created.branch.branch_id),
+                plugin_id: DEFAULT_MEMORY_EXTENSION_ID.to_owned(),
+                command: "summarize".to_owned(),
+                arguments: serde_json::Value::Null,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("forced command")
+    };
+    assert_eq!(forced.receipt.inference.len(), 1);
+    assert_eq!(forced.receipt.inference[0].text, "Stable summary");
+    validate_recorded_receipt(&forced.receipt).unwrap();
+    let stable_settings = Store::open(&database)
+        .unwrap()
+        .state_transaction(created.session.session_id)
+        .unwrap()
+        .get(VariableScope::Local, "extension.memory.settings")
+        .unwrap()
+        .value
+        .clone();
+    assert_eq!(stable_settings["checkpoints"].as_array().unwrap().len(), 1);
+
+    let _third = engine
+        .execute(
+            EngineCommand::Send {
+                session_id: created.session.session_id,
+                branch_id: created.branch.branch_id,
+                content: "Third".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let database_for_worker = database.clone();
+    let broker_for_worker = broker.clone();
+    let session_id = created.session.session_id;
+    let branch_id = created.branch.branch_id;
+    let worker = std::thread::spawn(move || {
+        let mut store = Store::open(&database_for_worker).unwrap();
+        store.set_inference_broker(broker_for_worker);
+        store.invoke_plugin_command(
+            session_id,
+            Some(branch_id),
+            DEFAULT_MEMORY_EXTENSION_ID,
+            "summarize",
+            serde_json::Value::Null,
+        )
+    });
+    started_rx.recv().unwrap();
+    let mut concurrent = Store::open(&database).unwrap();
+    concurrent
+        .select_swipe(first.turn.turn_id, alternate.candidate.candidate_id)
+        .unwrap();
+    release_tx.send(()).unwrap();
+    let stale = worker.join().unwrap().unwrap();
+    assert_eq!(stale.receipt.inference.len(), 1);
+    let after = Store::open(&database)
+        .unwrap()
+        .state_transaction(created.session.session_id)
+        .unwrap()
+        .get(VariableScope::Local, "extension.memory.settings")
+        .unwrap()
+        .value
+        .clone();
+    assert_eq!(after, stable_settings);
+    assert_eq!(second.candidate.content, "Reply two");
+
+    std::fs::remove_file(memory.directory.join(&memory.manifest.component)).unwrap();
+    validate_recorded_receipt(&forced.receipt).unwrap();
+    assert_eq!(forced.receipt.inference[0].text, "Stable summary");
 }

@@ -16,6 +16,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, HashMap, HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
+    path::PathBuf,
     rc::Rc,
     sync::{OnceLock, mpsc},
 };
@@ -33,11 +34,19 @@ use serde_json::Value as JsonValue;
 use crate::{
     ChatMessage, ChatRole, ContentHash, EgressInvocation, EgressReceipt, EgressRequest, EntityId,
     InstalledPlugin, PluginEffect, PluginError, PluginEvent, PluginInput, PromptContribution,
-    PromptRewriteMessage, PromptSlot, ScriptLimits, ScriptOutcome, StateKey, VariableScope,
+    PromptRewriteMessage, PromptSlot, ScriptLimits, ScriptOutcome, StateKey, TokenizerId,
+    VariableScope,
 };
 
 type Listener = Persistent<Function<'static>>;
 type StorageHydrate = Persistent<Function<'static>>;
+#[derive(Clone)]
+pub(crate) struct ContextRefresh {
+    pub database: PathBuf,
+    pub session_id: EntityId,
+    pub branch_id: EntityId,
+    pub configuration_hash: ContentHash,
+}
 
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct ContextKey {
@@ -84,6 +93,7 @@ struct BridgeContext {
     prng: Rc<RefCell<Xoshiro128PlusPlus>>,
     logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
     effects: Rc<RefCell<BridgeEffectState>>,
+    refresh: Rc<RefCell<Option<ContextRefresh>>>,
     context: Context,
 }
 
@@ -95,6 +105,7 @@ struct BridgeEffectState {
     inference_receipts: Vec<crate::InferenceReceipt>,
     state_writes: BTreeMap<StateKey, JsonValue>,
     prompt_contributions: Vec<PromptContribution>,
+    registered_macros: BTreeMap<String, String>,
 }
 
 struct Xoshiro128PlusPlus {
@@ -144,6 +155,7 @@ struct ExecuteRequest {
     limits: ScriptLimits,
     egress: Option<EgressInvocation>,
     inference: Option<crate::InferenceInvocation>,
+    refresh: Option<ContextRefresh>,
     response: mpsc::SyncSender<Result<ScriptOutcome, PluginError>>,
 }
 
@@ -175,6 +187,7 @@ pub(crate) fn execute(
     limits: ScriptLimits,
     egress: Option<EgressInvocation>,
     inference: Option<crate::InferenceInvocation>,
+    refresh: Option<ContextRefresh>,
 ) -> Result<ScriptOutcome, PluginError> {
     let worker = worker_handle()?;
     let (response, receiver) = mpsc::sync_channel(1);
@@ -187,6 +200,7 @@ pub(crate) fn execute(
             limits,
             egress,
             inference,
+            refresh,
             response,
         })))
         .map_err(|_| PluginError::StBridgeWorkerStopped)?;
@@ -247,6 +261,7 @@ impl Worker {
                         request.limits,
                         request.egress,
                         request.inference,
+                        request.refresh,
                     );
                     let timeout_seed = key
                         .as_ref()
@@ -284,6 +299,7 @@ impl Worker {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn execute(
         &mut self,
         installed: InstalledPlugin,
@@ -292,6 +308,7 @@ impl Worker {
         limits: ScriptLimits,
         egress: Option<EgressInvocation>,
         inference: Option<crate::InferenceInvocation>,
+        refresh: Option<ContextRefresh>,
     ) -> Result<ScriptOutcome, PluginError> {
         let key = ContextKey::from_request(&installed, &input)?;
         if !self.contexts.contains_key(&key) {
@@ -303,8 +320,10 @@ impl Worker {
                 &input.context,
                 &input.session,
                 &input.state,
+                &input.settings,
                 limits,
                 startup_passed,
+                refresh.clone(),
             )?;
             self.contexts.insert(key.clone(), context);
         }
@@ -313,6 +332,7 @@ impl Worker {
             .contexts
             .get_mut(&key)
             .ok_or(PluginError::StBridgeWorkerStopped)?;
+        *context.refresh.borrow_mut() = refresh;
         if let Some(message) = &context.initialization_error {
             return Err(PluginError::StBridgeInitialization {
                 plugin: installed.manifest.id.clone(),
@@ -330,8 +350,9 @@ impl Worker {
             inference_receipts: Vec::new(),
             state_writes: BTreeMap::new(),
             prompt_contributions: Vec::new(),
+            registered_macros: BTreeMap::new(),
         };
-        context.hydrate_storage(&input.state)?;
+        context.hydrate_storage(&input.state, &input.settings)?;
         if context.abandoned.get() {
             return Ok(ScriptOutcome {
                 effects: Vec::new(),
@@ -355,6 +376,22 @@ impl Worker {
         }
 
         let mut outcome = match input.event {
+            PluginEvent::PrePrompt => {
+                context.dispatch(
+                    &installed.manifest.id,
+                    "pre_prompt",
+                    &input.context,
+                    &serde_json::json!([]),
+                    limits,
+                )?;
+                Ok(ScriptOutcome {
+                    effects: Vec::new(),
+                    logs: context.take_logs(),
+                    egress_receipts: Vec::new(),
+                    inference_receipts: Vec::new(),
+                    prng_seed: Some(context.prng_seed),
+                })
+            }
             PluginEvent::GenerateInterceptor => {
                 if let Some(branch_id) = input
                     .session
@@ -633,6 +670,11 @@ impl Worker {
                 .map(|contribution| PluginEffect::Prompt { contribution }),
         );
         outcome.effects.extend(
+            std::mem::take(&mut effects.registered_macros)
+                .into_iter()
+                .map(|(name, value)| PluginEffect::RegisterMacro { name, value }),
+        );
+        outcome.effects.extend(
             std::mem::take(&mut effects.state_writes)
                 .into_iter()
                 .map(|(key, value)| PluginEffect::StateWrite { key, value }),
@@ -650,8 +692,10 @@ impl BridgeContext {
         initial_snapshot: &JsonValue,
         initial_session: &JsonValue,
         initial_state: &JsonValue,
+        initial_settings: &JsonValue,
         limits: ScriptLimits,
         startup_passed: bool,
+        refresh: Option<ContextRefresh>,
     ) -> Result<Self, PluginError> {
         let runtime =
             Runtime::new().map_err(|error| PluginError::ScriptRuntime(error.to_string()))?;
@@ -680,6 +724,7 @@ impl BridgeContext {
         let listeners = Rc::new(RefCell::new(HashMap::new()));
         let commands = Rc::new(RefCell::new(HashSet::new()));
         let snapshot = Rc::new(RefCell::new(initial_snapshot.clone()));
+        let refresh = Rc::new(RefCell::new(refresh));
         let initial_branch_id = startup_passed
             .then(|| {
                 initial_session
@@ -705,6 +750,7 @@ impl BridgeContext {
             inference_receipts: Vec::new(),
             state_writes: BTreeMap::new(),
             prompt_contributions: Vec::new(),
+            registered_macros: BTreeMap::new(),
         }));
         let storage_hydrate = context.with(|ctx| {
             let storage_hydrate = install_globals(
@@ -712,6 +758,7 @@ impl BridgeContext {
                 plugin_id,
                 Rc::clone(&listeners),
                 Rc::clone(&commands),
+                Rc::clone(&refresh),
                 Rc::clone(&snapshot),
                 Rc::clone(&prng),
                 next_timer_id,
@@ -720,7 +767,7 @@ impl BridgeContext {
                 Rc::clone(&effects),
             )
             .map_err(|error| PluginError::ScriptRuntime(error.to_string()))?;
-            hydrate_storage(&ctx, &storage_hydrate, initial_state)?;
+            hydrate_storage(&ctx, &storage_hydrate, initial_state, initial_settings)?;
             Ok::<_, PluginError>(storage_hydrate)
         })?;
         let initialization = context.with(|ctx| {
@@ -757,6 +804,7 @@ impl BridgeContext {
             abandoned,
             initialization_error,
             prng_seed,
+            refresh,
             invocation_count: 0,
             base_prng_seed,
             prng,
@@ -781,9 +829,9 @@ impl BridgeContext {
         std::mem::take(&mut *self.logs.borrow_mut())
     }
 
-    fn hydrate_storage(&self, state: &JsonValue) -> Result<(), PluginError> {
+    fn hydrate_storage(&self, state: &JsonValue, defaults: &JsonValue) -> Result<(), PluginError> {
         self.context
-            .with(|ctx| hydrate_storage(&ctx, &self.storage_hydrate, state))
+            .with(|ctx| hydrate_storage(&ctx, &self.storage_hydrate, state, defaults))
     }
 
     fn invoke_command(
@@ -1023,12 +1071,12 @@ fn hydrate_storage(
     ctx: &Ctx<'_>,
     hydrate: &StorageHydrate,
     state: &JsonValue,
+    defaults: &JsonValue,
 ) -> Result<(), PluginError> {
     let settings = state
         .get("settings")
         .filter(|value| !value.is_null())
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
+        .cloned();
     let storage = state
         .as_object()
         .into_iter()
@@ -1045,12 +1093,14 @@ fn hydrate_storage(
         .map_err(|error| PluginError::StBridgePayload(error.to_string()))?;
     let storage = serde_json::to_string(&storage)
         .map_err(|error| PluginError::StBridgePayload(error.to_string()))?;
+    let defaults = serde_json::to_string(defaults)
+        .map_err(|error| PluginError::StBridgePayload(error.to_string()))?;
     let hydrate = hydrate
         .clone()
         .restore(ctx)
         .map_err(|error| PluginError::StBridgePayload(error.to_string()))?;
     hydrate
-        .call::<_, ()>((settings, storage))
+        .call::<_, ()>((settings, storage, defaults))
         .map_err(|error| PluginError::StBridgePayload(error.to_string()))
 }
 
@@ -1139,9 +1189,10 @@ fn install_storage<'js>(
     globalThis.localStorage = localStorage;
     globalThis.saveSettingsDebounced = saveSettingsDebounced;
 
-    return function hydrate(settingsJson, storageJson) {
-        const hydratedSettings = JSON.parse(settingsJson);
-        settings = hydratedSettings === null ? {} : hydratedSettings;
+    return function hydrate(settingsJson, storageJson, defaultsJson) {
+        const persisted = JSON.parse(settingsJson);
+        settings = persisted === null ? JSON.parse(defaultsJson) : persisted;
+        if (settings === null || typeof settings !== 'object') settings = {};
         values.clear();
         for (const [key, value] of Object.entries(JSON.parse(storageJson))) {
             values.set(key, value);
@@ -1159,6 +1210,7 @@ fn install_globals<'js>(
     plugin_id: &str,
     listeners: Rc<RefCell<HashMap<String, Vec<Listener>>>>,
     commands: Rc<RefCell<HashSet<String>>>,
+    refresh: Rc<RefCell<Option<ContextRefresh>>>,
     snapshot: Rc<RefCell<JsonValue>>,
     prng: Rc<RefCell<Xoshiro128PlusPlus>>,
     next_timer_id: Rc<Cell<u32>>,
@@ -1274,6 +1326,7 @@ fn install_globals<'js>(
                     "message_received",
                     "generation_ended",
                     "chat_completion_prompt_ready",
+                    "pre_prompt",
                 ];
                 let render_events = [
                     "user_message_rendered",
@@ -1310,6 +1363,7 @@ fn install_globals<'js>(
                     "message_received",
                     "generation_ended",
                     "chat_completion_prompt_ready",
+                    "pre_prompt",
                 ];
                 if valid_lifecycle.contains(&event.as_str()) {
                     let mut map = off_listeners.borrow_mut();
@@ -1332,17 +1386,30 @@ fn install_globals<'js>(
     event_source.set(
         "emit",
         Function::new(ctx.clone(), |_: String| {
-            // Extensions should not emit events directly; no-op with warning.
+            // Extensions should not emit events directly.
             Ok::<(), rquickjs::Error>(())
         })?,
     )?;
     freeze(ctx, event_source.clone())?;
 
     let silly_tavern = Object::new(ctx.clone())?;
+    let refresh_snapshot = Rc::clone(&snapshot);
+    let refresh_logs = Rc::clone(&logs);
     globals.set(
         "__stcliGetContextSnapshot",
         Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-            let json = serde_json::to_string(&*snapshot.borrow())
+            if let Some(descriptor) = refresh.borrow().clone() {
+                let previous = refresh_snapshot.borrow().clone();
+                match refresh_context_snapshot(&descriptor, &previous) {
+                    Ok(refreshed) => *refresh_snapshot.borrow_mut() = refreshed,
+                    Err(error) => refresh_logs.borrow_mut().push(crate::ScriptLog {
+                        level: "warn".to_owned(),
+                        message: format!("getContext refresh failed: {error}"),
+                    }),
+                }
+            }
+            let current = refresh_snapshot.borrow().clone();
+            let json = serde_json::to_string(&current)
                 .map_err(|_| Exception::throw_type(&ctx, "context snapshot is not JSON"))?;
             let value: Value = ctx.json_parse(json)?;
             deep_freeze(&ctx, value)
@@ -1380,6 +1447,17 @@ fn install_globals<'js>(
 "#,
     )?;
     silly_tavern.set("getContext", get_context_fn)?;
+    silly_tavern.set(
+        "registerMacro",
+        Function::new(ctx.clone(), {
+            let macro_effects = Rc::clone(&effects);
+            move |_ctx: Ctx<'js>, name: String, value: String| {
+                let mut effects = macro_effects.borrow_mut();
+                effects.registered_macros.insert(name, value);
+                Ok::<(), rquickjs::Error>(())
+            }
+        })?,
+    )?;
 
     // Helper: create a no-op stub that warns once.
     let make_stub = {
@@ -1531,9 +1609,7 @@ fn install_globals<'js>(
                 if !warned.replace(true) {
                     logs.borrow_mut().push(crate::ScriptLog {
                         level: "warn".to_owned(),
-                        message:
-                            "`substituteParams` is not yet supported in this runtime; returning input unchanged"
-                                .to_owned(),
+                        message: "`substituteParams` is not yet supported in this runtime; returning input unchanged".to_owned(),
                     });
                 }
                 Ok::<String, rquickjs::Error>(text)
@@ -1543,18 +1619,27 @@ fn install_globals<'js>(
     silly_tavern.set(
         "getTokenCount",
         Function::new(ctx.clone(), {
+            let snapshot = Rc::clone(&snapshot);
             let warned = Rc::new(Cell::new(false));
             let logs = Rc::clone(&logs);
-            move |_ctx: Ctx<'js>, _text: String| {
-                if !warned.replace(true) {
-                    logs.borrow_mut().push(crate::ScriptLog {
-                        level: "warn".to_owned(),
-                        message:
-                            "`getTokenCount` is not yet supported in this runtime; returning 0"
-                                .to_owned(),
-                    });
+            move |_ctx: Ctx<'js>, text: String| {
+                let tokenizer = snapshot
+                    .borrow()
+                    .get("tokenizer")
+                    .and_then(JsonValue::as_str)
+                    .and_then(|value| value.parse::<TokenizerId>().ok());
+                match tokenizer {
+                    Some(tokenizer) => Ok::<i64, rquickjs::Error>(tokenizer.count(&text) as i64),
+                    None => {
+                        if !warned.replace(true) {
+                            logs.borrow_mut().push(crate::ScriptLog {
+                                level: "warn".to_owned(),
+                                message: "`getTokenCount` requires a valid tokenizer context; returning 0".to_owned(),
+                            });
+                        }
+                        Ok(0)
+                    }
                 }
-                Ok::<i64, rquickjs::Error>(0)
             }
         })?,
     )?;
@@ -1566,11 +1651,29 @@ fn install_globals<'js>(
     silly_tavern.set("updateChatMetadata", make_stub(ctx, "updateChatMetadata")?)?;
     silly_tavern.set(
         "generateQuietPrompt",
-        ctx.eval::<Function, _>("(prompt, options) => Promise.resolve(__stcliInfer(String(prompt), JSON.stringify(options || {})))")?,
+        ctx.eval::<Function, _>(
+            r#"(input, options) => {
+            const request = input && typeof input === 'object'
+                ? { ...input, prompt: String(input.quietPrompt ?? input.prompt ?? '') }
+                : { ...(options || {}), prompt: String(input ?? '') };
+            return Promise.resolve(__stcliInfer(JSON.stringify(request)));
+        }"#,
+        )?,
     )?;
     silly_tavern.set(
         "generateRaw",
-        ctx.eval::<Function, _>("(prompt, options) => Promise.resolve(__stcliInfer(String(prompt), JSON.stringify(options || {})))")?,
+        ctx.eval::<Function, _>(
+            r#"(input, options) => {
+            const request = input && typeof input === 'object'
+                ? { ...input, prompt: String(input.prompt ?? '') }
+                : { ...(options || {}), prompt: String(input ?? '') };
+            return Promise.resolve(__stcliInfer(JSON.stringify(request)));
+        }"#,
+        )?,
+    )?;
+    silly_tavern.set(
+        "getLastInferenceReceipt",
+        ctx.eval::<Function, _>("() => { const value = __stcliLastInferenceReceipt(); if (value == null) return null; const freeze = object => { if (object !== null && typeof object === 'object') { Object.values(object).forEach(freeze); Object.freeze(object); } return object; }; return freeze(JSON.parse(value)); }")?,
     )?;
     let call_popup: Function = ctx.eval(
         r#"
@@ -1909,21 +2012,106 @@ fn install_inference<'js>(
     effects: Rc<RefCell<BridgeEffectState>>,
     logs: Rc<RefCell<Vec<crate::ScriptLog>>>,
 ) -> rquickjs::Result<()> {
-    globals.set("__stcliInfer", Function::new(ctx.clone(), move |prompt: String, options_json: String| {
-        let options: JsonValue = serde_json::from_str(&options_json).unwrap_or(JsonValue::Object(serde_json::Map::new()));
-        let Some(invocation) = effects.borrow().inference.clone() else {
-            logs.borrow_mut().push(crate::ScriptLog { level: "warn".to_owned(), message: "`generateQuietPrompt`/`generateRaw` unavailable: secondary inference is unavailable in this host".to_owned() });
-            return Ok::<String, rquickjs::Error>(String::new());
-        };
-        let object = options.as_object().cloned().unwrap_or_default();
-        let profile = object.get("provider").or_else(|| object.get("providerProfile")).and_then(JsonValue::as_str).unwrap_or(&invocation.default_profile).to_owned();
-        let request = crate::InferenceRequest { prompt, profile_name: profile, generation_settings: JsonValue::Object(object) };
-        match invocation.broker.infer(&invocation, &request) {
-            Ok(response) => { effects.borrow_mut().inference_receipts.push(response.receipt); Ok(response.text) }
-            Err(error) => { logs.borrow_mut().push(crate::ScriptLog { level: "warn".to_owned(), message: error.to_string() }); Ok(String::new()) }
-        }
-    })?)?;
+    globals.set(
+        "__stcliLastInferenceReceipt",
+        Function::new(ctx.clone(), {
+            let effects = Rc::clone(&effects);
+            move || -> Option<String> {
+                effects
+                    .borrow()
+                    .inference_receipts
+                    .last()
+                    .and_then(|receipt| serde_json::to_string(receipt).ok())
+            }
+        })?,
+    )?;
+    globals.set(
+        "__stcliInfer",
+        Function::new(ctx.clone(), move |request_json: String| {
+            let request_value: JsonValue = serde_json::from_str(&request_json)
+                .unwrap_or_else(|_| JsonValue::Object(serde_json::Map::new()));
+            let Some(invocation) = effects.borrow().inference.clone() else {
+                logs.borrow_mut().push(crate::ScriptLog {
+                    level: "warn".to_owned(),
+                    message: "`generateQuietPrompt`/`generateRaw` unavailable: secondary inference is unavailable in this host".to_owned(),
+                });
+                return Ok::<String, rquickjs::Error>(String::new());
+            };
+            let mut object = request_value.as_object().cloned().unwrap_or_default();
+            let prompt = object
+                .remove("prompt")
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_default();
+            let system_prompt = object
+                .remove("systemPrompt")
+                .and_then(|value| value.as_str().map(str::to_owned));
+            let profile = object
+                .remove("provider")
+                .or_else(|| object.remove("providerProfile"))
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| invocation.default_profile.clone());
+            if let Some(response_length) = object
+                .remove("responseLength")
+                .and_then(|value| value.as_u64())
+                .filter(|value| *value > 0)
+            {
+                object.insert("max_tokens".to_owned(), JsonValue::from(response_length));
+            }
+            for key in ["quietPrompt", "skipWIAN", "source", "quiet"] {
+                object.remove(key);
+            }
+            let request = crate::InferenceRequest {
+                system_prompt,
+                prompt,
+                profile_name: profile,
+                generation_settings: JsonValue::Object(object),
+            };
+            match invocation.broker.infer(&invocation, &request) {
+                Ok(response) => {
+                    effects
+                        .borrow_mut()
+                        .inference_receipts
+                        .push(response.receipt);
+                    Ok(response.text)
+                }
+                Err(error) => {
+                    logs.borrow_mut().push(crate::ScriptLog {
+                        level: "warn".to_owned(),
+                        message: error.to_string(),
+                    });
+                    Ok(String::new())
+                }
+            }
+        })?,
+    )?;
     Ok(())
+}
+fn refresh_context_snapshot(
+    descriptor: &ContextRefresh,
+    previous: &JsonValue,
+) -> Result<JsonValue, String> {
+    let store = crate::Store::open(&descriptor.database).map_err(|error| error.to_string())?;
+    let (configuration_hash, _) = store
+        .session_configuration(descriptor.session_id)
+        .map_err(|error| error.to_string())?;
+    if configuration_hash != descriptor.configuration_hash {
+        return Err("session configuration changed during bridge invocation".to_owned());
+    }
+    let name1 = previous
+        .get("name1")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("User");
+    let name2 = previous
+        .get("name2")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("Character");
+    let chat = store
+        .active_bridge_chat(descriptor.branch_id, name1, name2)
+        .map_err(|error| error.to_string())?;
+    let mut refreshed = previous.as_object().cloned().unwrap_or_default();
+    refreshed.insert("chat".to_owned(), JsonValue::Array(chat));
+    Ok(JsonValue::Object(refreshed))
 }
 
 fn freeze<'js>(ctx: &Ctx<'js>, value: Object<'js>) -> rquickjs::Result<()> {

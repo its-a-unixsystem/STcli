@@ -113,6 +113,8 @@ fn upgrade_disable_and_reference_aware_remove_are_explicit() {
             "invoke",
             "--session",
             &session,
+            "--branch",
+            &created.branch.branch_id.to_string(),
             "org.stcli.proof",
             "proof-set",
             "--arguments",

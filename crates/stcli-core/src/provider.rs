@@ -364,14 +364,32 @@ pub fn provider_request(
 
 pub(crate) fn secondary_provider_request(
     settings: &ProviderSettings,
+    system_prompt: Option<&str>,
     prompt: &str,
     generation_settings: &Value,
 ) -> Result<Value, ProviderError> {
-    let messages = [ChatMessage {
+    let mut messages = Vec::with_capacity(2);
+    if let Some(system_prompt) = system_prompt.filter(|prompt| !prompt.trim().is_empty()) {
+        messages.push(ChatMessage {
+            role: ChatRole::System,
+            content: system_prompt.to_owned(),
+        });
+    }
+    messages.push(ChatMessage {
         role: ChatRole::User,
         content: prompt.to_owned(),
-    }];
-    provider_request_parts(settings, &messages, Some(prompt), &[], generation_settings)
+    });
+    let text_prompt = match system_prompt.filter(|prompt| !prompt.trim().is_empty()) {
+        Some(system_prompt) => format!("{system_prompt}\n\n{prompt}"),
+        None => prompt.to_owned(),
+    };
+    provider_request_parts(
+        settings,
+        &messages,
+        Some(&text_prompt),
+        &[],
+        generation_settings,
+    )
 }
 
 fn provider_request_parts(

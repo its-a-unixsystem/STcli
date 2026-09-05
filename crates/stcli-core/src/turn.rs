@@ -742,31 +742,14 @@ impl Store {
             &configuration.configuration.provider.id,
             preparation,
         )?;
-        let inference_receipts = effect
+        for receipt in effect
             .plugins
             .iter()
-            .filter(|receipt| receipt.event == PluginEvent::GenerateInterceptor)
             .flat_map(|receipt| receipt.inference.iter())
-            .collect::<Vec<_>>();
-        if inference_receipts.len() > 1 {
-            return Err(TurnError::Plugin(PluginError::RecordedReceiptInvalid(
-                "ambiguous primary inference receipts".to_owned(),
-            )));
-        }
-        if let Some(inference) = inference_receipts.first() {
-            crate::validate_persisted_inference_receipt(self, inference).map_err(|error| {
+        {
+            crate::validate_persisted_inference_receipt(self, receipt).map_err(|error| {
                 TurnError::Plugin(PluginError::RecordedReceiptInvalid(error.to_string()))
             })?;
-            let result = ProviderResult {
-                text: inference.text.clone(),
-                request_hash: attempt
-                    .provider_request_hash
-                    .clone()
-                    .ok_or(TurnError::ProviderRequestHashMismatch)?,
-                receipt: json!({ "replayed_inference": inference.response_hash }),
-                events: Vec::new(),
-            };
-            return self.complete_attempt(turn, attempt, result, true);
         }
         self.execute_attempt(turn, attempt, configuration, &mut on_event)
             .await
@@ -1378,6 +1361,37 @@ impl Store {
             .collect())
     }
 
+    pub(crate) fn active_bridge_chat(
+        &self,
+        branch_id: EntityId,
+        user_name: &str,
+        character_name: &str,
+    ) -> Result<Vec<Value>, TurnError> {
+        let branch = self
+            .branch(branch_id)?
+            .ok_or(TurnError::BranchNotFound(branch_id))?;
+        let mut chat = Vec::new();
+        if !branch.greeting.is_empty() {
+            push_bridge_chat_entry(&mut chat, character_name, false, &branch.greeting);
+        }
+        for turn in self
+            .turns_for_branch(branch_id)?
+            .into_iter()
+            .filter(|turn| !turn.hidden)
+        {
+            push_bridge_chat_entry(&mut chat, user_name, true, &turn.user_content);
+            if let Some(candidate_id) = turn.selected_candidate_id {
+                let candidate = self
+                    .candidate(candidate_id)?
+                    .ok_or(TurnError::CandidateNotFound(candidate_id))?;
+                if !candidate.hidden {
+                    push_bridge_chat_entry(&mut chat, character_name, false, &candidate.content);
+                }
+            }
+        }
+        Ok(chat)
+    }
+
     fn turns_for_branch_inner(
         &self,
         branch_id: EntityId,
@@ -1463,6 +1477,7 @@ impl Store {
                 .join("plugins"),
         );
         let mut selected = Vec::new();
+
         let mut grants = BTreeMap::new();
         for pin in configuration
             .configuration
@@ -1493,6 +1508,21 @@ impl Store {
         }
         Ok((order_plugins(&selected)?, grants))
     }
+    fn st_bridge_host(
+        &self,
+        configuration: &SessionConfigurationRecord,
+        session_id: EntityId,
+        branch_id: EntityId,
+    ) -> PluginHost {
+        PluginHost::with_egress(Default::default(), self.egress.clone())
+            .with_inference(self.inference.clone())
+            .with_context_refresh(crate::st_bridge::ContextRefresh {
+                database: self.path().to_owned(),
+                session_id,
+                branch_id,
+                configuration_hash: configuration.revision_hash.clone(),
+            })
+    }
 
     fn run_runtime_plugins(
         &self,
@@ -1515,6 +1545,9 @@ impl Store {
             PluginEvent::PreRequest,
         ] {
             for installed in &ordered {
+                if installed.manifest.runtime == PluginRuntime::StBridge {
+                    continue;
+                }
                 if !installed.manifest.subscriptions.contains(&event) {
                     continue;
                 }
@@ -1605,14 +1638,13 @@ impl Store {
             return Ok(Vec::new());
         }
         let (ordered, grants) = self.configured_runtime_plugins(configuration)?;
-        let host = PluginHost::with_egress(Default::default(), self.egress.clone())
-            .with_inference(self.inference.clone());
         let mut receipts = Vec::new();
         for installed in ordered {
             if installed.manifest.runtime != PluginRuntime::StBridge {
                 continue;
             }
             let grant = &grants[&installed.manifest.id];
+            let plugin_host = self.st_bridge_host(configuration, session_id, branch_id);
             let context = bridge_context_snapshot(
                 configuration,
                 session_id,
@@ -1620,6 +1652,7 @@ impl Store {
                 character_name,
                 session_chat,
                 effective_generation_settings,
+                tokenizer,
             );
             let session = json!({"session_id": session_id, "branch_id": branch_id, "attempt_id": initiating_attempt_id, "config_hash": configuration.revision_hash, "generation_type": generation_type, "provider_profile": configuration.configuration.provider.id, "dry_run": dry_run});
             if installed
@@ -1632,7 +1665,7 @@ impl Store {
                     "is_user": segment.role == ChatRole::User, "is_system": segment.role == ChatRole::System,
                     "mes": segment.content, "extra": {}, "index": index
                 })).collect::<Vec<_>>();
-                let receipt = host.execute(
+                let receipt = plugin_host.execute(
                     &installed,
                     grant,
                     PluginInput {
@@ -1664,7 +1697,7 @@ impl Store {
                     .iter()
                     .map(|segment| json!({"role": segment.role, "content": segment.content}))
                     .collect::<Vec<_>>();
-                let receipt = host.execute(
+                let receipt = plugin_host.execute(
                     &installed,
                     grant,
                     PluginInput {
@@ -1768,8 +1801,7 @@ impl Store {
             return Ok((Vec::new(), Vec::new()));
         }
         let (ordered, grants) = self.configured_runtime_plugins(&configuration)?;
-        let host = PluginHost::with_egress(Default::default(), self.egress.clone())
-            .with_inference(self.inference.clone());
+        let host = self.st_bridge_host(&configuration, session_id, branch_id);
         let mut receipts = Vec::new();
         let mut state = self.state_transaction(session_id)?;
         let mut chat = prompt_plan.messages.clone();
@@ -1805,6 +1837,10 @@ impl Store {
                 character_name,
                 &chat,
                 &effective,
+                configuration
+                    .configuration
+                    .tokenizer
+                    .parse::<TokenizerId>()?,
             );
             let receipt = host.execute(
                 &installed,
@@ -1832,6 +1868,7 @@ impl Store {
     pub fn invoke_plugin_command(
         &mut self,
         session_id: EntityId,
+        branch_id: Option<EntityId>,
         plugin_id: &str,
         command: &str,
         arguments: Value,
@@ -1889,15 +1926,67 @@ impl Store {
         } else {
             plugin_id.to_owned()
         };
-        let receipt = PluginHost::new(Default::default()).execute(
+        let mut context = json!({"command": command, "arguments": arguments});
+        let mut session_context = Value::Null;
+        let mut host = PluginHost::new(Default::default());
+        if let Some(branch_id) = branch_id {
+            let branch = self
+                .branch(branch_id)?
+                .ok_or(TurnError::BranchNotFound(branch_id))?;
+            if branch.session_id != session_id {
+                return Err(TurnError::BranchSessionMismatch);
+            }
+            let parent_attempt_id = self.latest_completed_primary_attempt(branch_id)?;
+            let character =
+                self.decoded_artifact(&configuration.configuration.character_revision)?;
+            let character_name = character
+                .semantic
+                .pointer("/data/name")
+                .or_else(|| character.semantic.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("Character");
+            let effective = resolve_effective_generation_settings(&configuration, None);
+            let tokenizer = configuration
+                .configuration
+                .tokenizer
+                .parse::<TokenizerId>()?;
+            context = bridge_context_snapshot(
+                &configuration,
+                session_id,
+                branch_id,
+                character_name,
+                &[],
+                &effective,
+                tokenizer,
+            );
+            if let Some(parent_attempt_id) = parent_attempt_id {
+                session_context = json!({
+                    "session_id": session_id,
+                    "branch_id": branch_id,
+                    "attempt_id": parent_attempt_id,
+                    "config_hash": configuration.revision_hash,
+                    "provider_profile": configuration.configuration.provider.id,
+                    "dry_run": false,
+                });
+                host = host
+                    .with_inference(self.inference.clone())
+                    .with_context_refresh(crate::st_bridge::ContextRefresh {
+                        database: self.path().to_owned(),
+                        session_id,
+                        branch_id,
+                        configuration_hash: configuration.revision_hash.clone(),
+                    });
+            }
+        }
+        let receipt = host.execute(
             &installed,
             &grant,
             PluginInput {
                 event: PluginEvent::Command,
                 plugin_id: plugin_id.to_owned(),
                 settings: pin.settings.clone(),
-                context: json!({"command": command, "arguments": arguments}),
-                payload: Value::Null,
+                context,
+                payload: json!({"command": command, "named": arguments, "unnamed": arguments.as_str().unwrap_or_default()}),
                 artifact: Value::Null,
                 state: Value::Object(
                     state
@@ -1905,7 +1994,7 @@ impl Store {
                         .into_iter()
                         .collect(),
                 ),
-                session: Value::Null,
+                session: session_context,
             },
         )?;
         if installed.manifest.runtime == PluginRuntime::StBridge {
@@ -1958,6 +2047,27 @@ impl Store {
             receipt,
             state_mutations,
         })
+    }
+
+    fn latest_completed_primary_attempt(
+        &self,
+        branch_id: EntityId,
+    ) -> Result<Option<EntityId>, TurnError> {
+        let turns = self.turns_for_branch(branch_id)?;
+        for turn in turns.into_iter().rev() {
+            if let Some(attempt) = self
+                .attempts_for_turn(turn.turn_id)?
+                .into_iter()
+                .rev()
+                .find(|attempt| {
+                    attempt.kind == AttemptKind::Primary
+                        && attempt.status == AttemptStatus::Completed
+                })
+            {
+                return Ok(Some(attempt.attempt_id));
+            }
+        }
+        Ok(None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2074,6 +2184,64 @@ impl Store {
 
         let mut state = self.state_transaction(session_id)?;
         let mut engine = MacroEngine::new(context.random_seed);
+        let (ordered_plugins, plugin_grants) = self.configured_runtime_plugins(configuration)?;
+        let bridge_host = self.st_bridge_host(configuration, session_id, branch_id);
+        let bridge_snapshot = bridge_context_snapshot(
+            configuration,
+            session_id,
+            branch_id,
+            character_name,
+            &[],
+            effective_generation_settings,
+            tokenizer,
+        );
+        let bridge_session = json!({
+            "session_id": session_id,
+            "branch_id": branch_id,
+            "attempt_id": initiating_attempt_id,
+            "config_hash": configuration.revision_hash,
+            "generation_type": generation_type,
+            "provider_profile": configuration.configuration.provider.id,
+            "dry_run": dry_run,
+        });
+        let mut bridge_pre_prompt_receipts = Vec::new();
+        for installed in ordered_plugins.iter().filter(|installed| {
+            installed.manifest.runtime == PluginRuntime::StBridge
+                && installed
+                    .manifest
+                    .subscriptions
+                    .contains(&PluginEvent::PrePrompt)
+        }) {
+            let grant = &plugin_grants[&installed.manifest.id];
+            let receipt = bridge_host.execute(
+                installed,
+                grant,
+                PluginInput {
+                    event: PluginEvent::PrePrompt,
+                    plugin_id: installed.manifest.id.clone(),
+                    settings: grant.settings.clone(),
+                    context: bridge_snapshot.clone(),
+                    payload: Value::Null,
+                    artifact: Value::Null,
+                    state: st_bridge_input_state(&state, &installed.manifest.id),
+                    session: bridge_session.clone(),
+                },
+            )?;
+            for effect in &receipt.effects {
+                match effect {
+                    PluginEffect::RegisterMacro { name, value } => context.register(name, value),
+                    PluginEffect::StateWrite { .. } => {
+                        apply_st_bridge_state_effects(
+                            &mut state,
+                            &installed.manifest.id,
+                            std::slice::from_ref(effect),
+                        )?;
+                    }
+                    _ => {}
+                }
+            }
+            bridge_pre_prompt_receipts.push(receipt);
+        }
         let mut evaluations = Vec::new();
         let mut warnings = Vec::new();
         let persona_description = configuration
@@ -2105,6 +2273,7 @@ impl Store {
             &mut context,
             &mut state,
         )?;
+        plugin_receipts.extend(bridge_pre_prompt_receipts);
         let plugin_contributions = plugin_receipts
             .iter()
             .flat_map(|receipt| receipt.effects.iter())
@@ -3468,6 +3637,18 @@ impl Store {
         Ok(TurnError::AttemptNotRunning { attempt_id, status })
     }
 }
+fn push_bridge_chat_entry(chat: &mut Vec<Value>, name: &str, is_user: bool, content: &str) {
+    chat.push(json!({
+        "name": name,
+        "is_user": is_user,
+        "is_system": false,
+        "mes": content,
+        "role": if is_user { "user" } else { "assistant" },
+        "content": content,
+        "extra": {},
+        "index": chat.len(),
+    }));
+}
 fn st_bridge_input_state(state: &StateTransaction, plugin_id: &str) -> Value {
     Value::Object(
         state
@@ -3645,6 +3826,7 @@ fn bridge_context_snapshot(
     character_name: &str,
     session_chat: &[ChatMessage],
     effective_generation_settings: &EffectiveGenerationSettings,
+    tokenizer: TokenizerId,
 ) -> Value {
     let character_id = configuration.configuration.character_revision.to_string();
     json!({
@@ -3659,6 +3841,7 @@ fn bridge_context_snapshot(
         "chatMetadata": {},
         "worldInfo": [],
         "generationSettings": effective_generation_settings.values,
+        "tokenizer": tokenizer.to_string(),
     })
 }
 

@@ -1,0 +1,23 @@
+{
+  "schema": "stcli.plugin-manifest/v1",
+  "id": "memory",
+  "version": "1.0.0",
+  "engine": ">=0.1.0, <0.2.0",
+  "runtime": "st-bridge",
+  "component": "index.js",
+  "component_sha256": "sha256:113a5e468b3636b8d0af66954a9e557fac347e864dab386429f5aabfc758d30a",
+  "dependencies": [],
+  "license": "AGPL-3.0-only",
+  "subscriptions": ["pre-prompt", "generate-interceptor", "chat-completion-prompt-ready"],
+  "prompt_slots": [],
+  "commands": ["summarize"],
+  "macros": ["summary"],
+  "settings_schema": null,
+  "requested_capabilities": ["write-own-state", "register-command", "brokered-egress", "secondary-inference"],
+  "before": [],
+  "after": [],
+  "generate_interceptor": "memoryGenerateInterceptor",
+  "display_name": "Summarize",
+  "author": "SillyTavern contributors / STcli headless port",
+  "auto_update": false
+}

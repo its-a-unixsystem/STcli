@@ -23,8 +23,37 @@ use crate::{
 };
 
 pub const DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID: &str = "org.stcli.nemo-directives";
+pub const DEFAULT_MEMORY_EXTENSION_ID: &str = "memory";
 const NEMO_PLUGIN_MANIFEST: &str = include_str!("../../../plugins/nemo-directives/manifest.json");
 const NEMO_PLUGIN_SCRIPT: &str = include_str!("../../../plugins/nemo-directives/script.js");
+const MEMORY_EXTENSION_MANIFEST: &str = include_str!("../../../extensions/memory/manifest.json");
+const MEMORY_EXTENSION_SCRIPT: &str = include_str!("../../../extensions/memory/index.js");
+
+#[derive(Clone, Copy)]
+struct DefaultPackage {
+    id: &'static str,
+    manifest: &'static str,
+    component_name: &'static str,
+    component: &'static str,
+    artifact_inspector: bool,
+}
+
+const DEFAULT_PACKAGES: [DefaultPackage; 2] = [
+    DefaultPackage {
+        id: DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID,
+        manifest: NEMO_PLUGIN_MANIFEST,
+        component_name: "script.js",
+        component: NEMO_PLUGIN_SCRIPT,
+        artifact_inspector: true,
+    },
+    DefaultPackage {
+        id: DEFAULT_MEMORY_EXTENSION_ID,
+        manifest: MEMORY_EXTENSION_MANIFEST,
+        component_name: "index.js",
+        component: MEMORY_EXTENSION_SCRIPT,
+        artifact_inspector: false,
+    },
+];
 
 #[derive(Clone, Debug)]
 pub struct StcliEngine {
@@ -103,47 +132,49 @@ impl StcliEngine {
     }
 
     fn ensure_default_plugins(&self) -> Result<(), EngineError> {
-        if self
-            .default_opt_out(DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID)
-            .exists()
-        {
-            return Ok(());
-        }
-        let manifest: crate::PluginManifest =
-            serde_json::from_str(NEMO_PLUGIN_MANIFEST).map_err(PluginError::Json)?;
-        let registration = ArtifactInspectorRegistration {
-            id: manifest.id.clone(),
-            version: manifest.version.clone(),
-            component_sha256: manifest.component_sha256.clone(),
-            capabilities: [PluginCapability::InspectArtifact].into_iter().collect(),
-        };
         let store = Store::open(&self.database)?;
-        if store
-            .artifact_inspector(DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID)?
-            .as_ref()
-            == Some(&registration)
-            && self
-                .plugin_registry()
-                .contains(DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID)
-        {
-            return Ok(());
+        for package in DEFAULT_PACKAGES {
+            if self.default_opt_out(package.id).exists() {
+                continue;
+            }
+            let manifest: crate::PluginManifest =
+                serde_json::from_str(package.manifest).map_err(PluginError::Json)?;
+            let registration = package
+                .artifact_inspector
+                .then(|| ArtifactInspectorRegistration {
+                    id: manifest.id.clone(),
+                    version: manifest.version.clone(),
+                    component_sha256: manifest.component_sha256.clone(),
+                    capabilities: [PluginCapability::InspectArtifact].into_iter().collect(),
+                });
+            let registered = match &registration {
+                Some(registration) => {
+                    store.artifact_inspector(package.id)?.as_ref() == Some(registration)
+                }
+                None => true,
+            };
+            if registered && self.plugin_registry().contains(package.id) {
+                continue;
+            }
+            let root = self
+                .default_plugin_state()
+                .join("packages")
+                .join(package.id);
+            fs::create_dir_all(&root).map_err(|source| PluginError::Create {
+                path: root.clone(),
+                source,
+            })?;
+            for (path, content) in [
+                (root.join("manifest.json"), package.manifest),
+                (root.join(package.component_name), package.component),
+            ] {
+                fs::write(&path, content).map_err(|source| PluginError::Write { path, source })?;
+            }
+            self.plugin_registry().install(&root)?;
+            if let Some(registration) = &registration {
+                store.register_artifact_inspector(registration)?;
+            }
         }
-        let root = self
-            .default_plugin_state()
-            .join("packages")
-            .join(DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID);
-        fs::create_dir_all(&root).map_err(|source| PluginError::Create {
-            path: root.clone(),
-            source,
-        })?;
-        for (path, content) in [
-            (root.join("manifest.json"), NEMO_PLUGIN_MANIFEST),
-            (root.join("script.js"), NEMO_PLUGIN_SCRIPT),
-        ] {
-            fs::write(&path, content).map_err(|source| PluginError::Write { path, source })?;
-        }
-        self.plugin_registry().install(&root)?;
-        store.register_artifact_inspector(&registration)?;
         Ok(())
     }
 
@@ -501,14 +532,19 @@ impl StcliEngine {
         match command {
             EngineCommand::InstallPlugin { directory } => {
                 let installed = self.plugin_registry().install(&directory)?;
-                if installed.manifest.id == DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID {
-                    self.clear_default_opt_out(DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID)?;
-                    store.register_artifact_inspector(&ArtifactInspectorRegistration {
-                        id: installed.manifest.id.clone(),
-                        version: installed.manifest.version.clone(),
-                        component_sha256: installed.manifest.component_sha256.clone(),
-                        capabilities: [PluginCapability::InspectArtifact].into_iter().collect(),
-                    })?;
+                if let Some(package) = DEFAULT_PACKAGES
+                    .iter()
+                    .find(|package| package.id == installed.manifest.id)
+                {
+                    self.clear_default_opt_out(package.id)?;
+                    if package.artifact_inspector {
+                        store.register_artifact_inspector(&ArtifactInspectorRegistration {
+                            id: installed.manifest.id.clone(),
+                            version: installed.manifest.version.clone(),
+                            component_sha256: installed.manifest.component_sha256.clone(),
+                            capabilities: [PluginCapability::InspectArtifact].into_iter().collect(),
+                        })?;
+                    }
                 }
                 Ok(EngineResult::InstalledPlugin(installed))
             }
@@ -553,7 +589,9 @@ impl StcliEngine {
                 })
             }
             EngineCommand::RestoreDefaultPlugins => {
-                self.clear_default_opt_out(DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID)?;
+                for package in DEFAULT_PACKAGES {
+                    self.clear_default_opt_out(package.id)?;
+                }
                 self.ensure_default_plugins()?;
                 let mut installed = self
                     .plugin_registry()
@@ -573,7 +611,10 @@ impl StcliEngine {
                     return Err(EngineError::PluginInUse(plugin_id));
                 }
                 store.unregister_artifact_inspector(&plugin_id)?;
-                if plugin_id == DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID {
+                if DEFAULT_PACKAGES
+                    .iter()
+                    .any(|package| package.id == plugin_id)
+                {
                     let opt_out = self.default_opt_out(&plugin_id);
                     let parent = opt_out.parent().expect("opt-out marker has a parent");
                     fs::create_dir_all(parent).map_err(|source| PluginError::Create {
@@ -858,11 +899,14 @@ impl StcliEngine {
             )),
             EngineCommand::InvokePlugin {
                 session_id,
+                branch_id,
                 plugin_id,
                 command,
                 arguments,
             } => Ok(EngineResult::PluginCommand(Box::new(
-                store.invoke_plugin_command(session_id, &plugin_id, &command, arguments)?,
+                store.invoke_plugin_command(
+                    session_id, branch_id, &plugin_id, &command, arguments,
+                )?,
             ))),
             EngineCommand::Send {
                 session_id,
@@ -1225,6 +1269,7 @@ pub enum EngineCommand {
     },
     InvokePlugin {
         session_id: EntityId,
+        branch_id: Option<EntityId>,
         plugin_id: String,
         command: String,
         arguments: serde_json::Value,

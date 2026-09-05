@@ -421,6 +421,8 @@ enum PluginCommand {
     Invoke {
         #[arg(long)]
         session: EntityId,
+        #[arg(long)]
+        branch: Option<EntityId>,
         id: String,
         command: String,
         #[arg(long, default_value = "null")]
@@ -1743,6 +1745,7 @@ async fn plugin(output: OutputFormat, command: PluginCommand) -> Result<()> {
         }
         PluginCommand::Invoke {
             session,
+            branch,
             id,
             command,
             arguments,
@@ -1753,6 +1756,7 @@ async fn plugin(output: OutputFormat, command: PluginCommand) -> Result<()> {
                 .execute(
                     EngineCommand::InvokePlugin {
                         session_id: session,
+                        branch_id: branch,
                         plugin_id: id,
                         command,
                         arguments,

@@ -20,7 +20,7 @@ A feature is in Part 2, not Part 1, when SillyTavern has no equivalent. A comman
 
 ## Compatibility progress
 
-`[█████████████░░░░░░░]` **67%** (44 / 66 SillyTavern features fully implemented)
+`[██████████████░░░░░░]` **68%** (45 / 66 SillyTavern features fully implemented)
 
 The percentage counts fully implemented features (✅) against all tracked SillyTavern features. Partial features (⚠️), planned gaps (❌), and by-design exclusions (🛑) are not counted as implemented. STcli-only features (Part 2) are excluded from the total.
 
@@ -147,7 +147,7 @@ SillyTavern ships these bundled extensions. Each row is one of them.
 | **Expressions** | ❌ | Emotion classification and character sprites planned for **v0.3 / v1.x**. |
 | **Image Captioning** | ❌ | Multimodal captioning adapter planned for **v1.x**. |
 | **Gallery** | ❌ | Media gallery viewer planned for **v1.x**. |
-| **Summarize (Memory)** | ❌ | Chat summarization needs background generation. Planned for **v0.7**. |
+| **Summarize (Memory)** | ✅ | Bundled, opt-in `memory` Extension implements the pinned Main API raw non-blocking builder. It records linked background Attempts, validates Branch-safe checkpoints, injects `{{summary}}`, and replays offline. Extras, WebLLM, Classic/default builders, World Info scanning, visual settings, and Restore Previous are excluded. |
 | **Quick Reply** | ❌ | Shortcut action palette in the TUI planned for **v0.2**. |
 | **Image Generation** | ❌ | Stable Diffusion, FLUX, and DALL-E integration planned for **v1.x**. |
 | **Chat Translation** | ❌ | Provider-backed message translation planned for the roadmap. |

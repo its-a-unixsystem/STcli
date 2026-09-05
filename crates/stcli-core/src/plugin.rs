@@ -306,6 +306,7 @@ pub struct PluginHost {
     limits: PluginLimits,
     egress: Option<crate::EgressBroker>,
     inference: Option<crate::InferenceBroker>,
+    context_refresh: Option<crate::st_bridge::ContextRefresh>,
 }
 
 impl PluginHost {
@@ -314,6 +315,7 @@ impl PluginHost {
             limits,
             egress: None,
             inference: None,
+            context_refresh: None,
         }
     }
 
@@ -322,11 +324,20 @@ impl PluginHost {
             limits,
             egress: Some(broker),
             inference: None,
+            context_refresh: None,
         }
     }
 
     pub fn with_inference(mut self, broker: crate::InferenceBroker) -> Self {
         self.inference = Some(broker);
+        self
+    }
+
+    pub(crate) fn with_context_refresh(
+        mut self,
+        refresh: crate::st_bridge::ContextRefresh,
+    ) -> Self {
+        self.context_refresh = Some(refresh);
         self
     }
 
@@ -477,6 +488,7 @@ impl PluginHost {
                         self.limits.script,
                         invocation,
                         inference,
+                        self.context_refresh.clone(),
                     )?;
                     let output_json = serde_json::to_string(&PluginOutput {
                         effects: outcome.effects.clone(),
@@ -1182,18 +1194,25 @@ fn validate_effects(
         {
             return Err(PluginError::LifecycleObservationOnly);
         }
-        if installed.manifest.runtime == PluginRuntime::StBridge
-            && matches!(
+        if installed.manifest.runtime == PluginRuntime::StBridge {
+            let inherent = matches!(
                 (event, effect),
                 (PluginEvent::StBridgeLifecycle, PluginEffect::Observe { .. })
                     | (PluginEvent::Command, PluginEffect::Observe { .. })
                     | (
-                        PluginEvent::GenerateInterceptor | PluginEvent::ChatCompletionPromptReady,
+                        PluginEvent::GenerateInterceptor
+                            | PluginEvent::ChatCompletionPromptReady
+                            | PluginEvent::PrePrompt,
                         PluginEffect::PromptRewrite { .. } | PluginEffect::Prompt { .. }
                     )
-            )
-        {
-            continue;
+            ) || matches!(
+                (event, effect),
+                (PluginEvent::PrePrompt, PluginEffect::RegisterMacro { name, .. })
+                    if installed.manifest.macros.contains(name)
+            );
+            if inherent {
+                continue;
+            }
         }
         let capability = match effect {
             PluginEffect::Output { .. } => PluginCapability::InspectArtifact,

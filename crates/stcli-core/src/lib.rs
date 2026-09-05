@@ -59,10 +59,10 @@ pub use egress::{
     EgressSecretInjection, EgressTransport, EgressTransportError, ReqwestTransport, StubTransport,
 };
 pub use engine::{
-    BranchHistory, DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID, DeletionReceipt, EngineCommand, EngineError,
-    EngineInspection, EngineQuery, EngineResult, EngineTurn, GreetingProjection,
-    PluginArtifactOutput, PluginRemovalReceipt, PurgeReport, RebuildReport, SessionDetails,
-    SessionSummary, StcliEngine, TurnDetails,
+    BranchHistory, DEFAULT_MEMORY_EXTENSION_ID, DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID, DeletionReceipt,
+    EngineCommand, EngineError, EngineInspection, EngineQuery, EngineResult, EngineTurn,
+    GreetingProjection, PluginArtifactOutput, PluginRemovalReceipt, PurgeReport, RebuildReport,
+    SessionDetails, SessionSummary, StcliEngine, TurnDetails,
 };
 pub use fixture::{
     ExternalFixtureSource, FixtureCase, FixtureCaseReport, FixtureHistoryTurn, FixtureReport,

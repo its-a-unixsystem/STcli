@@ -21,6 +21,8 @@ pub const INFERENCE_REQUEST_DOMAIN: &str = "stcli:secondary-inference-request:v1
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct InferenceRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
     pub prompt: String,
     pub profile_name: String,
     pub generation_settings: Value,
@@ -53,6 +55,8 @@ pub struct InferenceReceipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_attempt_id: Option<EntityId>,
     pub caller: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
     pub profile_name: String,
     pub prompt: String,
     pub effective_settings: Value,
@@ -217,13 +221,21 @@ impl InferenceBroker {
             .config
             .resolve_provider_profile(profile_name)
             .map_err(|error| InferenceError::Profile(error.to_string()))?;
-        let provider_request =
-            secondary_provider_request(settings, &request.prompt, &request.generation_settings)
-                .map_err(|error| InferenceError::Provider(error.to_string()))?;
+        let provider_request = secondary_provider_request(
+            settings,
+            request.system_prompt.as_deref(),
+            &request.prompt,
+            &request.generation_settings,
+        )
+        .map_err(|error| InferenceError::Provider(error.to_string()))?;
         let effective_settings = effective_settings(&provider_request);
-        let request_hash =
-            inference_request_hash(profile_name, &request.prompt, &effective_settings)
-                .map_err(InferenceError::Canonicalize)?;
+        let request_hash = inference_request_hash(
+            profile_name,
+            request.system_prompt.as_deref(),
+            &request.prompt,
+            &effective_settings,
+        )
+        .map_err(InferenceError::Canonicalize)?;
         let live = invocation.policy.mode == InferenceMode::Live;
         let mut persisted = if live {
             let database = self
@@ -293,6 +305,7 @@ impl InferenceBroker {
             attempt_id,
             parent_attempt_id: invocation.parent_attempt_id,
             caller: invocation.caller.clone(),
+            system_prompt: request.system_prompt.clone(),
             profile_name: profile_name.to_owned(),
             prompt: request.prompt.clone(),
             effective_settings,
@@ -316,6 +329,7 @@ impl InferenceBroker {
 pub fn validate_inference_receipt(receipt: &InferenceReceipt) -> Result<(), InferenceError> {
     let request_hash = inference_request_hash(
         &receipt.profile_name,
+        receipt.system_prompt.as_deref(),
         &receipt.prompt,
         &receipt.effective_settings,
     )
@@ -366,17 +380,19 @@ fn effective_settings(request: &Value) -> Value {
 
 fn inference_request_hash(
     profile_name: &str,
+    system_prompt: Option<&str>,
     prompt: &str,
     effective_settings: &Value,
 ) -> Result<ContentHash, serde_json::Error> {
-    canonical_json_hash(
-        INFERENCE_REQUEST_DOMAIN,
-        &json!({
-            "profile_name": profile_name,
-            "prompt": prompt,
-            "effective_settings": effective_settings,
-        }),
-    )
+    let mut request = serde_json::Map::from_iter([
+        ("profile_name".to_owned(), json!(profile_name)),
+        ("prompt".to_owned(), json!(prompt)),
+        ("effective_settings".to_owned(), effective_settings.clone()),
+    ]);
+    if let Some(system_prompt) = system_prompt {
+        request.insert("system_prompt".to_owned(), json!(system_prompt));
+    }
+    canonical_json_hash(INFERENCE_REQUEST_DOMAIN, &Value::Object(request))
 }
 
 #[derive(Debug, Error)]
@@ -458,6 +474,7 @@ mod tests {
             .infer(
                 &invocation,
                 &InferenceRequest {
+                    system_prompt: None,
                     prompt: "Summarize this".to_owned(),
                     profile_name: "summary".to_owned(),
                     generation_settings: json!({"temperature": 0.2}),
@@ -493,6 +510,7 @@ mod tests {
             broker.infer(
                 &invocation,
                 &InferenceRequest {
+                    system_prompt: None,
                     prompt: "x".to_owned(),
                     profile_name: "summary".to_owned(),
                     generation_settings: json!({}),
@@ -589,6 +607,7 @@ mod tests {
             broker.infer(
                 &invocation,
                 &InferenceRequest {
+                    system_prompt: None,
                     prompt: "block".to_owned(),
                     profile_name: "summary".to_owned(),
                     generation_settings: json!({}),

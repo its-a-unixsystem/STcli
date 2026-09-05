@@ -102,6 +102,7 @@ async fn proof_component_contributes_only_granted_recorded_effects() {
     let command = store
         .invoke_plugin_command(
             created.session.session_id,
+            None,
             "org.stcli.proof",
             "proof-set",
             json!({"value": 1}),
@@ -144,6 +145,7 @@ async fn proof_component_contributes_only_granted_recorded_effects() {
     assert!(matches!(
         store.invoke_plugin_command(
             created.session.session_id,
+            None,
             "org.stcli.proof",
             "proof-set",
             json!(null)
@@ -444,6 +446,7 @@ fn disabled_and_removed_plugins_do_not_execute() {
         store
             .invoke_plugin_command(
                 created.session.session_id,
+                None,
                 "org.stcli.proof",
                 "proof-set",
                 json!(null)

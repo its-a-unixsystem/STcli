@@ -255,22 +255,25 @@ add a fifth capability to the fixed consent grant.
 
 ### `SillyTavern.getContext()` read-only surface
 
-`SillyTavern.getContext()` returns a frozen, deep-copied snapshot of the active session. The
-snapshot is rebuilt for every call; writes to it warn without effect. The frozen fields are:
+`SillyTavern.getContext()` returns a frozen, deep-copied snapshot of the active session. Each call
+refreshes `chat` from authoritative Branch storage, so a callback can detect a changed Selection or
+history prefix after asynchronous inference. If refresh fails, the last complete snapshot is
+returned with a warning. The frozen fields are:
 
 | Field | Content |
 |---|---|
 | `name1` | The active persona name (the "user" name). |
 | `name2` | The active character name. |
-| `chatId` | The active branch ID. |
-| `sessionId` | The active session ID. |
-| `chat` | The full chat history as `[{role, content}]` turns. |
+| `chatId` | The active Branch ID. |
+| `sessionId` | The active Session ID. |
+| `chat` | Active, visible Greeting/user/selected-Candidate entries in ST message shape. |
 | `characters` | One-element array with the active character's name and revision hash. |
 | `characterId` | The active character's content-addressed revision hash. |
 | `groups` | Empty array (group chat is not yet supported). |
 | `chatMetadata` | Empty object placeholder. |
 | `worldInfo` | Empty array (lorebook exposure is not yet supported). |
-| `generationSettings` | The effective generation settings (session + preset + profile defaults). |
+| `generationSettings` | The effective generation settings (Session + preset + profile defaults). |
+| `tokenizer` | The exact tokenizer ID used by `getTokenCount`. |
 
 The following methods are present as control-flow-safe host APIs. Generation calls return a
 Promise and route through the brokered Secondary Inference boundary; they do not mutate the
@@ -279,15 +282,17 @@ primary Session Configuration Revision.
 | Method | Return value | Requirements |
 |---|---|---|
 | `setExtensionPrompt` | `undefined` | Prompt slot injection |
-| `registerSlashCommand` | `undefined` | Ticket 04 (slash commands) |
-| `executeSlashCommands` | `undefined` | Ticket 04 |
-| `substituteParams(text)` | `text` unchanged | Macro expansion |
-| `getTokenCount(text)` | `0` | Token counting |
-| `saveSettingsDebounced` | `undefined` | Ticket 05 (settings) |
-| `saveMetadata` | `undefined` | Ticket 05 |
-| `updateChatMetadata` | `undefined` | Ticket 05 |
-| `generateQuietPrompt(prompt, options)` | `Promise<string>` | `secondary-inference` grant |
-| `generateRaw(prompt, options)` | `Promise<string>` | `secondary-inference` grant |
+| `registerMacro(name, value)` | `undefined` | Declared macro during `pre-prompt` |
+| `registerSlashCommand` | `undefined` | Declared Extension commands |
+| `executeSlashCommands` | `undefined` | Unsupported control-flow-safe stub |
+| `substituteParams(text)` | `text` unchanged | Macro expansion fallback |
+| `getTokenCount(text)` | Exact token count | Valid tokenizer context |
+| `saveSettingsDebounced` | `undefined` | Namespaced settings write |
+| `saveMetadata` | `undefined` | Unsupported control-flow-safe stub |
+| `updateChatMetadata` | `undefined` | Unsupported control-flow-safe stub |
+| `generateQuietPrompt(prompt, options)` or object form | `Promise<string>` | `secondary-inference` grant |
+| `generateRaw(prompt, options)` or `{prompt, systemPrompt, responseLength, providerProfile}` | `Promise<string>` | `secondary-inference` grant |
+| `getLastInferenceReceipt()` | Frozen receipt or `null` | Latest call in this invocation |
 
 `options.provider` or `options.providerProfile` selects a named `[providers.<name>]` profile;
 when omitted, the session's provider profile is used. Other option fields are independent,
@@ -304,6 +309,39 @@ network access or creating an Attempt. Replay applies the recorded completion an
 against the authoritative background Attempt without resolving credentials, contacting the
 network, or executing the Extension. Denials and malformed calls warn and return an empty
 control-flow-safe completion.
+
+### Bundled Summarize (`memory`) Extension
+
+STcli installs the `memory` package offline but does not enable or adopt it automatically. Enable it
+for future Sessions with `stcli extension enable memory --version 1.0.0 --digest <digest>`, or adopt
+the exact installed pin into one Session with `stcli extension adopt --session <session> memory
+--version 1.0.0 --digest <digest> --settings '<json>'`. This opt-in prevents unsolicited provider
+calls.
+
+Settings live at `extension_settings.memory`: `memoryFrozen` (`false`), `source` (`"main"`),
+`prompt`, `template` (`"[Summary: {{summary}}]"`), `position` (`0`), `role` (`0`), `depth` (`2`),
+`promptWords` (`200`), `promptInterval` (`10`), `promptForceWords` (`0`),
+`overrideResponseLength` (`0`), `maxMessagesPerRequest` (`0`), and `providerProfile` (`""`). An
+empty profile uses the Session provider; a nonempty value selects that named provider profile.
+
+Automatic refresh runs when either enabled threshold is met and `memoryFrozen` is false. Interval
+or word threshold `0` disables only that trigger. The newest chat entry is always excluded, and the
+request stops before its token or entry cap. Run a forced Branch refresh with `stcli plugin invoke
+--session <session> --branch <branch> memory summarize`; unnamed text instead summarizes only that
+text and does not create a checkpoint.
+
+Successful refreshes append immutable checkpoints containing the raw summary, Dialogue Cursor,
+History Prefix Digest, producing background Attempt ID, and creating Branch ID. Injection selects
+the newest checkpoint whose covered active-history prefix still matches, allowing unchanged child
+Branch prefixes while rejecting edits, hides, deletes, divergent branches, and changed Candidate
+Selections. `{{summary}}` exposes raw text; `template`, `position`, `depth`, and `role` control the
+default prompt contribution. Failed, cancelled, empty, or stale results preserve prior state.
+Recorded Plugin effects, state mutations, and inference receipts provide offline Replay without the
+JavaScript component or provider.
+
+Compatibility is limited to the pinned SillyTavern Main API raw non-blocking builder. Extras,
+WebLLM, Classic/default builders, World Info scanning, visual settings UI, and Restore Previous are
+not included.
 
 Any other `SillyTavern.X` member access returns a no-op function that warns once per property
 name. Writes to `SillyTavern` properties warn once and are ignored.

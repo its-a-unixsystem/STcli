@@ -287,7 +287,7 @@ These commands work the same for Wasm plugins and for script plugins. The manife
 | `plugin inspect` | `plugin inspect <id>` | Targets a Plugin ID. |
 | `plugin adopt` | `plugin adopt --session <session> <id> --version <version> --digest <digest> [--capability <name>]... [--settings <json>] [--egress-domain <host>]...` | Targets a Plugin ID, uses the Session as context, pins version and digest, grants each repeated capability, and adds each repeated domain to the egress allow-list (requires the `brokered-egress` capability to take effect). Settings default to `{}`. |
 | `plugin upgrade` | `plugin upgrade --session <session> <id> --version <version> --digest <digest>` | Targets a Plugin ID and pins its replacement version and digest for the Session. |
-| `plugin invoke` | `plugin invoke --session <session> <id> <command> [--arguments <json>]` | Targets a Plugin ID, invokes its positional command name, and passes JSON arguments. Arguments default to `null`. |
+| `plugin invoke` | `plugin invoke --session <session> [--branch <branch>] <id> <command> [--arguments <json>]` | Targets a Plugin ID and invokes its positional command name. `--branch` supplies active Branch context and enables Secondary Inference for Extension commands; arguments default to `null`. |
 | `plugin enable` | `plugin enable --session <session> <id>` | Targets a Plugin ID in the Session context. |
 | `plugin disable` | `plugin disable --session <session> <id>` | Targets a Plugin ID in the Session context. |
 | `plugin remove` | `plugin remove <id>` | Removes an installed Plugin ID. Removing a default Plugin persists an opt-out until `plugin restore-defaults`. |

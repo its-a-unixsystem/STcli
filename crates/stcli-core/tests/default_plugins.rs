@@ -5,9 +5,10 @@ use stcli_testkit::{configuration, fixtures};
 use tempfile::tempdir;
 
 const NEMO_ID: &str = "org.stcli.nemo-directives";
+const MEMORY_ID: &str = "memory";
 
 #[test]
-fn default_nemo_plugin_materializes_offline_and_idempotently() {
+fn default_packages_materialize_offline_and_idempotently() {
     let directory = tempdir().unwrap();
     let database = directory.path().join("stcli.sqlite3");
     let engine = StcliEngine::new(&database);
@@ -22,22 +23,30 @@ fn default_nemo_plugin_materializes_offline_and_idempotently() {
         .iter()
         .find(|plugin| plugin.manifest.id == NEMO_ID)
         .unwrap();
-    assert!(nemo.inspection_enabled);
-    assert_eq!(nemo.manifest.version.to_string(), "1.0.0");
-
-    let second = engine
-        .inspect(EngineQuery::Plugins { plugin_id: None })
+    let memory = first
+        .iter()
+        .find(|plugin| plugin.manifest.id == MEMORY_ID)
         .unwrap();
-    let EngineInspection::Plugins(second) = second else {
+    assert!(nemo.inspection_enabled);
+    assert!(!memory.inspection_enabled);
+    assert_eq!(nemo.manifest.version.to_string(), "1.0.0");
+    assert_eq!(memory.manifest.version.to_string(), "1.0.0");
+
+    let EngineInspection::Plugins(second) = engine
+        .inspect(EngineQuery::Plugins { plugin_id: None })
+        .unwrap()
+    else {
         panic!("unexpected inspection");
     };
-    assert_eq!(
-        second
-            .iter()
-            .filter(|plugin| plugin.manifest.id == NEMO_ID)
-            .count(),
-        1
-    );
+    for id in [NEMO_ID, MEMORY_ID] {
+        assert_eq!(
+            second
+                .iter()
+                .filter(|plugin| plugin.manifest.id == id)
+                .count(),
+            1
+        );
+    }
 }
 
 #[tokio::test]
@@ -52,11 +61,12 @@ async fn removing_default_plugin_persists_until_explicit_reinstall() {
         panic!("unexpected inspection");
     };
     assert!(plugins.iter().any(|plugin| plugin.manifest.id == NEMO_ID));
+    assert!(plugins.iter().any(|plugin| plugin.manifest.id == MEMORY_ID));
 
     engine
         .execute(
             EngineCommand::RemovePlugin {
-                plugin_id: NEMO_ID.to_owned(),
+                plugin_id: MEMORY_ID.to_owned(),
             },
             |_| {},
         )
@@ -68,7 +78,8 @@ async fn removing_default_plugin_persists_until_explicit_reinstall() {
     else {
         panic!("unexpected inspection");
     };
-    assert!(plugins.iter().all(|plugin| plugin.manifest.id != NEMO_ID));
+    assert!(plugins.iter().all(|plugin| plugin.manifest.id != MEMORY_ID));
+    assert!(plugins.iter().any(|plugin| plugin.manifest.id == NEMO_ID));
 
     engine
         .execute(EngineCommand::RestoreDefaultPlugins, |_| {})
@@ -83,8 +94,9 @@ async fn removing_default_plugin_persists_until_explicit_reinstall() {
     assert!(
         plugins
             .iter()
-            .any(|plugin| { plugin.manifest.id == NEMO_ID && plugin.inspection_enabled })
+            .any(|plugin| plugin.manifest.id == NEMO_ID && plugin.inspection_enabled)
     );
+    assert!(plugins.iter().any(|plugin| plugin.manifest.id == MEMORY_ID));
 }
 
 #[tokio::test]
@@ -108,6 +120,7 @@ async fn default_materialization_never_rewrites_session_plugin_pins() {
     let created = store
         .create_session(configuration(character.revision_hash), 0)
         .unwrap();
+    assert!(created.configuration.configuration.plugins.is_empty());
     engine
         .execute(
             EngineCommand::AdoptPlugin {
