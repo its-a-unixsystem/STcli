@@ -1918,7 +1918,7 @@ fn install_inference<'js>(
         let object = options.as_object().cloned().unwrap_or_default();
         let profile = object.get("provider").or_else(|| object.get("providerProfile")).and_then(JsonValue::as_str).unwrap_or(&invocation.default_profile).to_owned();
         let request = crate::InferenceRequest { prompt, profile_name: profile, generation_settings: JsonValue::Object(object) };
-        match invocation.broker.infer("st-bridge", &invocation.policy, &request) {
+        match invocation.broker.infer(&invocation, &request) {
             Ok(response) => { effects.borrow_mut().inference_receipts.push(response.receipt); Ok(response.text) }
             Err(error) => { logs.borrow_mut().push(crate::ScriptLog { level: "warn".to_owned(), message: error.to_string() }); Ok(String::new()) }
         }

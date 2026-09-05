@@ -54,6 +54,14 @@ enum Command {
         #[command(subcommand)]
         command: MessageCommand,
     },
+    Attempts {
+        #[arg(long)]
+        session: EntityId,
+        #[arg(long)]
+        branch: Option<EntityId>,
+        #[arg(long, value_enum, default_value_t = AttemptKindArg::Background)]
+        kind: AttemptKindArg,
+    },
     Turn {
         #[command(subcommand)]
         command: TurnCommand,
@@ -104,12 +112,18 @@ enum Command {
     },
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum AttemptKindArg {
+    Background,
+}
+
 impl Command {
     fn name(&self) -> &'static str {
         match self {
             Self::Artifact { command } => command.name(),
             Self::Session { command } => command.name(),
             Self::Message { command } => command.name(),
+            Self::Attempts { .. } => "attempts",
             Self::Turn { command } => command.name(),
             Self::Branch { command } => command.name(),
             Self::Candidate { command } => command.name(),
@@ -669,6 +683,11 @@ async fn run(output: OutputFormat, command: Command) -> Result<()> {
         Command::Artifact { command } => artifact(output, command).await,
         Command::Session { command } => session(output, command).await,
         Command::Message { command } => message(output, command).await,
+        Command::Attempts {
+            session,
+            branch,
+            kind: AttemptKindArg::Background,
+        } => attempts(output, session, branch),
         Command::Turn { command } => turn(output, command).await,
         Command::Branch { command } => branch(output, command).await,
         Command::Candidate { command } => candidate(output, command).await,
@@ -1358,6 +1377,18 @@ async fn message(output: OutputFormat, command: MessageCommand) -> Result<()> {
         }
     };
     emit_engine_result(output, command_name, &result)
+}
+
+fn attempts(output: OutputFormat, session_id: EntityId, branch_id: Option<EntityId>) -> Result<()> {
+    let engine = open_engine()?;
+    let EngineInspection::Attempts(attempts) = engine.inspect(EngineQuery::BackgroundAttempts {
+        session_id,
+        branch_id,
+    })?
+    else {
+        unreachable!()
+    };
+    emit(output, "attempts", &attempts)
 }
 
 async fn turn(output: OutputFormat, command: TurnCommand) -> Result<()> {

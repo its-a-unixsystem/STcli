@@ -140,10 +140,19 @@ function prePrompt() {
         )
         .await
         .unwrap();
-    assert!(first.attempt.prompt_plan.segments.iter().any(|segment| {
-        segment.source == "runtime-plugin:org.stcli.script-proof#1"
-            && segment.content == "[Current time: 9:00]"
-    }));
+    assert!(
+        first
+            .attempt
+            .require_primary()
+            .unwrap()
+            .1
+            .segments
+            .iter()
+            .any(|segment| {
+                segment.source == "runtime-plugin:org.stcli.script-proof#1"
+                    && segment.content == "[Current time: 9:00]"
+            })
+    );
     assert_eq!(
         store
             .state_transaction(created.session.session_id)
@@ -167,10 +176,19 @@ function prePrompt() {
         )
         .await
         .unwrap();
-    assert!(second.attempt.prompt_plan.segments.iter().any(|segment| {
-        segment.source == "runtime-plugin:org.stcli.script-proof#1"
-            && segment.content == "[Current time: 10:00]"
-    }));
+    assert!(
+        second
+            .attempt
+            .require_primary()
+            .unwrap()
+            .1
+            .segments
+            .iter()
+            .any(|segment| {
+                segment.source == "runtime-plugin:org.stcli.script-proof#1"
+                    && segment.content == "[Current time: 10:00]"
+            })
+    );
     assert_eq!(
         store
             .state_transaction(created.session.session_id)

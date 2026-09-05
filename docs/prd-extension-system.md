@@ -199,9 +199,10 @@ Every external interaction by a Plugin must map to one of two engine-brokered ca
 - **Enables**: next-action suggestions (Roadway), pre-generation internal monologue (Stepped Thinking), memory-core summarization (Megumin).
 - **Guarantees**:
   - The Plugin never crafts raw HTTP headers, manages SSE sockets, or handles API keys.
-  - The engine tracks token usage and response status.
-  - The engine records the secondary generation attempt and response receipt into the SQLite Turn Trace.
-  - **Replay**: During offline capsule replay, the engine yields the recorded text receipt without making live provider calls.
+  - Each live call is a background Generation Attempt linked to its Session, Branch, initiating Attempt, and caller; it cannot append dialogue or select a Candidate.
+  - The engine pins the provider profile and effective settings and records request/response hashes, terminal status, provider receipt, and available usage.
+  - Background cancellation is independent and compare-and-set; it neither cancels nor mutates the initiating Attempt.
+  - **Replay**: During offline capsule replay, the engine yields the recorded text and metadata without making live provider calls or re-running the caller.
 
 #### Primitive 2: Brokered HTTPS Egress (`Capability::HttpEgress`)
 - **What it is**: Outbound REST / HTTP requests via `wasi:http/outgoing-handler` (Engine Hook) or host `fetch()` (Plugin Script).

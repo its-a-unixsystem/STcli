@@ -178,9 +178,10 @@ impl Store {
         let attempt = self
             .attempt(attempt_id)?
             .ok_or(CapsuleError::AttemptNotFound(attempt_id))?;
+        let (turn_id, prompt_plan) = attempt.require_primary()?;
         let turn = self
-            .turn(attempt.turn_id)?
-            .ok_or(CapsuleError::TurnNotFound(attempt.turn_id))?;
+            .turn(turn_id)?
+            .ok_or(CapsuleError::TurnNotFound(turn_id))?;
         let session = self
             .session(turn.session_id)?
             .ok_or(CapsuleError::SessionNotFound(turn.session_id))?;
@@ -246,7 +247,7 @@ impl Store {
             configuration: Some(configuration),
             baseline: Some(CapsuleBaseline { session, branch }),
             effects: attempt.effect_receipt.clone(),
-            prompt: Some(attempt.prompt_plan.clone()),
+            prompt: Some(prompt_plan.clone()),
             provider: CapsuleProvider {
                 request_hash: attempt.provider_request_hash.clone(),
                 receipt: attempt.provider_receipt.clone(),
@@ -374,7 +375,9 @@ impl Store {
         let candidate_id = projection.candidate.as_ref().map(|_| EntityId::new());
         let configuration_bytes =
             canonical_json(&serde_json::to_value(&configuration.configuration)?)?;
-        let prompt_bytes = canonical_json(&serde_json::to_value(&projection.attempt.prompt_plan)?)?;
+        let prompt_bytes = canonical_json(&serde_json::to_value(
+            projection.attempt.require_primary()?.1,
+        )?)?;
         let effect_bytes = projection
             .attempt
             .effect_receipt
@@ -386,6 +389,18 @@ impl Store {
         let provider_receipt = projection
             .attempt
             .provider_receipt
+            .as_ref()
+            .map(canonical_json)
+            .transpose()?;
+        let effective_settings = projection
+            .attempt
+            .effective_generation_settings
+            .as_ref()
+            .map(canonical_json)
+            .transpose()?;
+        let usage = projection
+            .attempt
+            .usage
             .as_ref()
             .map(canonical_json)
             .transpose()?;
@@ -480,10 +495,16 @@ impl Store {
             "attempt.started",
             &json!({
                 "attempt_id": attempt_id,
+                "session_id": session_id,
+                "branch_id": branch_id,
+                "kind": crate::AttemptKind::Primary,
                 "turn_id": turn_id,
                 "config_hash": configuration.revision_hash,
                 "retry_of_attempt_id": null,
                 "prompt_plan": projection.attempt.prompt_plan,
+                "provider_profile": projection.attempt.provider_profile,
+                "effective_generation_settings": projection.attempt.effective_generation_settings,
+                "provider_request_hash": projection.attempt.provider_request_hash,
                 "effect_receipt": projection.attempt.effect_receipt,
             }),
         )?;
@@ -506,14 +527,20 @@ impl Store {
         )?;
         transaction
             .execute(
-                "INSERT INTO attempts(attempt_id, turn_id, config_hash, retry_of_attempt_id, status, prompt_plan, provider_request_hash, provider_receipt, effect_receipt, error_message, created_event_id, completed_event_id) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO attempts(attempt_id, session_id, branch_id, kind, turn_id, config_hash, status, prompt_plan, provider_profile, effective_generation_settings, provider_request_hash, response_hash, usage, provider_receipt, effect_receipt, error_message, created_event_id, completed_event_id) VALUES (?1, ?2, ?3, 'primary', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 params![
                     attempt_id.to_string(),
+                    session_id.to_string(),
+                    branch_id.to_string(),
                     turn_id.to_string(),
                     configuration.revision_hash.to_string(),
                     projection.attempt.status.as_str(),
                     prompt_bytes,
+                    projection.attempt.provider_profile,
+                    effective_settings,
                     projection.attempt.provider_request_hash.as_ref().map(ToString::to_string),
+                    projection.attempt.response_hash.as_ref().map(ToString::to_string),
+                    usage,
                     provider_receipt,
                     effect_bytes,
                     projection.attempt.error_message,
@@ -719,7 +746,7 @@ impl TurnCapsule {
             || projection.turn.branch_id != self.identity.branch_id
             || projection.turn.turn_id != self.identity.turn_id
             || projection.attempt.attempt_id != self.identity.attempt_id
-            || projection.attempt.turn_id != self.identity.turn_id
+            || projection.attempt.turn_id != Some(self.identity.turn_id)
             || projection.attempt.config_hash != configuration.revision_hash
         {
             return Err(CapsuleError::IdentityMismatch);

@@ -16,7 +16,7 @@ use crate::{
 };
 
 const TRACE_PAYLOAD_DOMAIN: &str = "stcli:trace-payload:v1";
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 pub struct Store {
     pub(crate) connection: Connection,
@@ -46,7 +46,8 @@ impl Store {
             .map_err(StorageError::Sqlite)?;
         migrate(&connection)?;
         set_private_file_permissions(&path)?;
-        let inference = crate::InferenceBroker::live(crate::Config::load(parent)?);
+        let inference =
+            crate::InferenceBroker::live(crate::Config::load(parent)?).with_database(path.clone());
         Ok(Self {
             connection,
             path,
@@ -61,7 +62,7 @@ impl Store {
     }
 
     pub fn set_inference_broker(&mut self, broker: crate::InferenceBroker) {
-        self.inference = broker;
+        self.inference = broker.with_database(self.path.clone());
     }
 
     pub fn path(&self) -> &Path {
@@ -296,15 +297,16 @@ impl Store {
             let mut statement = self
                 .connection
                 .prepare(
-                    "SELECT attempts.attempt_id, attempts.turn_id, turns.session_id FROM attempts JOIN turns ON turns.turn_id = attempts.turn_id WHERE attempts.status = 'running' ORDER BY attempts.rowid",
+                    "SELECT attempt_id, turn_id, session_id, kind FROM attempts WHERE status = 'running' ORDER BY rowid",
                 )
                 .map_err(StorageError::Sqlite)?;
             statement
                 .query_map([], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
                     ))
                 })
                 .map_err(StorageError::Sqlite)?
@@ -316,7 +318,7 @@ impl Store {
             .transaction()
             .map_err(StorageError::Sqlite)?;
         let mut attempt_ids = Vec::with_capacity(interrupted.len());
-        for (attempt_id, turn_id, session_id) in interrupted {
+        for (attempt_id, turn_id, session_id, kind) in interrupted {
             let session_id = session_id
                 .parse::<EntityId>()
                 .map_err(|error| StorageError::InvalidIdentity(error.to_string()))?;
@@ -327,6 +329,7 @@ impl Store {
                 &serde_json::json!({
                     "attempt_id": attempt_id,
                     "turn_id": turn_id,
+                    "kind": kind,
                 }),
             )?;
             transaction
@@ -705,13 +708,22 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
             );
             CREATE TABLE IF NOT EXISTS attempts (
                 attempt_id TEXT PRIMARY KEY,
-                turn_id TEXT NOT NULL REFERENCES turns(turn_id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+                branch_id TEXT NOT NULL REFERENCES branches(branch_id) ON DELETE CASCADE,
+                kind TEXT NOT NULL,
+                turn_id TEXT REFERENCES turns(turn_id) ON DELETE CASCADE,
+                parent_attempt_id TEXT REFERENCES attempts(attempt_id),
+                caller TEXT,
                 config_hash TEXT NOT NULL REFERENCES session_config_revisions(revision_hash),
                 retry_of_attempt_id TEXT REFERENCES attempts(attempt_id),
                 status TEXT NOT NULL,
-                prompt_plan BLOB NOT NULL,
+                prompt_plan BLOB,
+                provider_profile TEXT,
+                effective_generation_settings BLOB,
                 effect_receipt BLOB,
                 provider_request_hash TEXT,
+                response_hash TEXT,
+                usage BLOB,
                 provider_receipt BLOB,
                 error_message TEXT,
                 created_event_id TEXT NOT NULL,
@@ -830,6 +842,69 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
             .execute("ALTER TABLE attempts ADD COLUMN effect_receipt BLOB", [])
             .map_err(StorageError::Sqlite)?;
     }
+    if !column_exists(connection, "attempts", "session_id")? {
+        connection
+            .execute_batch(
+                "
+                PRAGMA foreign_keys = OFF;
+                BEGIN;
+                CREATE TABLE attempts_v12 (
+                    attempt_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+                    branch_id TEXT NOT NULL REFERENCES branches(branch_id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL,
+                    turn_id TEXT REFERENCES turns(turn_id) ON DELETE CASCADE,
+                    parent_attempt_id TEXT REFERENCES attempts(attempt_id),
+                    caller TEXT,
+                    config_hash TEXT NOT NULL REFERENCES session_config_revisions(revision_hash),
+                    retry_of_attempt_id TEXT REFERENCES attempts(attempt_id),
+                    status TEXT NOT NULL,
+                    prompt_plan BLOB,
+                    provider_profile TEXT,
+                    effective_generation_settings BLOB,
+                    effect_receipt BLOB,
+                    provider_request_hash TEXT,
+                    response_hash TEXT,
+                    usage BLOB,
+                    provider_receipt BLOB,
+                    error_message TEXT,
+                    created_event_id TEXT NOT NULL,
+                    completed_event_id TEXT
+                );
+                INSERT INTO attempts_v12(
+                    attempt_id, session_id, branch_id, kind, turn_id, config_hash,
+                    retry_of_attempt_id, status, prompt_plan, effect_receipt,
+                    provider_request_hash, provider_receipt, error_message,
+                    created_event_id, completed_event_id
+                )
+                SELECT attempts.attempt_id, turns.session_id, turns.branch_id, 'primary',
+                       attempts.turn_id, attempts.config_hash, attempts.retry_of_attempt_id,
+                       attempts.status, attempts.prompt_plan, attempts.effect_receipt,
+                       attempts.provider_request_hash, attempts.provider_receipt,
+                       attempts.error_message, attempts.created_event_id,
+                       attempts.completed_event_id
+                FROM attempts
+                JOIN turns ON turns.turn_id = attempts.turn_id;
+                DROP TABLE attempts;
+                ALTER TABLE attempts_v12 RENAME TO attempts;
+                COMMIT;
+                PRAGMA foreign_keys = ON;
+                ",
+            )
+            .map_err(StorageError::Sqlite)?;
+    }
+    connection
+        .execute_batch(
+            "
+            CREATE INDEX IF NOT EXISTS attempts_session_branch
+                ON attempts(session_id, branch_id);
+            CREATE INDEX IF NOT EXISTS attempts_parent
+                ON attempts(parent_attempt_id);
+            CREATE INDEX IF NOT EXISTS attempts_status
+                ON attempts(status);
+            ",
+        )
+        .map_err(StorageError::Sqlite)?;
     if found.unwrap_or_default() < 9 {
         connection
             .execute(
@@ -1097,8 +1172,8 @@ mod tests {
                  VALUES ('{session_id}', 'sha256:{zeros}', '{branch_id}', 0, '{session_event}');
                  INSERT INTO turns(turn_id, session_id, branch_id, user_content, created_event_id)
                  VALUES ('{turn_id}', '{session_id}', '{branch_id}', 'interrupted', '{turn_event}');
-                 INSERT INTO attempts(attempt_id, turn_id, config_hash, status, prompt_plan, created_event_id)
-                 VALUES ('{attempt_id}', '{turn_id}', 'sha256:{zeros}', 'running', x'7b7d', '{attempt_event}');
+                 INSERT INTO attempts(attempt_id, session_id, branch_id, kind, turn_id, config_hash, status, prompt_plan, created_event_id)
+                 VALUES ('{attempt_id}', '{session_id}', '{branch_id}', 'primary', '{turn_id}', 'sha256:{zeros}', 'running', x'7b7d', '{attempt_event}');
                  PRAGMA foreign_keys = ON;",
                 zeros = "0".repeat(64),
                 session_event = EntityId::new(),

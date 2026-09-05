@@ -84,9 +84,9 @@ A developer who adds deterministic macros, commands, prompt segments, and namesp
 
 The canonical vocabulary lives in `CONTEXT.md`. The structural relationships are visualized in [`docs/architecture/domain-model.html`](docs/architecture/domain-model.html) — a UML class diagram showing composition, cardinality, and pinning.
 
-**Containment.** A **Session** owns a tree of **Branches** and a set of **Session Configuration Revisions**. Each **Branch** opens with one **Greeting Selection** and owns a linear sequence of **Turns**. A **Turn** owns multiple **Generation Attempts** and **Candidates** and may have zero or one **Selection** (the currently active Candidate). A **Candidate** is an assistant response variant with origin `generated`, `continued`, `manual`, or accepted partial output.
+**Containment.** A **Session** owns a tree of **Branches** and a set of **Session Configuration Revisions**. Each **Branch** opens with one **Greeting Selection** and owns a linear sequence of **Turns**. A **Turn** owns multiple primary **Generation Attempts** and **Candidates** and may have zero or one **Selection** (the currently active Candidate). A background Generation Attempt belongs to the Session and Branch, links to an initiating Attempt and caller, and cannot create a Turn, Candidate, or Selection. A **Candidate** is an assistant response variant with origin `generated`, `continued`, `manual`, or accepted partial output.
 
-**Pinning.** A **Session Configuration Revision** pins every behavior-affecting selection — character, persona, lorebooks, preset, provider, model, tokenizer, profile, and plugins — and references zero or more **Artifact Revisions**. Every **Generation Attempt** pins exactly one configuration revision.
+**Pinning.** A **Session Configuration Revision** pins every behavior-affecting selection — character, persona, lorebooks, preset, provider, model, tokenizer, profile, and plugins — and references zero or more **Artifact Revisions**. Every primary or background **Generation Attempt** pins exactly one configuration revision.
 
 **Derivation** (not structural, not shown in the class diagram):
 
@@ -220,7 +220,7 @@ The canonical vocabulary lives in `CONTEXT.md`. The structural relationships are
 - Lore trace reports source precedence, keys, ECMAScript regex result, optional filters, recursion, probability draw, groups, timed effects, generation triggers, insertion, and budget result.
 - Variable inspection shows typed and raw values, scope, owner, origin, revision, coercion profile, mutation Attempt, and commit/discard result.
 - Plugin inspection shows pinned digest, grants, event inputs, declarative effects, ordering, failure, and limit usage.
-- Provider inspection shows a redacted canonical request, request hash, status, safe response receipt, usage, and error.
+- Provider inspection shows primary and background Attempts, their parent/caller ownership, a redacted canonical request, request and response hashes, status, safe response receipt, available usage, and error.
 - Segment-level provenance is required; token-span provenance is not.
 - Human and versioned JSON output are available.
 

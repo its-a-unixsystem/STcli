@@ -428,33 +428,48 @@ impl PluginHost {
                             mode,
                         }
                     });
-                    let inference =
-                        self.inference
-                            .clone()
-                            .map(|broker| crate::InferenceInvocation {
-                                broker,
-                                policy: crate::InferencePolicy {
-                                    capability_granted: grant
-                                        .capabilities
-                                        .contains(&PluginCapability::InferenceCapability),
-                                    mode: if input
-                                        .session
-                                        .get("dry_run")
-                                        .and_then(Value::as_bool)
-                                        .unwrap_or(false)
-                                    {
-                                        crate::InferenceMode::DryRun
-                                    } else {
-                                        crate::InferenceMode::Live
-                                    },
-                                },
-                                default_profile: input
+                    let inference = self.inference.clone().map(|broker| {
+                        let read_id = |key: &str| {
+                            input
+                                .session
+                                .get(key)
+                                .and_then(Value::as_str)
+                                .and_then(|value| value.parse().ok())
+                        };
+                        crate::InferenceInvocation {
+                            broker,
+                            policy: crate::InferencePolicy {
+                                capability_granted: grant
+                                    .capabilities
+                                    .contains(&PluginCapability::InferenceCapability),
+                                mode: if input
                                     .session
-                                    .get("provider_profile")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                    .to_owned(),
-                            });
+                                    .get("dry_run")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false)
+                                {
+                                    crate::InferenceMode::DryRun
+                                } else {
+                                    crate::InferenceMode::Live
+                                },
+                            },
+                            default_profile: input
+                                .session
+                                .get("provider_profile")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
+                            session_id: read_id("session_id"),
+                            branch_id: read_id("branch_id"),
+                            parent_attempt_id: read_id("attempt_id"),
+                            config_hash: input
+                                .session
+                                .get("config_hash")
+                                .and_then(Value::as_str)
+                                .and_then(|value| value.parse().ok()),
+                            caller: installed.manifest.id.clone(),
+                        }
+                    });
                     let outcome = crate::st_bridge::execute(
                         installed,
                         &input,

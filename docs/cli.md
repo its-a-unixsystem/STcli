@@ -241,6 +241,14 @@ For resolution details, provenance tracking, and full preset field classificatio
 | `message cancel` | `message cancel <attempt>` | Targets the Generation Attempt. |
 | `message turns` | `message turns <branch>` | Targets the Branch whose Turns are listed. |
 
+## Attempt commands
+
+| Command | Canonical syntax | Argument behavior |
+| --- | --- | --- |
+| `attempts` | `attempts --session <session> [--branch <branch>] --kind background` | Lists background Generation Attempts for a Session, optionally restricted to one Branch. Records include initiating Attempt, caller, profile, effective settings, hashes, status, usage, and receipts. |
+
+Background Attempts never own Turns or Candidates. `message cancel <attempt>` cancels one independently; cancellation does not cascade between parent and child Attempts.
+
 ## Turn commands
 
 | Command | Canonical syntax | Argument behavior |

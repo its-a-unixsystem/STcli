@@ -1194,7 +1194,7 @@ async fn live_attempt_records_lifecycle_and_rerun_reuses_recorded_prompt() {
         .unwrap();
     let attempt_id = completed.attempt.attempt_id;
     let persisted = store.attempt(attempt_id).unwrap().unwrap();
-    let original_plan = persisted.prompt_plan.clone();
+    let original_plan = persisted.require_primary().unwrap().1.clone();
     let original_request = persisted
         .effect_receipt
         .as_ref()
@@ -1539,7 +1539,7 @@ async fn allowed_fetch_records_receipt_and_replays_offline() {
     // Offline replay: delete the component, dry_run_rerun must not re-execute.
     let attempt_id = attempt.attempt_id;
     let persisted = store.attempt(attempt_id).unwrap().unwrap();
-    let original_plan = persisted.prompt_plan.clone();
+    let original_plan = persisted.require_primary().unwrap().1.clone();
     let original_request = persisted
         .effect_receipt
         .as_ref()
@@ -2622,6 +2622,207 @@ globalThis.namedInterceptor = namedInterceptor;
 }
 
 #[tokio::test]
+async fn live_secondary_inference_records_linked_background_attempt_without_history_mutation() {
+    use stcli_core::{
+        AttemptKind, Config, InferenceBroker, InferenceTransport, InferenceTransportError,
+        ProviderEvent, ProviderResult, ProviderSettings, validate_persisted_inference_receipt,
+    };
+
+    struct UsageTransport;
+    impl InferenceTransport for UsageTransport {
+        fn generate(
+            &self,
+            _settings: &ProviderSettings,
+            request: &serde_json::Value,
+        ) -> Result<ProviderResult, InferenceTransportError> {
+            Ok(ProviderResult {
+                text: "nested summary".to_owned(),
+                request_hash: canonical_json_hash("test:request:v1", request).unwrap(),
+                receipt: json!({"provider": "stub"}),
+                events: vec![ProviderEvent::Usage {
+                    usage: json!({"prompt_tokens": 17, "completion_tokens": 3}),
+                }],
+            })
+        }
+    }
+
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("data");
+    let source = r#"
+async function namedInterceptor(chat) {
+    await SillyTavern.generateQuietPrompt("Summarize this", { provider: "summary", temperature: 0.2 });
+    return chat;
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+    let plugin = write_bridge_plugin_with_capabilities(
+        &data.join("plugin"),
+        "org.stcli.background-attempt-proof",
+        source,
+        &["contribute-prompt", "secondary-inference"],
+    );
+    let registry = PluginRegistry::new(data.join("plugins"));
+    let installed = registry.install(&plugin).unwrap();
+    let primary = MockProvider::spawn(["Primary response"]).await.unwrap();
+    let database = data.join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.provider = primary.provider_settings();
+    configuration.plugins = vec![egress_pin(&installed, Vec::new())];
+    let created = store.create_session(configuration, 0).unwrap();
+    let mut summary_profile = primary.provider_settings();
+    summary_profile.id = "summary".to_owned();
+    store.set_inference_broker(InferenceBroker::stub(
+        Config {
+            providers: BTreeMap::from([("summary".to_owned(), summary_profile)]),
+            enabled_extensions: BTreeMap::new(),
+        },
+        Arc::new(UsageTransport),
+    ));
+
+    let completed = store
+        .send_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "Hello".to_owned(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let background = store
+        .background_attempts(created.session.session_id, Some(created.branch.branch_id))
+        .unwrap();
+    assert_eq!(background.len(), 1);
+    let background = &background[0];
+    assert_eq!(background.kind, AttemptKind::Background);
+    assert_eq!(
+        background.parent_attempt_id,
+        Some(completed.attempt.attempt_id)
+    );
+    assert_eq!(
+        background.caller.as_deref(),
+        Some("org.stcli.background-attempt-proof")
+    );
+    assert_eq!(background.status, AttemptStatus::Completed);
+    assert!(background.turn_id.is_none());
+    assert_eq!(background.provider_profile.as_deref(), Some("summary"));
+    assert_eq!(
+        background.usage,
+        Some(json!({"prompt_tokens": 17, "completion_tokens": 3}))
+    );
+    assert!(background.provider_request_hash.is_some());
+    assert!(background.response_hash.is_some());
+
+    let inference = completed
+        .attempt
+        .effect_receipt
+        .as_ref()
+        .unwrap()
+        .plugins
+        .iter()
+        .flat_map(|receipt| &receipt.inference)
+        .next()
+        .unwrap();
+    assert_eq!(inference.attempt_id, Some(background.attempt_id));
+    validate_persisted_inference_receipt(&store, inference).unwrap();
+    assert_eq!(
+        store
+            .turns_for_branch(created.branch.branch_id)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .candidates_for_turn(completed.turn.turn_id)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .turn(completed.turn.turn_id)
+            .unwrap()
+            .unwrap()
+            .selected_candidate_id,
+        Some(completed.candidate.candidate_id)
+    );
+}
+
+#[tokio::test]
+async fn pre_request_bridge_failure_leaves_reserved_primary_attempt_failed_without_selection() {
+    // Regression test for GH-25: preparation failures must not erase attempt identity.
+    use stcli_core::TurnError;
+
+    let directory = tempdir().unwrap();
+    let data = directory.path().join("data");
+    let source = r#"
+function namedInterceptor() {
+    throw new Error("pre-request failure");
+}
+globalThis.namedInterceptor = namedInterceptor;
+"#;
+    let plugin = write_test_bridge_plugin(
+        &data.join("plugin"),
+        "org.stcli.pre-request-failure-proof",
+        source,
+    );
+    let registry = PluginRegistry::new(data.join("plugins"));
+    let installed = registry.install(&plugin).unwrap();
+    let primary = MockProvider::spawn(["must not be called"]).await.unwrap();
+    let database = data.join("stcli.sqlite3");
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let mut configuration = base_configuration(character.revision_hash);
+    configuration.provider = primary.provider_settings();
+    configuration.plugins = vec![egress_pin(&installed, Vec::new())];
+    let created = store.create_session(configuration, 0).unwrap();
+
+    let error = store
+        .send_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "Hello".to_owned(),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, TurnError::Plugin(_)));
+    let turn = store
+        .turns_for_branch(created.branch.branch_id)
+        .unwrap()
+        .remove(0);
+    let attempts = store.attempts_for_turn(turn.turn_id).unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].status, AttemptStatus::Failed);
+    assert!(attempts[0].prompt_plan.is_none());
+    assert!(turn.selected_candidate_id.is_none());
+    assert!(store.candidates_for_turn(turn.turn_id).unwrap().is_empty());
+    let trace = store
+        .trace_events(Some(created.session.session_id))
+        .unwrap();
+    assert!(
+        trace
+            .iter()
+            .any(|event| event.event_type == "attempt.started")
+    );
+    assert!(
+        trace
+            .iter()
+            .any(|event| event.event_type == "attempt.failed")
+    );
+    assert!(
+        !trace
+            .iter()
+            .any(|event| event.event_type == "attempt.prepared")
+    );
+}
+#[tokio::test]
 async fn engine_config_directory_supplies_secondary_inference_profile() {
     use stcli_core::{Config, InferenceStatus, ProviderSettings, validate_inference_receipt};
 
@@ -2751,8 +2952,9 @@ globalThis.namedInterceptor = namedInterceptor;
 #[test]
 fn secondary_inference_replay_uses_recorded_text_with_zero_calls() {
     use stcli_core::{
-        Config, InferenceBroker, InferenceMode, InferencePolicy, InferenceRequest,
-        InferenceTransport, InferenceTransportError, ProviderSettings, validate_inference_receipt,
+        Config, InferenceBroker, InferenceInvocation, InferenceMode, InferencePolicy,
+        InferenceRequest, InferenceTransport, InferenceTransportError, ProviderResult,
+        ProviderSettings, content_blob_hash, validate_inference_receipt,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2762,9 +2964,14 @@ fn secondary_inference_replay_uses_recorded_text_with_zero_calls() {
             &self,
             _settings: &ProviderSettings,
             _request: &serde_json::Value,
-        ) -> Result<String, InferenceTransportError> {
+        ) -> Result<ProviderResult, InferenceTransportError> {
             self.0.fetch_add(1, Ordering::SeqCst);
-            Ok("network result must not be used".to_owned())
+            Ok(ProviderResult {
+                text: "network result must not be used".to_owned(),
+                request_hash: content_blob_hash(b"request"),
+                receipt: serde_json::Value::Null,
+                events: Vec::new(),
+            })
         }
     }
 
@@ -2792,13 +2999,22 @@ fn secondary_inference_replay_uses_recorded_text_with_zero_calls() {
         },
         transport.clone(),
     );
+    let invocation = InferenceInvocation {
+        broker: broker.clone(),
+        policy: InferencePolicy {
+            capability_granted: true,
+            mode: InferenceMode::DryRun,
+        },
+        default_profile: "summary".to_owned(),
+        session_id: None,
+        branch_id: None,
+        parent_attempt_id: None,
+        config_hash: None,
+        caller: "fixture".to_owned(),
+    };
     let recorded = broker
         .infer(
-            "fixture",
-            &InferencePolicy {
-                capability_granted: true,
-                mode: InferenceMode::DryRun,
-            },
+            &invocation,
             &InferenceRequest {
                 prompt: "Summarize this".to_owned(),
                 profile_name: "summary".to_owned(),

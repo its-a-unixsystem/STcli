@@ -1031,7 +1031,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            regenerated.attempt.prompt_plan.generation_type,
+            regenerated
+                .attempt
+                .require_primary()
+                .unwrap()
+                .1
+                .generation_type,
             GenerationType::Regenerate
         );
         assert_eq!(regenerated.candidate.origin, CandidateOrigin::Generated);

@@ -160,6 +160,22 @@ impl AttemptStatus {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AttemptKind {
+    Primary,
+    Background,
+}
+
+impl AttemptKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Background => "background",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CandidateOrigin {
     Generated,
@@ -228,17 +244,42 @@ pub struct PluginCommandResult {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AttemptProjection {
     pub attempt_id: EntityId,
-    pub turn_id: EntityId,
+    pub session_id: EntityId,
+    pub branch_id: EntityId,
+    pub kind: AttemptKind,
+    pub turn_id: Option<EntityId>,
+    pub parent_attempt_id: Option<EntityId>,
+    pub caller: Option<String>,
     pub config_hash: ContentHash,
     pub retry_of_attempt_id: Option<EntityId>,
     pub status: AttemptStatus,
-    pub prompt_plan: PromptPlan,
+    pub prompt_plan: Option<PromptPlan>,
+    pub provider_profile: Option<String>,
+    pub effective_generation_settings: Option<Value>,
     pub provider_request_hash: Option<ContentHash>,
+    pub response_hash: Option<ContentHash>,
+    pub usage: Option<Value>,
     pub provider_receipt: Option<Value>,
     pub effect_receipt: Option<AttemptEffectReceipt>,
     pub error_message: Option<String>,
     pub created_event_id: String,
     pub completed_event_id: Option<String>,
+}
+
+impl AttemptProjection {
+    pub fn require_primary(&self) -> Result<(EntityId, &PromptPlan), TurnError> {
+        if self.kind != AttemptKind::Primary {
+            return Err(TurnError::PrimaryAttemptRequired(self.attempt_id));
+        }
+        let turn_id = self
+            .turn_id
+            .ok_or(TurnError::AttemptTurnMissing(self.attempt_id))?;
+        let prompt_plan = self
+            .prompt_plan
+            .as_ref()
+            .ok_or(TurnError::AttemptNotPrepared(self.attempt_id))?;
+        Ok((turn_id, prompt_plan))
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -303,6 +344,7 @@ impl Store {
         excluded_turn_id: Option<EntityId>,
         parent_candidate: Option<(EntityId, String)>,
         dry_run: bool,
+        initiating_attempt_id: Option<EntityId>,
     ) -> Result<TurnPreparation, TurnError> {
         let preset = configuration
             .configuration
@@ -376,6 +418,7 @@ impl Store {
             &regex_scripts,
             text_prefill,
             dry_run,
+            initiating_attempt_id,
         )?;
         if let Some((candidate_id, content)) = parent_candidate {
             prompt_plan.parent_candidate_id = Some(candidate_id);
@@ -511,6 +554,41 @@ impl Store {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_live_attempt(
+        &mut self,
+        turn: &TurnProjection,
+        attempt: AttemptProjection,
+        configuration: &SessionConfigurationRecord,
+        user_content: &str,
+        generation_type: GenerationType,
+        excluded_turn_id: Option<EntityId>,
+        parent_candidate: Option<(EntityId, String)>,
+    ) -> Result<AttemptProjection, TurnError> {
+        let preparation = match self.prepare_turn(
+            turn.session_id,
+            turn.branch_id,
+            configuration,
+            user_content,
+            generation_type,
+            excluded_turn_id,
+            parent_candidate,
+            false,
+            Some(attempt.attempt_id),
+        ) {
+            Ok(preparation) => preparation,
+            Err(error) => {
+                self.fail_attempt(turn, &attempt, &error.to_string())?;
+                return Err(error);
+            }
+        };
+        self.prepare_attempt(
+            attempt,
+            &configuration.configuration.provider.id,
+            preparation,
+        )
+    }
+
     pub fn dry_run_message(
         &self,
         session_id: EntityId,
@@ -528,6 +606,7 @@ impl Store {
             None,
             None,
             true,
+            None,
         )?;
         Ok(Self::dry_run_result(
             session_id,
@@ -546,23 +625,16 @@ impl Store {
     ) -> Result<CompletedTurn, TurnError> {
         check_content_size(&user_content)?;
         let (config_hash, configuration) = self.session_configuration(session_id)?;
-        let preparation = self.prepare_turn(
-            session_id,
-            branch_id,
+        let (turn, attempt) =
+            self.begin_turn(session_id, branch_id, user_content, config_hash, None)?;
+        let attempt = self.prepare_live_attempt(
+            &turn,
+            attempt,
             &configuration,
-            &user_content,
+            &turn.user_content,
             GenerationType::Normal,
+            Some(turn.turn_id),
             None,
-            None,
-            false,
-        )?;
-        let (turn, attempt) = self.begin_turn(
-            session_id,
-            branch_id,
-            user_content,
-            config_hash,
-            None,
-            preparation,
         )?;
         self.execute_attempt(turn, attempt, configuration, &mut on_event)
             .await
@@ -580,38 +652,32 @@ impl Store {
         let previous = self
             .attempt(retry_of_attempt_id)?
             .ok_or(TurnError::AttemptNotFound(retry_of_attempt_id))?;
-        if previous.turn_id != turn_id {
+        let (previous_turn_id, previous_prompt) = previous.require_primary()?;
+        if previous_turn_id != turn_id {
             return Err(TurnError::RetryAttemptMismatch);
         }
+        let generation_type = previous_prompt.generation_type;
+        let parent_candidate = previous_prompt
+            .parent_candidate_id
+            .zip(previous_prompt.continuation_prefix.clone());
+        let user = if generation_type == GenerationType::Continue {
+            String::new()
+        } else {
+            turn.user_content.clone()
+        };
+        let excluded = (generation_type != GenerationType::Continue).then_some(turn.turn_id);
         let configuration = self
             .configuration(&previous.config_hash)?
             .ok_or_else(|| TurnError::ConfigurationNotFound(previous.config_hash.clone()))?;
-        let parent_candidate = previous
-            .prompt_plan
-            .parent_candidate_id
-            .zip(previous.prompt_plan.continuation_prefix.clone());
-        let user = if previous.prompt_plan.generation_type == GenerationType::Continue {
-            ""
-        } else {
-            &turn.user_content
-        };
-        let excluded = (previous.prompt_plan.generation_type != GenerationType::Continue)
-            .then_some(turn.turn_id);
-        let preparation = self.prepare_turn(
-            turn.session_id,
-            turn.branch_id,
+        let attempt = self.begin_attempt(&turn, previous.config_hash, Some(retry_of_attempt_id))?;
+        let attempt = self.prepare_live_attempt(
+            &turn,
+            attempt,
             &configuration,
-            user,
-            previous.prompt_plan.generation_type,
+            &user,
+            generation_type,
             excluded,
             parent_candidate,
-            false,
-        )?;
-        let attempt = self.begin_attempt(
-            &turn,
-            previous.config_hash,
-            Some(retry_of_attempt_id),
-            preparation,
         )?;
         self.execute_attempt(turn, attempt, configuration, &mut on_event)
             .await
@@ -621,9 +687,11 @@ impl Store {
         let attempt = self
             .attempt(attempt_id)?
             .ok_or(TurnError::AttemptNotFound(attempt_id))?;
+        let (turn_id, prompt_plan) = attempt.require_primary()?;
+        let prompt_plan = prompt_plan.clone();
         let turn = self
-            .turn(attempt.turn_id)?
-            .ok_or(TurnError::TurnNotFound(attempt.turn_id))?;
+            .turn(turn_id)?
+            .ok_or(TurnError::TurnNotFound(turn_id))?;
         let effect = attempt
             .effect_receipt
             .ok_or(TurnError::AttemptEffectReceiptMissing(attempt_id))?;
@@ -631,7 +699,7 @@ impl Store {
             session_id: turn.session_id,
             branch_id: turn.branch_id,
             user_content: turn.user_content,
-            prompt_plan: attempt.prompt_plan,
+            prompt_plan,
             effective_generation_settings: effect.effective_generation_settings,
             compatibility_warnings: effect.compatibility_warnings,
             preset_transformations: effect.preset_transformations,
@@ -650,9 +718,11 @@ impl Store {
         if previous.status == AttemptStatus::Running {
             return Err(TurnError::AttemptStillRunning(attempt_id));
         }
+        let (turn_id, prompt_plan) = previous.require_primary()?;
+        let prompt_plan = prompt_plan.clone();
         let turn = self
-            .turn(previous.turn_id)?
-            .ok_or(TurnError::TurnNotFound(previous.turn_id))?;
+            .turn(turn_id)?
+            .ok_or(TurnError::TurnNotFound(turn_id))?;
         let configuration = self
             .configuration(&previous.config_hash)?
             .ok_or_else(|| TurnError::ConfigurationNotFound(previous.config_hash.clone()))?;
@@ -660,14 +730,18 @@ impl Store {
             .effect_receipt
             .ok_or(TurnError::AttemptEffectReceiptMissing(attempt_id))?;
         let preparation = TurnPreparation {
-            prompt_plan: previous.prompt_plan,
-            effective_generation_settings: effect.effective_generation_settings,
-            provider_request: effect.provider_request,
-            compatibility_warnings: effect.compatibility_warnings,
-            preset_transformations: effect.preset_transformations,
+            prompt_plan,
+            effective_generation_settings: effect.effective_generation_settings.clone(),
+            provider_request: effect.provider_request.clone(),
+            compatibility_warnings: effect.compatibility_warnings.clone(),
+            preset_transformations: effect.preset_transformations.clone(),
         };
-        let attempt =
-            self.begin_attempt(&turn, previous.config_hash, Some(attempt_id), preparation)?;
+        let attempt = self.begin_attempt(&turn, previous.config_hash, Some(attempt_id))?;
+        let attempt = self.prepare_attempt(
+            attempt,
+            &configuration.configuration.provider.id,
+            preparation,
+        )?;
         let inference_receipts = effect
             .plugins
             .iter()
@@ -680,7 +754,7 @@ impl Store {
             )));
         }
         if let Some(inference) = inference_receipts.first() {
-            crate::validate_inference_receipt(inference).map_err(|error| {
+            crate::validate_persisted_inference_receipt(self, inference).map_err(|error| {
                 TurnError::Plugin(PluginError::RecordedReceiptInvalid(error.to_string()))
             })?;
             let result = ProviderResult {
@@ -712,6 +786,7 @@ impl Store {
             Some(turn_id),
             None,
             true,
+            None,
         )?;
         Ok(Self::dry_run_result(
             turn.session_id,
@@ -735,6 +810,7 @@ impl Store {
             Some(turn_id),
             None,
             true,
+            None,
         )?;
         Ok(Self::dry_run_result(
             turn.session_id,
@@ -764,6 +840,7 @@ impl Store {
             None,
             Some((parent_id, parent.content)),
             true,
+            None,
         )?;
         Ok(Self::dry_run_result(
             turn.session_id,
@@ -805,17 +882,16 @@ impl Store {
             .candidate(parent_id)?
             .ok_or(TurnError::CandidateNotFound(parent_id))?;
         let (config_hash, configuration) = self.session_configuration(turn.session_id)?;
-        let preparation = self.prepare_turn(
-            turn.session_id,
-            turn.branch_id,
+        let attempt = self.begin_attempt(&turn, config_hash, None)?;
+        let attempt = self.prepare_live_attempt(
+            &turn,
+            attempt,
             &configuration,
             "",
             GenerationType::Continue,
             None,
             Some((parent_id, parent.content)),
-            false,
         )?;
-        let attempt = self.begin_attempt(&turn, config_hash, None, preparation)?;
         self.execute_attempt(turn, attempt, configuration, &mut on_event)
             .await
     }
@@ -995,17 +1071,16 @@ impl Store {
             .turn(turn_id)?
             .ok_or(TurnError::TurnNotFound(turn_id))?;
         let (config_hash, configuration) = self.session_configuration(turn.session_id)?;
-        let preparation = self.prepare_turn(
-            turn.session_id,
-            turn.branch_id,
+        let attempt = self.begin_attempt(&turn, config_hash, None)?;
+        let attempt = self.prepare_live_attempt(
+            &turn,
+            attempt,
             &configuration,
             &turn.user_content,
             generation_type,
             Some(turn_id),
             None,
-            false,
         )?;
-        let attempt = self.begin_attempt(&turn, config_hash, None, preparation)?;
         self.execute_attempt(turn, attempt, configuration, &mut on_event)
             .await
     }
@@ -1089,7 +1164,7 @@ impl Store {
     pub fn attempt(&self, attempt_id: EntityId) -> Result<Option<AttemptProjection>, TurnError> {
         self.connection
             .query_row(
-                "SELECT attempt_id, turn_id, config_hash, retry_of_attempt_id, status, prompt_plan, provider_request_hash, provider_receipt, effect_receipt, error_message, created_event_id, completed_event_id FROM attempts WHERE attempt_id = ?1",
+                "SELECT attempt_id, session_id, branch_id, kind, turn_id, parent_attempt_id, caller, config_hash, retry_of_attempt_id, status, prompt_plan, provider_profile, effective_generation_settings, provider_request_hash, response_hash, usage, provider_receipt, effect_receipt, error_message, created_event_id, completed_event_id FROM attempts WHERE attempt_id = ?1",
                 [attempt_id.to_string()],
                 decode_attempt,
             )
@@ -1108,20 +1183,18 @@ impl Store {
                 status: attempt.status,
             });
         }
-        let turn = self
-            .turn(attempt.turn_id)?
-            .ok_or(TurnError::TurnNotFound(attempt.turn_id))?;
         let transaction = self
             .connection
             .transaction()
             .map_err(StorageError::Sqlite)?;
         let event = append_event(
             &transaction,
-            Some(turn.session_id),
+            Some(attempt.session_id),
             "attempt.cancelled",
             &json!({
                 "attempt_id": attempt_id,
-                "turn_id": turn.turn_id,
+                "turn_id": attempt.turn_id,
+                "kind": attempt.kind,
             }),
         )?;
         let updated = transaction
@@ -1259,10 +1332,35 @@ impl Store {
     ) -> Result<Vec<AttemptProjection>, TurnError> {
         let mut statement = self
             .connection
-            .prepare("SELECT attempt_id, turn_id, config_hash, retry_of_attempt_id, status, prompt_plan, provider_request_hash, provider_receipt, effect_receipt, error_message, created_event_id, completed_event_id FROM attempts WHERE turn_id = ?1 ORDER BY rowid")
+            .prepare("SELECT attempt_id, session_id, branch_id, kind, turn_id, parent_attempt_id, caller, config_hash, retry_of_attempt_id, status, prompt_plan, provider_profile, effective_generation_settings, provider_request_hash, response_hash, usage, provider_receipt, effect_receipt, error_message, created_event_id, completed_event_id FROM attempts WHERE turn_id = ?1 ORDER BY rowid")
             .map_err(StorageError::Sqlite)?;
         statement
             .query_map([turn_id.to_string()], decode_attempt)
+            .map_err(StorageError::Sqlite)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StorageError::Sqlite)
+            .map_err(TurnError::Storage)
+    }
+
+    pub fn background_attempts(
+        &self,
+        session_id: EntityId,
+        branch_id: Option<EntityId>,
+    ) -> Result<Vec<AttemptProjection>, TurnError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT attempt_id, session_id, branch_id, kind, turn_id, parent_attempt_id, caller, config_hash, retry_of_attempt_id, status, prompt_plan, provider_profile, effective_generation_settings, provider_request_hash, response_hash, usage, provider_receipt, effect_receipt, error_message, created_event_id, completed_event_id FROM attempts WHERE session_id = ?1 AND kind = 'background' AND (?2 IS NULL OR branch_id = ?2) ORDER BY rowid",
+            )
+            .map_err(StorageError::Sqlite)?;
+        statement
+            .query_map(
+                params![
+                    session_id.to_string(),
+                    branch_id.map(|branch_id| branch_id.to_string())
+                ],
+                decode_attempt,
+            )
             .map_err(StorageError::Sqlite)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(StorageError::Sqlite)
@@ -1500,6 +1598,7 @@ impl Store {
         segments: &mut Vec<PromptSegment>,
         state: &mut StateTransaction,
         dry_run: bool,
+        initiating_attempt_id: Option<EntityId>,
         effective_generation_settings: &EffectiveGenerationSettings,
     ) -> Result<Vec<PluginReceipt>, TurnError> {
         if configuration.configuration.plugins.is_empty() {
@@ -1522,7 +1621,7 @@ impl Store {
                 session_chat,
                 effective_generation_settings,
             );
-            let session = json!({"session_id": session_id, "branch_id": branch_id, "generation_type": generation_type, "dry_run": dry_run});
+            let session = json!({"session_id": session_id, "branch_id": branch_id, "attempt_id": initiating_attempt_id, "config_hash": configuration.revision_hash, "generation_type": generation_type, "provider_profile": configuration.configuration.provider.id, "dry_run": dry_run});
             if installed
                 .manifest
                 .subscriptions
@@ -1664,15 +1763,16 @@ impl Store {
         let configuration = self
             .configuration(&attempt.config_hash)?
             .ok_or_else(|| TurnError::ConfigurationNotFound(attempt.config_hash.clone()))?;
+        let prompt_plan = attempt.require_primary()?.1;
         if configuration.configuration.plugins.is_empty() {
-            return Ok((Vec::new(), attempt.prompt_plan.state_mutations.clone()));
+            return Ok((Vec::new(), Vec::new()));
         }
         let (ordered, grants) = self.configured_runtime_plugins(&configuration)?;
-        let host = PluginHost::new(Default::default());
+        let host = PluginHost::with_egress(Default::default(), self.egress.clone())
+            .with_inference(self.inference.clone());
         let mut receipts = Vec::new();
         let mut state = self.state_transaction(session_id)?;
-        state.apply_recorded_mutations(&attempt.prompt_plan.state_mutations);
-        let mut chat = attempt.prompt_plan.messages.clone();
+        let mut chat = prompt_plan.messages.clone();
         chat.push(ChatMessage {
             role: ChatRole::Assistant,
             content: content.to_owned(),
@@ -1715,12 +1815,12 @@ impl Store {
                     settings: grant.settings.clone(),
                     context,
                     payload: json!({"events": [
-                        {"name": "message_received", "args": [message_index, attempt.prompt_plan.generation_type]},
+                        {"name": "message_received", "args": [message_index, prompt_plan.generation_type]},
                         {"name": "generation_ended", "args": [chat.len()]}
                     ]}),
                     artifact: Value::Null,
                     state: st_bridge_input_state(&state, &installed.manifest.id),
-                    session: json!({"session_id": session_id, "branch_id": branch_id, "attempt_id": attempt.attempt_id}),
+                    session: json!({"session_id": session_id, "branch_id": branch_id, "attempt_id": attempt.attempt_id, "config_hash": attempt.config_hash, "provider_profile": configuration.configuration.provider.id, "dry_run": false}),
                 },
             )?;
             apply_st_bridge_state_effects(&mut state, &installed.manifest.id, &receipt.effects)?;
@@ -1875,6 +1975,7 @@ impl Store {
         regex_scripts: &[RegexScript],
         text_prefill: Option<&str>,
         dry_run: bool,
+        initiating_attempt_id: Option<EntityId>,
     ) -> Result<PromptPlan, TurnError> {
         let branch = self
             .branch(branch_id)?
@@ -2064,8 +2165,8 @@ impl Store {
             let Some(attempt) = self.attempt(attempt_id)? else {
                 continue;
             };
-            for activated in attempt.prompt_plan.lore.activated {
-                prior_activations.insert(activated.entry_key, 2 + index * 2);
+            for activated in &attempt.require_primary()?.1.lore.activated {
+                prior_activations.insert(activated.entry_key.clone(), 2 + index * 2);
             }
         }
         let mut scan_messages = vec![user_content.to_owned()];
@@ -2509,6 +2610,7 @@ impl Store {
                 &mut segments,
                 &mut state,
                 dry_run,
+                initiating_attempt_id,
                 effective_generation_settings,
             )?);
         }
@@ -2589,7 +2691,6 @@ impl Store {
         user_content: String,
         config_hash: ContentHash,
         retry_of_attempt_id: Option<EntityId>,
-        preparation: TurnPreparation,
     ) -> Result<(TurnProjection, AttemptProjection), TurnError> {
         let turn_id = EntityId::new();
         let transaction = self
@@ -2628,7 +2729,7 @@ impl Store {
             hidden: false,
             created_event_id: event.event_id.to_string(),
         };
-        let attempt = self.begin_attempt(&turn, config_hash, retry_of_attempt_id, preparation)?;
+        let attempt = self.begin_attempt(&turn, config_hash, retry_of_attempt_id)?;
         Ok((turn, attempt))
     }
 
@@ -2637,9 +2738,234 @@ impl Store {
         turn: &TurnProjection,
         config_hash: ContentHash,
         retry_of_attempt_id: Option<EntityId>,
-        preparation: TurnPreparation,
     ) -> Result<AttemptProjection, TurnError> {
         let attempt_id = EntityId::new();
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(StorageError::Sqlite)?;
+        let event = append_event(
+            &transaction,
+            Some(turn.session_id),
+            "attempt.started",
+            &json!({
+                "attempt_id": attempt_id,
+                "session_id": turn.session_id,
+                "branch_id": turn.branch_id,
+                "kind": AttemptKind::Primary,
+                "turn_id": turn.turn_id,
+                "config_hash": config_hash,
+                "retry_of_attempt_id": retry_of_attempt_id,
+            }),
+        )?;
+        transaction
+            .execute(
+                "INSERT INTO attempts(attempt_id, session_id, branch_id, kind, turn_id, config_hash, retry_of_attempt_id, status, created_event_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    attempt_id.to_string(),
+                    turn.session_id.to_string(),
+                    turn.branch_id.to_string(),
+                    AttemptKind::Primary.as_str(),
+                    turn.turn_id.to_string(),
+                    config_hash.to_string(),
+                    retry_of_attempt_id.map(|id| id.to_string()),
+                    AttemptStatus::Running.as_str(),
+                    event.event_id.to_string(),
+                ],
+            )
+            .map_err(StorageError::Sqlite)?;
+        transaction.commit().map_err(StorageError::Sqlite)?;
+        Ok(AttemptProjection {
+            attempt_id,
+            session_id: turn.session_id,
+            branch_id: turn.branch_id,
+            kind: AttemptKind::Primary,
+            turn_id: Some(turn.turn_id),
+            parent_attempt_id: None,
+            caller: None,
+            config_hash,
+            retry_of_attempt_id,
+            status: AttemptStatus::Running,
+            prompt_plan: None,
+            provider_profile: None,
+            effective_generation_settings: None,
+            provider_request_hash: None,
+            response_hash: None,
+            usage: None,
+            provider_receipt: None,
+            effect_receipt: None,
+            error_message: None,
+            created_event_id: event.event_id.to_string(),
+            completed_event_id: None,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_background_attempt(
+        &mut self,
+        session_id: EntityId,
+        branch_id: EntityId,
+        parent_attempt_id: EntityId,
+        caller: &str,
+        config_hash: ContentHash,
+        provider_profile: &str,
+        effective_generation_settings: &Value,
+        provider_request_hash: &ContentHash,
+    ) -> Result<EntityId, TurnError> {
+        let parent = self
+            .connection
+            .query_row(
+                "SELECT session_id, branch_id FROM attempts WHERE attempt_id = ?1",
+                [parent_attempt_id.to_string()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(StorageError::Sqlite)?
+            .ok_or(TurnError::AttemptNotFound(parent_attempt_id))?;
+        if parent.0 != session_id.to_string() || parent.1 != branch_id.to_string() {
+            return Err(TurnError::RetryAttemptMismatch);
+        }
+        let attempt_id = EntityId::new();
+        let effective_bytes = canonical_json(effective_generation_settings)?;
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(StorageError::Sqlite)?;
+        let event = append_event(
+            &transaction,
+            Some(session_id),
+            "attempt.started",
+            &json!({
+                "attempt_id": attempt_id,
+                "session_id": session_id,
+                "branch_id": branch_id,
+                "kind": AttemptKind::Background,
+                "parent_attempt_id": parent_attempt_id,
+                "caller": caller,
+                "config_hash": config_hash,
+                "provider_profile": provider_profile,
+                "effective_generation_settings": effective_generation_settings,
+                "provider_request_hash": provider_request_hash,
+            }),
+        )?;
+        transaction
+            .execute(
+                "INSERT INTO attempts(attempt_id, session_id, branch_id, kind, turn_id, parent_attempt_id, caller, config_hash, status, provider_profile, effective_generation_settings, provider_request_hash, created_event_id) VALUES (?1, ?2, ?3, 'background', NULL, ?4, ?5, ?6, 'running', ?7, ?8, ?9, ?10)",
+                params![
+                    attempt_id.to_string(),
+                    session_id.to_string(),
+                    branch_id.to_string(),
+                    parent_attempt_id.to_string(),
+                    caller,
+                    config_hash.to_string(),
+                    provider_profile,
+                    effective_bytes,
+                    provider_request_hash.to_string(),
+                    event.event_id.to_string(),
+                ],
+            )
+            .map_err(StorageError::Sqlite)?;
+        transaction.commit().map_err(StorageError::Sqlite)?;
+        Ok(attempt_id)
+    }
+
+    pub(crate) fn complete_background_attempt(
+        &mut self,
+        attempt_id: EntityId,
+        result: &ProviderResult,
+        response_hash: &ContentHash,
+    ) -> Result<(), TurnError> {
+        let attempt = self
+            .attempt(attempt_id)?
+            .ok_or(TurnError::AttemptNotFound(attempt_id))?;
+        let usage = result.events.iter().rev().find_map(|event| match event {
+            ProviderEvent::Usage { usage } => Some(usage.clone()),
+            _ => None,
+        });
+        let receipt_bytes = canonical_json(&result.receipt)?;
+        let usage_bytes = usage.as_ref().map(canonical_json).transpose()?;
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(StorageError::Sqlite)?;
+        let event = append_event(
+            &transaction,
+            Some(attempt.session_id),
+            "attempt.completed",
+            &json!({
+                "attempt_id": attempt_id,
+                "kind": AttemptKind::Background,
+                "response_hash": response_hash,
+                "usage": usage,
+                "provider_receipt": result.receipt,
+            }),
+        )?;
+        let updated = transaction
+            .execute(
+                "UPDATE attempts SET status = 'completed', response_hash = ?1, usage = ?2, provider_receipt = ?3, completed_event_id = ?4 WHERE attempt_id = ?5 AND status = 'running'",
+                params![
+                    response_hash.to_string(),
+                    usage_bytes,
+                    receipt_bytes,
+                    event.event_id.to_string(),
+                    attempt_id.to_string(),
+                ],
+            )
+            .map_err(StorageError::Sqlite)?;
+        if updated == 0 {
+            transaction.rollback().map_err(StorageError::Sqlite)?;
+            return Err(self.attempt_not_running(attempt_id)?);
+        }
+        transaction.commit().map_err(StorageError::Sqlite)?;
+        Ok(())
+    }
+
+    pub(crate) fn fail_background_attempt(
+        &mut self,
+        attempt_id: EntityId,
+        error: &str,
+    ) -> Result<(), TurnError> {
+        let attempt = self
+            .attempt(attempt_id)?
+            .ok_or(TurnError::AttemptNotFound(attempt_id))?;
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(StorageError::Sqlite)?;
+        let event = append_event(
+            &transaction,
+            Some(attempt.session_id),
+            "attempt.failed",
+            &json!({
+                "attempt_id": attempt_id,
+                "kind": AttemptKind::Background,
+                "error": error,
+            }),
+        )?;
+        let updated = transaction
+            .execute(
+                "UPDATE attempts SET status = 'failed', error_message = ?1, completed_event_id = ?2 WHERE attempt_id = ?3 AND status = 'running'",
+                params![
+                    error,
+                    event.event_id.to_string(),
+                    attempt_id.to_string(),
+                ],
+            )
+            .map_err(StorageError::Sqlite)?;
+        if updated == 0 {
+            transaction.rollback().map_err(StorageError::Sqlite)?;
+            return Err(self.attempt_not_running(attempt_id)?);
+        }
+        transaction.commit().map_err(StorageError::Sqlite)?;
+        Ok(())
+    }
+
+    fn prepare_attempt(
+        &mut self,
+        mut attempt: AttemptProjection,
+        provider_profile: &str,
+        preparation: TurnPreparation,
+    ) -> Result<AttemptProjection, TurnError> {
         let TurnPreparation {
             prompt_plan,
             effective_generation_settings,
@@ -2654,7 +2980,7 @@ impl Store {
             lore: prompt_plan.lore.clone(),
             macro_evaluations: prompt_plan.macro_evaluations.clone(),
             macro_warnings: prompt_plan.macro_warnings.clone(),
-            effective_generation_settings,
+            effective_generation_settings: effective_generation_settings.clone(),
             compatibility_warnings,
             preset_transformations,
             state_mutations: prompt_plan.state_mutations.clone(),
@@ -2663,55 +2989,52 @@ impl Store {
             provider_request_hash: request_hash.clone(),
         };
         let prompt_bytes = canonical_json(&serde_json::to_value(&prompt_plan)?)?;
+        let settings_bytes =
+            canonical_json(&serde_json::to_value(&effective_generation_settings)?)?;
         let effect_bytes = canonical_json(&serde_json::to_value(&effect_receipt)?)?;
         let transaction = self
             .connection
             .transaction()
             .map_err(StorageError::Sqlite)?;
-        let event = append_event(
+        append_event(
             &transaction,
-            Some(turn.session_id),
-            "attempt.started",
+            Some(attempt.session_id),
+            "attempt.prepared",
             &json!({
-                "attempt_id": attempt_id,
-                "turn_id": turn.turn_id,
-                "config_hash": config_hash,
-                "retry_of_attempt_id": retry_of_attempt_id,
+                "attempt_id": attempt.attempt_id,
+                "turn_id": attempt.turn_id,
                 "prompt_plan": prompt_plan,
+                "provider_profile": provider_profile,
+                "effective_generation_settings": effective_generation_settings,
+                "provider_request_hash": request_hash,
                 "effect_receipt": effect_receipt,
             }),
         )?;
-        transaction
+        let updated = transaction
             .execute(
-                "INSERT INTO attempts(attempt_id, turn_id, config_hash, retry_of_attempt_id, status, prompt_plan, provider_request_hash, effect_receipt, created_event_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "UPDATE attempts SET prompt_plan = ?1, provider_profile = ?2, effective_generation_settings = ?3, provider_request_hash = ?4, effect_receipt = ?5 WHERE attempt_id = ?6 AND status = 'running'",
                 params![
-                    attempt_id.to_string(),
-                    turn.turn_id.to_string(),
-                    config_hash.to_string(),
-                    retry_of_attempt_id.map(|id| id.to_string()),
-                    AttemptStatus::Running.as_str(),
                     prompt_bytes,
+                    provider_profile,
+                    settings_bytes,
                     request_hash.to_string(),
                     effect_bytes,
-                    event.event_id.to_string(),
+                    attempt.attempt_id.to_string(),
                 ],
             )
             .map_err(StorageError::Sqlite)?;
+        if updated == 0 {
+            transaction.rollback().map_err(StorageError::Sqlite)?;
+            return Err(self.attempt_not_running(attempt.attempt_id)?);
+        }
         transaction.commit().map_err(StorageError::Sqlite)?;
-        Ok(AttemptProjection {
-            attempt_id,
-            turn_id: turn.turn_id,
-            config_hash,
-            retry_of_attempt_id,
-            status: AttemptStatus::Running,
-            prompt_plan,
-            provider_request_hash: Some(request_hash),
-            provider_receipt: None,
-            effect_receipt: Some(effect_receipt),
-            error_message: None,
-            created_event_id: event.event_id.to_string(),
-            completed_event_id: None,
-        })
+        attempt.prompt_plan = Some(prompt_plan);
+        attempt.provider_profile = Some(provider_profile.to_owned());
+        attempt.effective_generation_settings =
+            Some(serde_json::to_value(effective_generation_settings)?);
+        attempt.provider_request_hash = Some(request_hash);
+        attempt.effect_receipt = Some(effect_receipt);
+        Ok(attempt)
     }
 
     async fn execute_attempt(
@@ -2814,8 +3137,9 @@ impl Store {
         replay: bool,
     ) -> Result<CompletedTurn, TurnError> {
         let candidate_id = EntityId::new();
-        let parent_candidate_id = attempt.prompt_plan.parent_candidate_id;
-        let origin = if attempt.prompt_plan.generation_type == GenerationType::Continue {
+        let prompt_plan = attempt.require_primary()?.1.clone();
+        let parent_candidate_id = prompt_plan.parent_candidate_id;
+        let origin = if prompt_plan.generation_type == GenerationType::Continue {
             CandidateOrigin::Continued
         } else {
             CandidateOrigin::Generated
@@ -2826,39 +3150,13 @@ impl Store {
             CandidateOrigin::Manual => unreachable!(),
             CandidateOrigin::AcceptedPartial => unreachable!(),
         };
-        let content = attempt
-            .prompt_plan
+        let content = prompt_plan
             .continuation_prefix
             .as_deref()
             .map(|prefix| format!("{prefix}{}", result.text))
             .unwrap_or_else(|| result.text.clone());
         if attempt.provider_request_hash.as_ref() != Some(&result.request_hash) {
             return Err(TurnError::ProviderRequestHashMismatch);
-        }
-        let (lifecycle_receipts, lifecycle_state_mutations, post_commit_receipts) = if replay {
-            (Vec::new(), None, Vec::new())
-        } else {
-            let (receipts, state_mutations) =
-                self.run_st_bridge_lifecycle(&attempt, turn.session_id, turn.branch_id, &content)?;
-            (
-                receipts,
-                Some(state_mutations),
-                self.run_post_commit_plugins(&attempt, turn.session_id, turn.branch_id, &content)?,
-            )
-        };
-        if let Some(state_mutations) = lifecycle_state_mutations {
-            attempt.prompt_plan.state_mutations = state_mutations.clone();
-            if let Some(effect_receipt) = attempt.effect_receipt.as_mut() {
-                effect_receipt.state_mutations = state_mutations;
-            }
-        }
-        if !lifecycle_receipts.is_empty() || !post_commit_receipts.is_empty() {
-            let effect_receipt = attempt
-                .effect_receipt
-                .as_mut()
-                .ok_or(TurnError::AttemptEffectReceiptMissing(attempt.attempt_id))?;
-            effect_receipt.plugins.extend(lifecycle_receipts);
-            effect_receipt.plugins.extend(post_commit_receipts);
         }
         let receipt_bytes = canonical_json(&result.receipt)?;
         let effect_receipt_bytes = attempt
@@ -2869,6 +3167,12 @@ impl Store {
             .as_ref()
             .map(canonical_json)
             .transpose()?;
+        let response_hash = crate::content_blob_hash(result.text.as_bytes());
+        let usage = result.events.iter().rev().find_map(|event| match event {
+            ProviderEvent::Usage { usage } => Some(usage.clone()),
+            _ => None,
+        });
+        let usage_bytes = usage.as_ref().map(canonical_json).transpose()?;
         let transaction = self
             .connection
             .transaction()
@@ -2885,6 +3189,8 @@ impl Store {
                 "origin": origin,
                 "provider_request_hash": result.request_hash,
                 "provider_receipt": result.receipt,
+                "response_hash": response_hash,
+                "usage": usage,
                 "plugin_receipts": attempt
                     .effect_receipt
                     .as_ref()
@@ -2894,10 +3200,12 @@ impl Store {
         )?;
         let updated = transaction
             .execute(
-                "UPDATE attempts SET status = ?1, provider_request_hash = ?2, provider_receipt = ?3, effect_receipt = ?4, completed_event_id = ?5 WHERE attempt_id = ?6 AND status = 'running'",
+                "UPDATE attempts SET status = ?1, provider_request_hash = ?2, response_hash = ?3, usage = ?4, provider_receipt = ?5, effect_receipt = ?6, completed_event_id = ?7 WHERE attempt_id = ?8 AND status = 'running'",
                 params![
                     AttemptStatus::Completed.as_str(),
                     result.request_hash.to_string(),
+                    response_hash.to_string(),
+                    usage_bytes,
                     receipt_bytes,
                     effect_receipt_bytes,
                     event.event_id.to_string(),
@@ -2933,13 +3241,15 @@ impl Store {
             &transaction,
             turn.session_id,
             attempt.attempt_id,
-            &attempt.prompt_plan.state_mutations,
+            &prompt_plan.state_mutations,
         )?;
         transaction.commit().map_err(StorageError::Sqlite)?;
 
         turn.selected_candidate_id = Some(candidate_id);
         attempt.status = AttemptStatus::Completed;
         attempt.provider_request_hash = Some(result.request_hash);
+        attempt.response_hash = Some(response_hash);
+        attempt.usage = usage;
         attempt.provider_receipt = Some(result.receipt);
         attempt.completed_event_id = Some(event.event_id.to_string());
         let candidate = CandidateProjection {
@@ -2953,6 +3263,75 @@ impl Store {
             hidden: false,
             created_event_id: event.event_id.to_string(),
         };
+        if !replay {
+            let (lifecycle_receipts, lifecycle_state_mutations) = self.run_st_bridge_lifecycle(
+                &attempt,
+                turn.session_id,
+                turn.branch_id,
+                &candidate.content,
+            )?;
+            let post_commit_receipts = self.run_post_commit_plugins(
+                &attempt,
+                turn.session_id,
+                turn.branch_id,
+                &candidate.content,
+            )?;
+            if !lifecycle_receipts.is_empty()
+                || !post_commit_receipts.is_empty()
+                || !lifecycle_state_mutations.is_empty()
+            {
+                let prompt_plan = attempt
+                    .prompt_plan
+                    .as_mut()
+                    .ok_or(TurnError::AttemptNotPrepared(attempt.attempt_id))?;
+                prompt_plan
+                    .state_mutations
+                    .extend(lifecycle_state_mutations.clone());
+                let effect_receipt = attempt
+                    .effect_receipt
+                    .as_mut()
+                    .ok_or(TurnError::AttemptEffectReceiptMissing(attempt.attempt_id))?;
+                effect_receipt
+                    .state_mutations
+                    .extend(lifecycle_state_mutations.clone());
+                effect_receipt.plugins.extend(lifecycle_receipts);
+                effect_receipt.plugins.extend(post_commit_receipts);
+                let prompt_bytes = canonical_json(&serde_json::to_value(&*prompt_plan)?)?;
+                let effect_bytes = canonical_json(&serde_json::to_value(&*effect_receipt)?)?;
+                let transaction = self
+                    .connection
+                    .transaction()
+                    .map_err(StorageError::Sqlite)?;
+                append_event(
+                    &transaction,
+                    Some(turn.session_id),
+                    "attempt.post-commit-effects",
+                    &json!({
+                        "attempt_id": attempt.attempt_id,
+                        "prompt_plan": prompt_plan,
+                        "effect_receipt": effect_receipt,
+                        "state_mutations": lifecycle_state_mutations,
+                    }),
+                )?;
+                apply_state_mutations(
+                    &transaction,
+                    turn.session_id,
+                    attempt.attempt_id,
+                    &lifecycle_state_mutations,
+                )?;
+                transaction
+                    .execute(
+                        "UPDATE attempts SET prompt_plan = ?1, effect_receipt = ?2 WHERE attempt_id = ?3 AND status = 'completed'",
+                        params![
+                            prompt_bytes,
+                            effect_bytes,
+                            attempt.attempt_id.to_string(),
+                        ],
+                    )
+                    .map_err(StorageError::Sqlite)?;
+                transaction.commit().map_err(StorageError::Sqlite)?;
+            }
+        }
         Ok(CompletedTurn {
             turn,
             attempt,
@@ -2968,14 +3347,14 @@ impl Store {
         attempt: &AttemptProjection,
         partial_text: &str,
     ) -> Result<(), TurnError> {
+        let prompt_plan = attempt.require_primary()?.1;
         let receipt = json!({
             "cancelled": true,
             "partial_text": partial_text,
         });
         let candidate_id = (!partial_text.is_empty()).then(EntityId::new);
         let accepted_content = candidate_id.map(|_| {
-            attempt
-                .prompt_plan
+            prompt_plan
                 .continuation_prefix
                 .as_deref()
                 .map(|prefix| format!("{prefix}{partial_text}"))
@@ -2995,7 +3374,7 @@ impl Store {
                 "turn_id": turn.turn_id,
                 "partial_text": partial_text,
                 "candidate_content": accepted_content,
-                "parent_candidate_id": attempt.prompt_plan.parent_candidate_id,
+                "parent_candidate_id": prompt_plan.parent_candidate_id,
                 "candidate_id": candidate_id,
                 "origin": candidate_id.map(|_| CandidateOrigin::AcceptedPartial),
             }),
@@ -3018,7 +3397,7 @@ impl Store {
                         candidate_id.to_string(),
                         turn.turn_id.to_string(),
                         attempt.attempt_id.to_string(),
-                        attempt.prompt_plan.parent_candidate_id.map(|id| id.to_string()),
+                        prompt_plan.parent_candidate_id.map(|id| id.to_string()),
                         content,
                         event.event_id.to_string(),
                     ],
@@ -4075,38 +4454,72 @@ fn decode_turn(row: &rusqlite::Row<'_>) -> rusqlite::Result<TurnProjection> {
 }
 
 pub(crate) fn decode_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttemptProjection> {
-    let status: String = row.get(4)?;
-    let prompt_plan: Vec<u8> = row.get(5)?;
-    let request_hash: Option<String> = row.get(6)?;
-    let receipt: Option<Vec<u8>> = row.get(7)?;
-    let effect_receipt: Option<Vec<u8>> = row.get(8)?;
+    let kind: String = row.get(3)?;
+    let status: String = row.get(9)?;
+    let prompt_plan: Option<Vec<u8>> = row.get(10)?;
+    let effective_settings: Option<Vec<u8>> = row.get(12)?;
+    let request_hash: Option<String> = row.get(13)?;
+    let response_hash: Option<String> = row.get(14)?;
+    let usage: Option<Vec<u8>> = row.get(15)?;
+    let receipt: Option<Vec<u8>> = row.get(16)?;
+    let effect_receipt: Option<Vec<u8>> = row.get(17)?;
     Ok(AttemptProjection {
         attempt_id: parse_column(row, 0)?,
-        turn_id: parse_column(row, 1)?,
-        config_hash: parse_column(row, 2)?,
-        retry_of_attempt_id: parse_optional_column(row, 3)?,
+        session_id: parse_column(row, 1)?,
+        branch_id: parse_column(row, 2)?,
+        kind: match kind.as_str() {
+            "primary" => AttemptKind::Primary,
+            "background" => AttemptKind::Background,
+            _ => return Err(conversion_error(3, InvalidAttemptKind(kind))),
+        },
+        turn_id: parse_optional_column(row, 4)?,
+        parent_attempt_id: parse_optional_column(row, 5)?,
+        caller: row.get(6)?,
+        config_hash: parse_column(row, 7)?,
+        retry_of_attempt_id: parse_optional_column(row, 8)?,
         status: match status.as_str() {
             "running" => AttemptStatus::Running,
             "completed" => AttemptStatus::Completed,
             "failed" => AttemptStatus::Failed,
             "cancelled" => AttemptStatus::Cancelled,
             "incomplete" => AttemptStatus::Incomplete,
-            _ => return Err(conversion_error(4, InvalidStatus(status))),
+            _ => return Err(conversion_error(9, InvalidStatus(status))),
         },
-        prompt_plan: serde_json::from_slice(&prompt_plan)
-            .map_err(|error| conversion_error(5, error))?,
+        prompt_plan: prompt_plan
+            .map(|value| {
+                serde_json::from_slice(&value).map_err(|error| conversion_error(10, error))
+            })
+            .transpose()?,
+        provider_profile: row.get(11)?,
+        effective_generation_settings: effective_settings
+            .map(|value| {
+                serde_json::from_slice(&value).map_err(|error| conversion_error(12, error))
+            })
+            .transpose()?,
         provider_request_hash: request_hash
-            .map(|value| value.parse().map_err(|error| conversion_error(6, error)))
+            .map(|value| value.parse().map_err(|error| conversion_error(13, error)))
+            .transpose()?,
+        response_hash: response_hash
+            .map(|value| value.parse().map_err(|error| conversion_error(14, error)))
+            .transpose()?,
+        usage: usage
+            .map(|value| {
+                serde_json::from_slice(&value).map_err(|error| conversion_error(15, error))
+            })
             .transpose()?,
         provider_receipt: receipt
-            .map(|value| serde_json::from_slice(&value).map_err(|error| conversion_error(7, error)))
+            .map(|value| {
+                serde_json::from_slice(&value).map_err(|error| conversion_error(16, error))
+            })
             .transpose()?,
         effect_receipt: effect_receipt
-            .map(|value| serde_json::from_slice(&value).map_err(|error| conversion_error(8, error)))
+            .map(|value| {
+                serde_json::from_slice(&value).map_err(|error| conversion_error(17, error))
+            })
             .transpose()?,
-        error_message: row.get(9)?,
-        created_event_id: row.get(10)?,
-        completed_event_id: row.get(11)?,
+        error_message: row.get(18)?,
+        created_event_id: row.get(19)?,
+        completed_event_id: row.get(20)?,
     })
 }
 
@@ -4169,6 +4582,10 @@ fn conversion_error(
 struct InvalidStatus(String);
 
 #[derive(Debug, Error)]
+#[error("invalid attempt kind '{0}'")]
+struct InvalidAttemptKind(String);
+
+#[derive(Debug, Error)]
 #[error("invalid candidate origin '{0}'")]
 struct InvalidOrigin(String);
 
@@ -4206,6 +4623,12 @@ pub enum TurnError {
     TurnNotFound(EntityId),
     #[error("attempt {0} was not found")]
     AttemptNotFound(EntityId),
+    #[error("attempt {0} is not a primary Generation Attempt")]
+    PrimaryAttemptRequired(EntityId),
+    #[error("attempt {0} does not own a Turn")]
+    AttemptTurnMissing(EntityId),
+    #[error("attempt {0} has not completed preparation")]
+    AttemptNotPrepared(EntityId),
     #[error("attempt {attempt_id} is {status:?}, not running")]
     AttemptNotRunning {
         attempt_id: EntityId,

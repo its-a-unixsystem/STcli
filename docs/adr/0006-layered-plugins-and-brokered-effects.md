@@ -13,7 +13,7 @@ ADR 0003 limited Plugins to pure Wasm returning declarative effects and rejected
 ## Consequences
 
 - **Zero raw sockets, everywhere.** All external interaction maps to two brokered primitives: **Secondary Inference** (a completion through a named provider profile) and **Brokered HTTPS Egress** (`wasi:http` / host `fetch` with manifest domain-whitelisting and out-of-band secret injection). Secrets never enter Plugin memory.
-- **Determinism preserved.** Each brokered call and script effect records a content-addressed receipt in the Turn Trace; Replay yields recorded results without re-executing code or contacting the network.
+- **Determinism preserved.** Each brokered call and script effect records a content-addressed receipt in the Turn Trace; Secondary Inference is a distinct background Generation Attempt linked to its initiating Attempt and caller. Replay yields recorded results without re-executing code or contacting the network.
 - **Native binaries are out-of-process.** `llama.cpp`, TTS engines, and GPU work run as **Trusted Sidecars** on loopback, reached through the same brokered egress — not as in-process Wasm or JS.
 - **Pinning generalizes.** Sessions pin the exact digest of every layer, not a single component hash.
 - **MVP is unchanged.** The MVP still ships only the pure Engine Hook layer. Scripting lands at v0.6, brokered live effects at v0.7, the SillyTavern bridge at v1.0, and Webviews and sidecars at v1.x.

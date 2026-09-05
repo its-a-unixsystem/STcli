@@ -105,7 +105,7 @@ The percentage counts fully implemented features (✅) against all tracked Silly
 | **Branching history tree** | ✅ | Create a branch from any point in the history. The original branch does not change. |
 | **In-place message deletion** | ✅ | Event-sourced tombstones (`turn delete`, `candidate delete`, `branch delete`) and `session compact`. Hiding (`turn hide`, `candidate hide`) keeps the entity but drops it from the prompt. |
 | **Group chat (multi-character)** | ❌ | Multi-character rooms, speaker selection, and nudges planned for **v0.5**. |
-| **Quiet / background generation** | ❌ | Nested generation attempts, such as summarization, planned for **v0.7**. |
+| **Quiet / background generation** | ✅ | `generateQuietPrompt` and `generateRaw` create first-class background Generation Attempts with parent/caller linkage, accounting, independent cancellation, and no dialogue-history mutation. |
 
 ## 6. Personas and notes
 

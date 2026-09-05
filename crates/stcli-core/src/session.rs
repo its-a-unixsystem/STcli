@@ -18,7 +18,8 @@ use crate::{
     state::project_state_mutations,
     storage::{StorageError, append_event},
     turn::{
-        AttemptProjection, AttemptStatus, CandidateProjection, decode_attempt, decode_candidate,
+        AttemptKind, AttemptProjection, AttemptStatus, CandidateProjection, decode_attempt,
+        decode_candidate,
     },
 };
 
@@ -481,6 +482,7 @@ impl Store {
                 duplicate_attempt(
                     &transaction,
                     session_id,
+                    branch_id,
                     new_turn_id,
                     attempt,
                     candidates_by_attempt.get(&attempt.attempt_id).copied(),
@@ -1487,10 +1489,33 @@ impl Store {
                         .map_err(StorageError::Sqlite)?;
                 }
                 "attempt.started" => {
+                    let attempt_id = required_string(&event.payload, "attempt_id")?;
+                    let turn_id = event.payload.get("turn_id").and_then(Value::as_str);
+                    let session_id = event
+                        .payload
+                        .get("session_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .or_else(|| event.session_id.map(|id| id.to_string()))
+                        .ok_or(SessionError::InvalidTrace("session_id"))?;
+                    let branch_id = if let Some(branch_id) =
+                        event.payload.get("branch_id").and_then(Value::as_str)
+                    {
+                        branch_id.to_owned()
+                    } else {
+                        transaction
+                            .query_row(
+                                "SELECT branch_id FROM turns WHERE turn_id = ?1",
+                                [turn_id.ok_or(SessionError::InvalidTrace("turn_id"))?],
+                                |row| row.get(0),
+                            )
+                            .map_err(StorageError::Sqlite)?
+                    };
                     let prompt_plan = event
                         .payload
                         .get("prompt_plan")
-                        .ok_or(SessionError::InvalidTrace("prompt_plan"))?;
+                        .map(canonical_json)
+                        .transpose()?;
                     let retry = event
                         .payload
                         .get("retry_of_attempt_id")
@@ -1500,19 +1525,41 @@ impl Store {
                         .get("effect_receipt")
                         .map(canonical_json)
                         .transpose()?;
+                    let effective_settings = event
+                        .payload
+                        .get("effective_generation_settings")
+                        .or_else(|| {
+                            event
+                                .payload
+                                .pointer("/effect_receipt/effective_generation_settings")
+                        })
+                        .map(canonical_json)
+                        .transpose()?;
                     let request_hash = event
                         .payload
-                        .pointer("/effect_receipt/provider_request_hash")
+                        .get("provider_request_hash")
+                        .or_else(|| {
+                            event
+                                .payload
+                                .pointer("/effect_receipt/provider_request_hash")
+                        })
                         .and_then(Value::as_str);
                     transaction
                         .execute(
-                            "INSERT INTO attempts(attempt_id, turn_id, config_hash, retry_of_attempt_id, status, prompt_plan, provider_request_hash, effect_receipt, created_event_id) VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?6, ?7, ?8)",
+                            "INSERT INTO attempts(attempt_id, session_id, branch_id, kind, turn_id, parent_attempt_id, caller, config_hash, retry_of_attempt_id, status, prompt_plan, provider_profile, effective_generation_settings, provider_request_hash, effect_receipt, created_event_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'running', ?10, ?11, ?12, ?13, ?14, ?15)",
                             params![
-                                required_string(&event.payload, "attempt_id")?,
-                                required_string(&event.payload, "turn_id")?,
+                                attempt_id,
+                                session_id,
+                                branch_id,
+                                event.payload.get("kind").and_then(Value::as_str).unwrap_or("primary"),
+                                turn_id,
+                                event.payload.get("parent_attempt_id").and_then(Value::as_str),
+                                event.payload.get("caller").and_then(Value::as_str),
                                 required_string(&event.payload, "config_hash")?,
                                 retry,
-                                canonical_json(prompt_plan)?,
+                                prompt_plan,
+                                event.payload.get("provider_profile").and_then(Value::as_str),
+                                effective_settings,
                                 request_hash,
                                 effect,
                                 event.event_id.to_string(),
@@ -1520,45 +1567,116 @@ impl Store {
                         )
                         .map_err(StorageError::Sqlite)?;
                 }
+                "attempt.prepared" => {
+                    let prompt_plan = event
+                        .payload
+                        .get("prompt_plan")
+                        .ok_or(SessionError::InvalidTrace("prompt_plan"))?;
+                    let effective_settings = event
+                        .payload
+                        .get("effective_generation_settings")
+                        .ok_or(SessionError::InvalidTrace("effective_generation_settings"))?;
+                    let effect = event
+                        .payload
+                        .get("effect_receipt")
+                        .map(canonical_json)
+                        .transpose()?;
+                    transaction
+                        .execute(
+                            "UPDATE attempts SET prompt_plan = ?1, provider_profile = ?2, effective_generation_settings = ?3, provider_request_hash = ?4, effect_receipt = ?5 WHERE attempt_id = ?6",
+                            params![
+                                canonical_json(prompt_plan)?,
+                                event.payload.get("provider_profile").and_then(Value::as_str),
+                                canonical_json(effective_settings)?,
+                                required_string(&event.payload, "provider_request_hash")?,
+                                effect,
+                                required_string(&event.payload, "attempt_id")?,
+                            ],
+                        )
+                        .map_err(StorageError::Sqlite)?;
+                }
                 "attempt.completed" => {
                     let attempt_id = required_string(&event.payload, "attempt_id")?;
-                    let turn_id = required_string(&event.payload, "turn_id")?;
-                    let candidate_id = required_string(&event.payload, "candidate_id")?;
                     let receipt = event
                         .payload
                         .get("provider_receipt")
                         .ok_or(SessionError::InvalidTrace("provider_receipt"))?;
+                    let response_hash = event.payload.get("response_hash").and_then(Value::as_str);
+                    let usage = event
+                        .payload
+                        .get("usage")
+                        .filter(|value| !value.is_null())
+                        .map(canonical_json)
+                        .transpose()?;
                     transaction
                         .execute(
-                            "UPDATE attempts SET status = 'completed', provider_request_hash = ?1, provider_receipt = ?2, completed_event_id = ?3 WHERE attempt_id = ?4",
+                            "UPDATE attempts SET status = 'completed', provider_request_hash = COALESCE(?1, provider_request_hash), response_hash = ?2, usage = ?3, provider_receipt = ?4, completed_event_id = ?5 WHERE attempt_id = ?6",
                             params![
-                                required_string(&event.payload, "provider_request_hash")?,
+                                event.payload.get("provider_request_hash").and_then(Value::as_str),
+                                response_hash,
+                                usage,
                                 canonical_json(receipt)?,
                                 event.event_id.to_string(),
                                 attempt_id,
                             ],
                         )
                         .map_err(StorageError::Sqlite)?;
+                    if let (Some(turn_id), Some(candidate_id)) = (
+                        event.payload.get("turn_id").and_then(Value::as_str),
+                        event.payload.get("candidate_id").and_then(Value::as_str),
+                    ) {
+                        transaction
+                            .execute(
+                                "INSERT INTO candidates(candidate_id, turn_id, attempt_id, parent_candidate_id, origin, content, created_event_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                                params![
+                                    candidate_id,
+                                    turn_id,
+                                    attempt_id,
+                                    event.payload.get("parent_candidate_id").and_then(Value::as_str),
+                                    event.payload.get("origin").and_then(Value::as_str).unwrap_or("generated"),
+                                    required_string(&event.payload, "content")?,
+                                    event.event_id.to_string(),
+                                ],
+                            )
+                            .map_err(StorageError::Sqlite)?;
+                        transaction
+                            .execute(
+                                "UPDATE turns SET selected_candidate_id = ?1 WHERE turn_id = ?2",
+                                params![candidate_id, turn_id],
+                            )
+                            .map_err(StorageError::Sqlite)?;
+                    }
+                }
+                "attempt.post-commit-effects" => {
+                    let session_id = event
+                        .session_id
+                        .ok_or(SessionError::InvalidTrace("session_id"))?;
+                    let prompt_plan = event
+                        .payload
+                        .get("prompt_plan")
+                        .ok_or(SessionError::InvalidTrace("prompt_plan"))?;
+                    let effect_receipt = event
+                        .payload
+                        .get("effect_receipt")
+                        .ok_or(SessionError::InvalidTrace("effect_receipt"))?;
                     transaction
                         .execute(
-                            "INSERT INTO candidates(candidate_id, turn_id, attempt_id, parent_candidate_id, origin, content, created_event_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            "UPDATE attempts SET prompt_plan = ?1, effect_receipt = ?2 WHERE attempt_id = ?3",
                             params![
-                                candidate_id,
-                                turn_id,
-                                attempt_id,
-                                event.payload.get("parent_candidate_id").and_then(Value::as_str),
-                                event.payload.get("origin").and_then(Value::as_str).unwrap_or("generated"),
-                                required_string(&event.payload, "content")?,
-                                event.event_id.to_string(),
+                                canonical_json(prompt_plan)?,
+                                canonical_json(effect_receipt)?,
+                                required_string(&event.payload, "attempt_id")?,
                             ],
                         )
                         .map_err(StorageError::Sqlite)?;
-                    transaction
-                        .execute(
-                            "UPDATE turns SET selected_candidate_id = ?1 WHERE turn_id = ?2",
-                            params![candidate_id, turn_id],
-                        )
-                        .map_err(StorageError::Sqlite)?;
+                    let mutations = serde_json::from_value::<Vec<StateMutation>>(
+                        event
+                            .payload
+                            .get("state_mutations")
+                            .cloned()
+                            .ok_or(SessionError::InvalidTrace("state_mutations"))?,
+                    )?;
+                    project_state_mutations(&transaction, session_id, &mutations)?;
                 }
                 "candidate.manual-created" => {
                     let candidate_id = required_string(&event.payload, "candidate_id")?;
@@ -2027,7 +2145,7 @@ fn load_recorded_turns(
                 .map_err(StorageError::Sqlite)?;
             let attempts = {
                 let mut statement = connection
-                    .prepare("SELECT attempt_id, turn_id, config_hash, retry_of_attempt_id, status, prompt_plan, provider_request_hash, provider_receipt, effect_receipt, error_message, created_event_id, completed_event_id FROM attempts WHERE turn_id = ?1 ORDER BY rowid")
+                    .prepare("SELECT attempt_id, session_id, branch_id, kind, turn_id, parent_attempt_id, caller, config_hash, retry_of_attempt_id, status, prompt_plan, provider_profile, effective_generation_settings, provider_request_hash, response_hash, usage, provider_receipt, effect_receipt, error_message, created_event_id, completed_event_id FROM attempts WHERE turn_id = ?1 ORDER BY rowid")
                     .map_err(StorageError::Sqlite)?;
                 statement
                     .query_map([turn_id.to_string()], decode_attempt)
@@ -2064,9 +2182,11 @@ fn load_recorded_turns(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn duplicate_attempt(
     transaction: &Transaction<'_>,
     session_id: EntityId,
+    branch_id: EntityId,
     turn_id: EntityId,
     attempt: &AttemptProjection,
     source_candidate: Option<&RecordedCandidate>,
@@ -2083,7 +2203,10 @@ fn duplicate_attempt(
                 .ok_or(SessionError::InvalidTrace("retry_of_attempt_id"))
         })
         .transpose()?;
-    let mut prompt_plan = attempt.prompt_plan.clone();
+    let mut prompt_plan = attempt
+        .prompt_plan
+        .clone()
+        .ok_or(SessionError::InvalidTrace("prompt_plan"))?;
     prompt_plan.parent_candidate_id =
         mapped_candidate_id(prompt_plan.parent_candidate_id, candidate_ids);
     let started = append_event(
@@ -2092,10 +2215,16 @@ fn duplicate_attempt(
         "attempt.started",
         &json!({
             "attempt_id": attempt_id,
+            "session_id": session_id,
+            "branch_id": branch_id,
+            "kind": AttemptKind::Primary,
             "turn_id": turn_id,
             "config_hash": attempt.config_hash,
             "retry_of_attempt_id": retry_of_attempt_id,
             "prompt_plan": prompt_plan,
+            "provider_profile": attempt.provider_profile,
+            "effective_generation_settings": attempt.effective_generation_settings,
+            "provider_request_hash": attempt.provider_request_hash,
             "effect_receipt": attempt.effect_receipt,
         }),
     )?;
@@ -2210,17 +2339,29 @@ fn duplicate_attempt(
         .as_ref()
         .map(canonical_json)
         .transpose()?;
+    let effective_bytes = attempt
+        .effective_generation_settings
+        .as_ref()
+        .map(canonical_json)
+        .transpose()?;
+    let usage_bytes = attempt.usage.as_ref().map(canonical_json).transpose()?;
     transaction
         .execute(
-            "INSERT INTO attempts(attempt_id, turn_id, config_hash, retry_of_attempt_id, status, prompt_plan, provider_request_hash, provider_receipt, effect_receipt, error_message, created_event_id, completed_event_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO attempts(attempt_id, session_id, branch_id, kind, turn_id, config_hash, retry_of_attempt_id, status, prompt_plan, provider_profile, effective_generation_settings, provider_request_hash, response_hash, usage, provider_receipt, effect_receipt, error_message, created_event_id, completed_event_id) VALUES (?1, ?2, ?3, 'primary', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 attempt_id.to_string(),
+                session_id.to_string(),
+                branch_id.to_string(),
                 turn_id.to_string(),
                 attempt.config_hash.to_string(),
                 retry_of_attempt_id.map(|id| id.to_string()),
                 attempt.status.as_str(),
                 prompt_bytes,
+                attempt.provider_profile,
+                effective_bytes,
                 attempt.provider_request_hash.as_ref().map(ToString::to_string),
+                attempt.response_hash.as_ref().map(ToString::to_string),
+                usage_bytes,
                 receipt_bytes,
                 effect_bytes,
                 attempt.error_message,

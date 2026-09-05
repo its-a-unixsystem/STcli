@@ -291,13 +291,18 @@ primary Session Configuration Revision.
 
 `options.provider` or `options.providerProfile` selects a named `[providers.<name>]` profile;
 when omitted, the session's provider profile is used. Other option fields are independent,
-per-call Effective Generation Settings and never update session configuration. Each successful
-or transport-failed exchange records the profile, canonical request hash, response content hash,
-effective settings, returned text, and status in the Plugin Receipt's `inference` array.
+per-call Effective Generation Settings and never update session configuration. Each live call
+creates a background Generation Attempt linked to the initiating Attempt and Extension ID. It
+records the profile, effective settings, canonical request and response hashes, terminal status,
+available provider usage, and safe provider receipt. Background Attempts have no Turn or
+Candidate and cannot change Branch history or Selection. List them with
+`stcli attempts --session <session> [--branch <branch>] --kind background`; cancel one with
+`stcli message cancel <attempt>`. Cancellation is independent in both directions.
 
 Dry Runs use a configured stub transport, or return a deterministic empty completion without
-network access. Replay applies the recorded completion without resolving credentials, contacting
-the network, or executing the Extension. Denials and malformed calls warn and return an empty
+network access or creating an Attempt. Replay applies the recorded completion and validates it
+against the authoritative background Attempt without resolving credentials, contacting the
+network, or executing the Extension. Denials and malformed calls warn and return an empty
 control-flow-safe completion.
 
 Any other `SillyTavern.X` member access returns a no-op function that warns once per property

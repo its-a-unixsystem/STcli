@@ -77,7 +77,7 @@ pub use inference::{
     INFERENCE_REQUEST_DOMAIN, InferenceBroker, InferenceError, InferenceInvocation, InferenceMode,
     InferencePolicy, InferenceReceipt, InferenceRequest, InferenceResponse, InferenceStatus,
     InferenceTransport, InferenceTransportError, ProviderInferenceTransport,
-    StubInferenceTransport, validate_inference_receipt,
+    StubInferenceTransport, validate_inference_receipt, validate_persisted_inference_receipt,
 };
 pub use lore::{
     ActivatedLore, LoreDecision, LoreDecisionOutcome, LoreEngine, LoreEntry, LoreError,
@@ -136,8 +136,8 @@ pub use stscript::{
 pub use text_completion::{ContextFormatting, FormatMode, InstructTemplate, NamesBehavior};
 pub use tokenizer::{TokenizerError, TokenizerId};
 pub use turn::{
-    AttemptEffectReceipt, AttemptProjection, AttemptStatus, CandidateOrigin, CandidateProjection,
-    CompatibilityWarning, CompletedTurn, DryRunResult, EditedCandidate,
+    AttemptEffectReceipt, AttemptKind, AttemptProjection, AttemptStatus, CandidateOrigin,
+    CandidateProjection, CompatibilityWarning, CompletedTurn, DryRunResult, EditedCandidate,
     EffectiveGenerationSettings, FailedTurn, GenerationSettingSource, GenerationType,
     PluginCommandResult, PresetScriptMetadata, PresetTransformationResult, PromptPlan,
     ScriptSource, TurnError, TurnPreparation, TurnProjection, extract_character_scripts,

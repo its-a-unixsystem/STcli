@@ -51,8 +51,8 @@ A recorded user action with zero or one selected candidate. Failed, cancelled, o
 _Avoid_: Message, generation
 
 **Generation Attempt**:
-One execution of prompt construction, plugin behavior, and provider generation for a turn.
-_Avoid_: Turn, request
+One provider execution with pinned configuration, effective settings, request and response hashes, status, usage, and receipts. A **Primary Attempt** belongs to a Turn and may create/select a Candidate. A **Background Attempt** belongs to a Session and Branch, links to its initiating Attempt and caller, and never creates a Turn, Candidate, or Selection.
+_Avoid_: Turn, request, background turn
 
 **Dry Run**:
 A pure preview of turn preparation that builds compatibility decisions and a provider request without creating a generation attempt, calling the provider, or committing state.

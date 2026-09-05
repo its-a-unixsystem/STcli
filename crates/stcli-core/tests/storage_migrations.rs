@@ -31,7 +31,7 @@ const REGENERATE_ENV: &str = "STCLI_REGENERATE_DB_FIXTURES";
 /// Schema versions we ship historical fixtures for. The oldest is chosen so the
 /// ratchet (`SCHEMA_VERSION <= max fixture version + 1`) forces a new dump on
 /// every schema bump.
-const FIXTURE_VERSIONS: [i64; 6] = [5, 6, 7, 8, 9, 10];
+const FIXTURE_VERSIONS: [i64; 7] = [5, 6, 7, 8, 9, 10, 11];
 
 // ---------------------------------------------------------------------------
 // Tests

@@ -303,6 +303,12 @@ impl StcliEngine {
                     .attempt(attempt_id)?
                     .ok_or(TurnError::AttemptNotFound(attempt_id))?,
             )),
+            EngineQuery::BackgroundAttempts {
+                session_id,
+                branch_id,
+            } => Ok(EngineInspection::Attempts(
+                store.background_attempts(session_id, branch_id)?,
+            )),
             EngineQuery::TurnDetails {
                 session_id,
                 attempt_id,
@@ -310,9 +316,10 @@ impl StcliEngine {
                 let attempt = store
                     .attempt(attempt_id)?
                     .ok_or(TurnError::AttemptNotFound(attempt_id))?;
+                let (turn_id, _) = attempt.require_primary()?;
                 let turn = store
-                    .turn(attempt.turn_id)?
-                    .ok_or(TurnError::TurnNotFound(attempt.turn_id))?;
+                    .turn(turn_id)?
+                    .ok_or(TurnError::TurnNotFound(turn_id))?;
                 if turn.session_id != session_id {
                     return Err(EngineError::AttemptSessionMismatch);
                 }
@@ -330,7 +337,9 @@ impl StcliEngine {
                 let attempt = store
                     .attempt(attempt_id)?
                     .ok_or(TurnError::AttemptNotFound(attempt_id))?;
-                Ok(EngineInspection::PromptPlan(attempt.prompt_plan))
+                Ok(EngineInspection::PromptPlan(
+                    attempt.require_primary()?.1.clone(),
+                ))
             }
             EngineQuery::PromptSegments {
                 attempt_id,
@@ -339,12 +348,14 @@ impl StcliEngine {
                 let attempt = store
                     .attempt(attempt_id)?
                     .ok_or(TurnError::AttemptNotFound(attempt_id))?;
-                let inspection = attempt.prompt_plan.inspect_segments(&selector).ok_or(
-                    EngineError::PromptSegmentNotFound {
+                let inspection = attempt
+                    .require_primary()?
+                    .1
+                    .inspect_segments(&selector)
+                    .ok_or(EngineError::PromptSegmentNotFound {
                         attempt_id,
                         selector,
-                    },
-                )?;
+                    })?;
                 Ok(EngineInspection::PromptSegments(inspection))
             }
             EngineQuery::PromptDiff {
@@ -359,9 +370,9 @@ impl StcliEngine {
                     .ok_or(TurnError::AttemptNotFound(target_attempt_id))?;
                 Ok(EngineInspection::PromptDiff(diff_prompt_plans(
                     baseline_attempt_id,
-                    &baseline.prompt_plan,
+                    baseline.require_primary()?.1,
                     target_attempt_id,
-                    &target.prompt_plan,
+                    target.require_primary()?.1,
                 )))
             }
             EngineQuery::PreviousPromptDiff { attempt_id } => {
@@ -371,9 +382,9 @@ impl StcliEngine {
                 let baseline = previous_selected_attempt(&store, &target)?;
                 Ok(EngineInspection::PromptDiff(diff_prompt_plans(
                     baseline.attempt_id,
-                    &baseline.prompt_plan,
+                    baseline.require_primary()?.1,
                     attempt_id,
-                    &target.prompt_plan,
+                    target.require_primary()?.1,
                 )))
             }
             EngineQuery::ExportCapsule {
@@ -1046,6 +1057,10 @@ pub enum EngineQuery {
     Attempt {
         attempt_id: EntityId,
     },
+    BackgroundAttempts {
+        session_id: EntityId,
+        branch_id: Option<EntityId>,
+    },
     TurnDetails {
         session_id: EntityId,
         attempt_id: EntityId,
@@ -1352,6 +1367,7 @@ pub enum EngineInspection {
     Artifact(ArtifactRecord),
     ArtifactSource(Vec<u8>),
     Attempt(AttemptProjection),
+    Attempts(Vec<AttemptProjection>),
     TurnDetails(Box<TurnDetails>),
     PromptPlan(PromptPlan),
     PromptSegments(PromptSegmentInspection),
@@ -1456,10 +1472,7 @@ fn ensure_attempt_session(
     let attempt = store
         .attempt(attempt_id)?
         .ok_or(TurnError::AttemptNotFound(attempt_id))?;
-    let turn = store
-        .turn(attempt.turn_id)?
-        .ok_or(TurnError::TurnNotFound(attempt.turn_id))?;
-    if turn.session_id != session_id {
+    if attempt.session_id != session_id {
         return Err(EngineError::AttemptSessionMismatch);
     }
     Ok(())
@@ -1749,9 +1762,10 @@ fn previous_selected_attempt(
     store: &Store,
     target: &AttemptProjection,
 ) -> Result<AttemptProjection, TurnError> {
+    let (turn_id, _) = target.require_primary()?;
     let turn = store
-        .turn(target.turn_id)?
-        .ok_or(TurnError::TurnNotFound(target.turn_id))?;
+        .turn(turn_id)?
+        .ok_or(TurnError::TurnNotFound(turn_id))?;
     let turns = store.turns_for_branch(turn.branch_id)?;
     let target_index = turns
         .iter()
