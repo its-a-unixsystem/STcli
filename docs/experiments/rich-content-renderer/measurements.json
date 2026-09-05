@@ -1,0 +1,106 @@
+{
+  "backend_approved": false,
+  "browser_version": {
+    "jsVersion": "15.2.124.21",
+    "product": "Chrome/152.0.7977.82",
+    "protocolVersion": "1.3",
+    "revision": "@d04cdb24d67b081f6cf80200ffc5233f44b61109",
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36"
+  },
+  "cgroup": {
+    "effective": true,
+    "expected": {
+      "cpu.max": "200000 100000",
+      "memory.max": "1073741824",
+      "memory.swap.max": "0",
+      "pids.max": "128"
+    },
+    "mismatches": {},
+    "path": "/user.slice/user-1000.slice/user@1000.service/app.slice/stcli-rich-measure.scope",
+    "values": {
+      "cpu.max": "200000 100000",
+      "cpu.stat": "usage_usec 2142623\nuser_usec 1155247\nsystem_usec 987376\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 11\nnr_throttled 9\nthrottled_usec 872758\nnr_bursts 0\nburst_usec 0",
+      "memory.max": "1073741824",
+      "memory.peak": "217882624",
+      "memory.swap.max": "0",
+      "pids.current": "127",
+      "pids.max": "128",
+      "pids.peak": "128"
+    }
+  },
+  "cleanup": {
+    "graceful": true,
+    "reaped": true,
+    "stderr": "RuntimeError: [2:20:0905/210534.579805:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory [2:20:0905/210534.579826:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\") [2:20:0905/210534.581785:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or ",
+    "temporary_removed": true
+  },
+  "cold_starts": [
+    0.17669128999114037,
+    0.17995641799643636,
+    0.16049753600964323
+  ],
+  "experiment": "ticket-01",
+  "mode": "measure",
+  "mounts": [
+    [
+      "--ro-bind",
+      "/usr/lib/chromium",
+      "/usr/lib/chromium"
+    ],
+    [
+      "--ro-bind",
+      "/usr/lib",
+      "/usr/lib"
+    ],
+    [
+      "--ro-bind",
+      "/etc/ld.so.cache",
+      "/etc/ld.so.cache"
+    ],
+    [
+      "--ro-bind",
+      "/usr/share/fonts/TTF/DejaVuSans.ttf",
+      "/fonts/DejaVuSans.ttf"
+    ],
+    [
+      "--ro-bind",
+      "/tmp/stcli-rich-probe-d27nhj8r/fonts.conf",
+      "/etc/fonts/fonts.conf"
+    ],
+    [
+      "--symlink",
+      "usr/lib",
+      "/lib"
+    ],
+    [
+      "--symlink",
+      "usr/lib",
+      "/lib64"
+    ]
+  ],
+  "namespaces": {
+    "cgroup": "cgroup:[4026533610]",
+    "ipc": "ipc:[4026533503]",
+    "mnt": "mnt:[4026533493]",
+    "net": "net:[4026533865]",
+    "pid": "pid:[4026533511]",
+    "user": "user:[4026534005]",
+    "uts": "uts:[4026533494]"
+  },
+  "no_backend": "RuntimeError: CDP Target.createTarget failed: Failed to open new tab - no browser is open",
+  "process": {
+    "listening_sockets": [],
+    "observed_pid": 3187360,
+    "status": {
+      "CapEff": "0000000000000000",
+      "NSpid": "3187360\t1",
+      "NoNewPrivs": "1",
+      "PPid": "3187359",
+      "Pid": "3187360",
+      "Seccomp": "0",
+      "Seccomp_filters": "0",
+      "Threads": "1"
+    }
+  },
+  "renders": {}
+}

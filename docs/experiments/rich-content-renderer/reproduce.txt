@@ -1,0 +1,32 @@
+Ticket 01 rich-content renderer experiment — 2026-09-05
+
+Versions:
+python3 --version
+/usr/lib/chromium/chromium --version
+kitty --version
+alacritty --version
+bwrap --version
+systemd-run --version
+
+Focused build proof:
+cargo check -p stcli-tui --examples --locked
+cargo build -p stcli-tui --example rich_content_probe --locked
+cargo test -p stcli-tui --locked markdown::tests
+Observed: examples compile; 2 focused tests passed.
+
+Required isolation probe:
+systemd-run --user --scope --quiet --unit=stcli-rich-isolation -p MemoryMax=1G -p MemorySwapMax=0 -p TasksMax=128 -p CPUQuota=200% python3 crates/stcli-tui/examples/rich_content_probe/renderer.py --isolation --evidence docs/experiments/rich-content-renderer
+Observed: no backend approved. Owned host-file and loopback request/reply controls succeeded outside the boundary. The private Chromium Browser.getVersion CDP pipe handshake succeeded through Bubblewrap, but Chromium reported "Target.createTarget failed: Failed to open new tab - no browser is open" before any untrusted input. No TCP debugging fallback was opened.
+
+Measurement probe:
+systemd-run --user --scope --quiet --unit=stcli-rich-measure -p MemoryMax=1G -p MemorySwapMax=0 -p TasksMax=128 -p CPUQuota=200% python3 crates/stcli-tui/examples/rich_content_probe/renderer.py --measure --evidence docs/experiments/rich-content-renderer
+Observed: stopped at the same mandatory prerequisite; no timing/resource samples claimed.
+
+TUI fallback:
+target/debug/examples/rich_content_probe --graphics off --evidence docs/experiments/rich-content-renderer
+Observed through a supervised PTY: native Ratatui controls and readable Harbor Watch alternative, with "graphics disabled by --graphics off". Keys 3,s,p,d,r,2,q were sent; the process exited and no Chromium process was launched. No valid visual capture was retained.
+
+target/debug/examples/rich_content_probe --graphics auto --renderer /definitely-missing-stcli-renderer --evidence docs/experiments/rich-content-renderer
+Observed through a supervised PTY: readable alternative remained visible with a bounded diagnostic and controls remained active. The initial terminal probe exposed a missing Python re import; it was fixed after this observation.
+
+Terminal graphics scenarios were not run because isolated Chromium could not create a target before untrusted HTML was supplied. No terminal-transfer acknowledgement, graphical-backend proof, or display-latency claim is made.

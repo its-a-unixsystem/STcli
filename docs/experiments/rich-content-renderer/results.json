@@ -1,0 +1,45 @@
+{
+  "experiment": "ticket-01",
+  "verdict": "no backend approved",
+  "tested_at": "2026-09-05",
+  "runtime": {
+    "chromium": "152.0.7977.82",
+    "kitty": "0.48.2",
+    "alacritty": "0.17.0 (94e7c887)",
+    "bubblewrap": "0.12.0",
+    "systemd": "261.2-1-arch",
+    "python": "3.14.7"
+  },
+  "blocking_requirement": "The private Browser.getVersion CDP pipe handshake succeeded through Bubblewrap, but isolated Chromium failed Target.createTarget with 'Failed to open new tab - no browser is open' before untrusted input. No DevTools TCP fallback or weaker isolation was permitted.",
+  "positive_controls": {
+    "owned_host_file_readable_outside": true,
+    "owned_loopback_request_reply_outside": true
+  },
+  "completed_observations": {
+    "fixture_asset_sha256": "f331033487acbbe3714bda038a21e91ef640c9f224748bb7078b9bd5e2eb4817",
+    "examples_compile": true,
+    "focused_markdown_tests": "2 passed",
+    "graphics_off_fallback_visible_in_real_tui": true,
+    "missing_renderer_fallback_visible_in_real_tui": true,
+    "isolated_render": false,
+    "terminal_graphics": false,
+    "performance_samples": false
+  },
+  "candidate_ceilings_not_selected": {
+    "combined_html_css_bytes": 262144,
+    "approved_png_bytes": 1048576,
+    "approved_png_pixels": 1048576,
+    "aggregate_asset_bytes": 4194304,
+    "output_pixels": [1600, 4096],
+    "png_bytes": 33554432,
+    "framed_response_bytes": 50331648,
+    "cold_start_seconds": 10,
+    "warm_render_seconds": 3,
+    "scope_memory_bytes": 1073741824,
+    "scope_swap_bytes": 0,
+    "scope_tasks": 128,
+    "scope_cpu_percent": 200,
+    "private_tmp_bytes": 134217728,
+    "private_dev_shm_bytes": 67108864
+  }
+}

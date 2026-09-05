@@ -1,0 +1,31 @@
+{
+  "backend_approved": false,
+  "ceilings": {
+    "aggregate_asset_bytes": 4194304,
+    "asset_bytes": 1048576,
+    "asset_pixels": 1048576,
+    "html_bytes": 262144,
+    "output": [
+      1600,
+      4096
+    ],
+    "png_bytes": 33554432,
+    "render_seconds": 3.0,
+    "response_bytes": 50331648,
+    "startup_seconds": 10.0
+  },
+  "cleanup": {
+    "graceful": true,
+    "reaped": true,
+    "stderr": "RuntimeError: [2:20:0905/210327.565941:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory [2:20:0905/210327.565958:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\") [2:20:0905/210327.569302:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or ",
+    "temporary_removed": true
+  },
+  "experiment": "ticket-01",
+  "mode": "isolation",
+  "no_backend": "RuntimeError: CDP Target.createTarget failed: Failed to open new tab - no browser is open",
+  "positive_controls": {
+    "host_file_readable_outside": true,
+    "loopback_listener_outside": true,
+    "loopback_port": 39745
+  }
+}
