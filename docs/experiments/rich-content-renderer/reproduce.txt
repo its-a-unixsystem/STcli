@@ -16,7 +16,7 @@ Observed: examples compile; 2 focused tests passed.
 
 Required isolation probe:
 systemd-run --user --scope --quiet --unit=stcli-rich-isolation -p MemoryMax=1G -p MemorySwapMax=0 -p TasksMax=128 -p CPUQuota=200% python3 crates/stcli-tui/examples/rich_content_probe/renderer.py --isolation --evidence docs/experiments/rich-content-renderer
-Observed: no backend approved. Owned host-file and loopback request/reply controls succeeded outside the boundary. The private Chromium Browser.getVersion CDP pipe handshake succeeded through Bubblewrap, but Chromium reported "Target.createTarget failed: Failed to open new tab - no browser is open" before any untrusted input. No TCP debugging fallback was opened.
+Observed: no backend approved. Owned host-file and loopback request/reply controls succeeded outside the boundary. With the required `/lib` and `/lib64` symlinks and an initial `about:blank` CLI target, the private Chromium `Browser.getVersion` CDP pipe handshake succeeded through Bubblewrap. A second benign `Target.createTarget` still reported "Failed to open new tab - no browser is open" before any untrusted input. No TCP debugging fallback was opened.
 
 Measurement probe:
 systemd-run --user --scope --quiet --unit=stcli-rich-measure -p MemoryMax=1G -p MemorySwapMax=0 -p TasksMax=128 -p CPUQuota=200% python3 crates/stcli-tui/examples/rich_content_probe/renderer.py --measure --evidence docs/experiments/rich-content-renderer

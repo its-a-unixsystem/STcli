@@ -1,5 +1,12 @@
 {
   "backend_approved": false,
+  "browser_version": {
+    "jsVersion": "15.2.124.21",
+    "product": "Chrome/152.0.7977.82",
+    "protocolVersion": "1.3",
+    "revision": "@d04cdb24d67b081f6cf80200ffc5233f44b61109",
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36"
+  },
   "ceilings": {
     "aggregate_asset_bytes": 4194304,
     "asset_bytes": 1048576,
@@ -14,18 +21,104 @@
     "response_bytes": 50331648,
     "startup_seconds": 10.0
   },
+  "cgroup": {
+    "effective": true,
+    "expected": {
+      "cpu.max": "200000 100000",
+      "memory.max": "1073741824",
+      "memory.swap.max": "0",
+      "pids.max": "128"
+    },
+    "mismatches": {},
+    "path": "/user.slice/user-1000.slice/user@1000.service/app.slice/stcli-rich-isolation.scope",
+    "values": {
+      "cpu.max": "200000 100000",
+      "cpu.stat": "usage_usec 387678\nuser_usec 208531\nsystem_usec 179146\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 3\nnr_throttled 1\nthrottled_usec 67333\nnr_bursts 0\nburst_usec 0",
+      "memory.max": "1073741824",
+      "memory.peak": "188256256",
+      "memory.swap.max": "0",
+      "pids.current": "115",
+      "pids.max": "128",
+      "pids.peak": "115"
+    }
+  },
   "cleanup": {
     "graceful": true,
     "reaped": true,
-    "stderr": "RuntimeError: [2:20:0905/210327.565941:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory [2:20:0905/210327.565958:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\") [2:20:0905/210327.569302:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or ",
+    "stderr": "RuntimeError: [2:21:0905/211713.275646:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory [2:21:0905/211713.275663:ERROR:dbus/bus.cc:405] Failed to connect to the bus: C ... 4:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:  [2:82:0905/211713.453165:ERROR:content/browser/devtools/devtools_pipe_handler.cc:188] Connection termina",
     "temporary_removed": true
   },
   "experiment": "ticket-01",
+  "initial_target": {
+    "attached": false,
+    "targetId": "99D0AF91EEA7F5BE68F31453961F1FEB",
+    "url": "about:blank"
+  },
   "mode": "isolation",
+  "mounts": [
+    [
+      "--ro-bind",
+      "/usr/lib/chromium",
+      "/usr/lib/chromium"
+    ],
+    [
+      "--ro-bind",
+      "/usr/lib",
+      "/usr/lib"
+    ],
+    [
+      "--ro-bind",
+      "/etc/ld.so.cache",
+      "/etc/ld.so.cache"
+    ],
+    [
+      "--ro-bind",
+      "/usr/share/fonts/TTF/DejaVuSans.ttf",
+      "/fonts/DejaVuSans.ttf"
+    ],
+    [
+      "--ro-bind",
+      "/tmp/stcli-rich-probe-3ojs973f/fonts.conf",
+      "/etc/fonts/fonts.conf"
+    ],
+    [
+      "--symlink",
+      "usr/lib",
+      "/lib"
+    ],
+    [
+      "--symlink",
+      "usr/lib",
+      "/lib64"
+    ]
+  ],
+  "namespaces": {
+    "cgroup": "cgroup:[4026533494]",
+    "ipc": "ipc:[4026533258]",
+    "mnt": "mnt:[4026533256]",
+    "net": "net:[4026533497]",
+    "pid": "pid:[4026533493]",
+    "user": "user:[4026533598]",
+    "uts": "uts:[4026533257]"
+  },
   "no_backend": "RuntimeError: CDP Target.createTarget failed: Failed to open new tab - no browser is open",
   "positive_controls": {
     "host_file_readable_outside": true,
     "loopback_listener_outside": true,
-    "loopback_port": 39745
+    "loopback_port": 34099
+  },
+  "process": {
+    "listening_sockets": [],
+    "observed_pid": 3203499,
+    "status": {
+      "CapEff": "0000000000000000",
+      "NSpid": "3203499\t1",
+      "NoNewPrivs": "1",
+      "PPid": "3203498",
+      "Pid": "3203499",
+      "Seccomp": "0",
+      "Seccomp_filters": "0",
+      "Threads": "1"
+    }
   }
 }

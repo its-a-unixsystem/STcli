@@ -19,25 +19,25 @@
     "path": "/user.slice/user-1000.slice/user@1000.service/app.slice/stcli-rich-measure.scope",
     "values": {
       "cpu.max": "200000 100000",
-      "cpu.stat": "usage_usec 2142623\nuser_usec 1155247\nsystem_usec 987376\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 11\nnr_throttled 9\nthrottled_usec 872758\nnr_bursts 0\nburst_usec 0",
+      "cpu.stat": "usage_usec 1797063\nuser_usec 983562\nsystem_usec 813500\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 10\nnr_throttled 6\nthrottled_usec 482142\nnr_bursts 0\nburst_usec 0",
       "memory.max": "1073741824",
-      "memory.peak": "217882624",
+      "memory.peak": "173912064",
       "memory.swap.max": "0",
-      "pids.current": "127",
+      "pids.current": "106",
       "pids.max": "128",
-      "pids.peak": "128"
+      "pids.peak": "126"
     }
   },
   "cleanup": {
     "graceful": true,
     "reaped": true,
-    "stderr": "RuntimeError: [2:20:0905/210534.579805:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory [2:20:0905/210534.579826:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\") [2:20:0905/210534.581785:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or ",
+    "stderr": "RuntimeError: [2:20:0905/211206.765346:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory [2:20:0905/211206.765361:ERROR:dbus/bus.cc:405] Failed to connect to the bus: C ... 7:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:  [88:13:0905/211206.886188:ERROR:base/threading/platform_thread_posix.cc:162] pthread_create: Resource te",
     "temporary_removed": true
   },
   "cold_starts": [
-    0.17669128999114037,
-    0.17995641799643636,
-    0.16049753600964323
+    0.16471320402342826,
+    0.14620832999935374,
+    0.14312800799962133
   ],
   "experiment": "ticket-01",
   "mode": "measure",
@@ -64,7 +64,7 @@
     ],
     [
       "--ro-bind",
-      "/tmp/stcli-rich-probe-d27nhj8r/fonts.conf",
+      "/tmp/stcli-rich-probe-fyddc95s/fonts.conf",
       "/etc/fonts/fonts.conf"
     ],
     [
@@ -79,24 +79,24 @@
     ]
   ],
   "namespaces": {
-    "cgroup": "cgroup:[4026533610]",
-    "ipc": "ipc:[4026533503]",
-    "mnt": "mnt:[4026533493]",
-    "net": "net:[4026533865]",
-    "pid": "pid:[4026533511]",
-    "user": "user:[4026534005]",
+    "cgroup": "cgroup:[4026533504]",
+    "ipc": "ipc:[4026533502]",
+    "mnt": "mnt:[4026533258]",
+    "net": "net:[4026533505]",
+    "pid": "pid:[4026533503]",
+    "user": "user:[4026533718]",
     "uts": "uts:[4026533494]"
   },
   "no_backend": "RuntimeError: CDP Target.createTarget failed: Failed to open new tab - no browser is open",
   "process": {
     "listening_sockets": [],
-    "observed_pid": 3187360,
+    "observed_pid": 3193949,
     "status": {
       "CapEff": "0000000000000000",
-      "NSpid": "3187360\t1",
+      "NSpid": "3193949\t1",
       "NoNewPrivs": "1",
-      "PPid": "3187359",
-      "Pid": "3187360",
+      "PPid": "3193948",
+      "Pid": "3193949",
       "Seccomp": "0",
       "Seccomp_filters": "0",
       "Threads": "1"

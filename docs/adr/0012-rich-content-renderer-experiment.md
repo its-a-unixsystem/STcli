@@ -12,7 +12,7 @@ The candidate was system Chromium rendered through an isolated Bubblewrap proces
 
 ## Decision
 
-**No backend approved.** Chromium's private `Browser.getVersion` CDP pipe handshake succeeded through Bubblewrap. The next benign operation, `Target.createTarget` for an `about:blank` page, failed with `Failed to open new tab - no browser is open` before any untrusted input was supplied. The required isolated positive render therefore could not begin.
+**No backend approved.** Chromium's private `Browser.getVersion` CDP pipe handshake succeeded through Bubblewrap with the required `/lib` and `/lib64` symlinks and an initial `about:blank` CLI target. The next benign operation, `Target.createTarget` for another `about:blank` page, still failed with `Failed to open new tab - no browser is open` before any untrusted input was supplied. The required isolated positive render therefore could not begin.
 
 Opening a DevTools TCP port, weakening Bubblewrap isolation, using `--no-sandbox`, or feeding hostile fixtures to an unprotected browser would violate the approved trust model. The experiment therefore stopped before untrusted rendering and did not substitute a weaker backend.
 

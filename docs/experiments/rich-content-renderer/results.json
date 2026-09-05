@@ -10,7 +10,7 @@
     "systemd": "261.2-1-arch",
     "python": "3.14.7"
   },
-  "blocking_requirement": "The private Browser.getVersion CDP pipe handshake succeeded through Bubblewrap, but isolated Chromium failed Target.createTarget with 'Failed to open new tab - no browser is open' before untrusted input. No DevTools TCP fallback or weaker isolation was permitted.",
+  "blocking_requirement": "With the required /lib and /lib64 symlinks and an initial about:blank CLI target, the private Browser.getVersion CDP pipe handshake succeeded through Bubblewrap. A second benign Target.createTarget still failed with 'Failed to open new tab - no browser is open' before untrusted input. No DevTools TCP fallback or weaker isolation was permitted.",
   "positive_controls": {
     "owned_host_file_readable_outside": true,
     "owned_loopback_request_reply_outside": true

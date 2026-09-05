@@ -260,7 +260,7 @@ class Browser:
                         "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--disable-component-update",
                         "--disable-domain-reliability", "--disable-sync", "--metrics-recording-only", "--disable-breakpad",
                         "--disable-features=MediaRouter,OptimizationHints,AutofillServerCommunication", "--password-store=basic",
-                        "--use-mock-keychain", "--disable-gpu"])
+                        "--use-mock-keychain", "--disable-gpu", "about:blank"])
         to_child_r, controller_write = os.pipe()
         controller_read, from_child_w = os.pipe()
         saved_read = os.dup(3)
@@ -279,7 +279,12 @@ class Browser:
         self.cdp = CDP(controller_read, controller_write)
         try:
             self.version = self.cdp.call("Browser.getVersion", timeout=START_TIMEOUT)
-            self.cdp.call("Target.createTarget", {"url": "about:blank"}, timeout=START_TIMEOUT)
+            targets = self.cdp.call("Target.getTargets", timeout=START_TIMEOUT).get("targetInfos", [])
+            initial = next((target for target in targets if target.get("type") == "page"), None)
+            if not initial or initial.get("url") != "about:blank":
+                raise RuntimeError("initial about:blank page target is unavailable")
+            self.initial_target = {"targetId": initial.get("targetId"), "url": initial.get("url"),
+                                   "attached": initial.get("attached", False)}
         except Exception as exc:
             cleanup = self.close()
             raise RuntimeError(f"CDP pipe handshake failed: {exc}; browser: {cleanup.get('stderr', 'no stderr')}") from exc
@@ -428,7 +433,11 @@ class Browser:
             observation["reaped"] = process.poll() is not None
             if process.stderr:
                 diagnostic = process.stderr.read(4096).decode(errors="replace")
-                observation["stderr"] = compact_error(RuntimeError(diagnostic)) if diagnostic else ""
+                if diagnostic:
+                    bounded = diagnostic if len(diagnostic) <= 512 else diagnostic[:240] + " ... " + diagnostic[-267:]
+                    observation["stderr"] = compact_error(RuntimeError(bounded))
+                else:
+                    observation["stderr"] = ""
         temporary = getattr(self, "temp", None)
         if temporary:
             temporary.cleanup()
@@ -494,6 +503,9 @@ def isolation(renderer: Path, evidence: Path) -> int:
                                    "loopback_listener_outside": loopback_reachable, "loopback_port": loopback_port}
     try:
         browser = Browser(renderer)
+        result.update({"browser_version": browser.version, "initial_target": browser.initial_target,
+                       "mounts": browser.mounts, "cgroup": browser.cgroup,
+                       "namespaces": browser.namespaces, "process": browser.process_info})
         try:
             rendered = browser.render("card", 800)
             result.update({"backend_approved": True, "browser_version": browser.version, "mounts": browser.mounts,
