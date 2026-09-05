@@ -249,6 +249,10 @@ The one deliberate exception to "determinism is the harness". Everything else in
 - The API key remains environment-only. Configuration persists only the environment-variable name,
   and the test scans every CLI stdout/stderr stream, the loaded attempt and receipt trace, exported
   capsule data, projections, and all files under `TestHome` for the secret value.
+- For local diagnosis only, set `STCLI_LIVE_SHOW_RAW=1` and pass `--nocapture` to print the
+  four primary CLI JSONL streams and the raw non-streaming summary provider receipt. The test scans
+  every value for `STCLI_LIVE_API_KEY` before printing. Do not enable this switch in CI; provider
+  responses contain roleplay content, prompts, model metadata, and usage details.
 - `.github/workflows/live-smoke.yml` scopes the three repository secrets to its weekly/manual
   informational job. The workflow stays outside `.github/workflows/ci.yml` and is never required for
   pull requests.
