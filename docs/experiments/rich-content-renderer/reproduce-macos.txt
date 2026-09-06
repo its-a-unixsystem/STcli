@@ -1,0 +1,51 @@
+macOS rich-content renderer evaluation - 2026-09-06
+
+Machine and versions:
+sw_vers                              # macOS 26.4.1 (25E253)
+uname -m                             # arm64
+/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --version
+                                      # Google Chrome 152.0.7977.76
+kitty --version                       # kitty 0.48.2
+python3 --version                     # Python 3.14.7
+xcrun --show-sdk-version              # 26.2
+rustc --version                       # rustc 1.89.0
+/usr/bin/sandbox-exec                 # deprecated system binary; no standalone version flag
+
+Build:
+PATH="$HOME/.rustup/toolchains/1.89.0-aarch64-apple-darwin/bin:$PATH" cargo build -p stcli-tui --example rich_content_probe --locked
+
+Primary isolation approach:
+python3 crates/stcli-tui/examples/rich_content_probe/renderer_macos.py --evaluate --evidence docs/experiments/rich-content-renderer
+Observed: the deny-default outer sandbox-exec profile denied host-home and IP network access, but Google Chrome exited by SIGSEGV before opening CDP or rendering. Evidence: seatbelt-primary.json and isolation-macos.json.
+
+Secondary isolation approach:
+The same evaluator launched Chrome with its built-in child-process Seatbelt sandbox and the ticket-01 CDP policy. Card and columns rendered. The hostile document retained marker_state=original, retained the main URL, loaded no nested marker, opened no unexpected target, and made zero loopback-listener requests. A kernel sandbox_check of the controlling Chrome PID returned allowed=true for file-read-data on the host sentinel. This fails the required browser-process host-resource boundary; request interception alone is not approval.
+
+Measurements:
+The evaluator collected three Chrome startup samples and ten 900-pixel renders per fixture. measurements-macos.json contains every sample, medians, maxima, PNG sizes, and a ps snapshot limited to the root browser PID and descendants. The process tree exceeded the 200 MiB ceiling. macOS libproc reported 125 aggregate threads, below the 256-task ceiling.
+
+Terminal capability and transfer:
+A dedicated Kitty 0.48.2 window ran:
+python3 crates/stcli-tui/examples/rich_content_probe/renderer.py --terminal-probe
+Observed: supported=true, cell_width=14, cell_height=25.
+
+A dedicated Kitty window ran:
+python3 crates/stcli-tui/examples/rich_content_probe/renderer.py --terminal-transfer docs/experiments/rich-content-renderer/rendered-card-macos.png --evidence /tmp
+Observed: 169,065 PNG bytes, 225,951 protocol bytes, write/flush 0.000954 s, matching acknowledgement 0.013900 s after flush.
+
+Real TUI scenario ledger:
+target/debug/examples/rich_content_probe --graphics auto --renderer "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --evidence /tmp/stcli-graphical
+Sent resize, PageDown, PageUp, p, s, d, r, 3, 1, and q through a dedicated Kitty control socket. The card payload rendered and Kitty acknowledged direct PNG transfer; popup, source, removal, restore, literal-content, and exit paths remained responsive. No stcli-rich-macos private-profile process remained after exit.
+
+target/debug/examples/rich_content_probe --graphics off
+Observed: readable Harbor Watch alternative and explicit disabled reason; no renderer process.
+
+target/debug/examples/rich_content_probe --graphics auto --renderer /definitely-missing-stcli-renderer
+Observed: readable alternative, bounded missing-renderer reason, responsive controls, clean exit.
+
+Screenshot limitation:
+screencapture -x /tmp/stcli-desktop-capture.png
+Observed: "could not create image from display" because the harness process lacks macOS Screen Recording permission. This run therefore records the real Kitty graphics acknowledgement and Kitty remote-control text evidence, but cannot provide an OS framebuffer screenshot.
+
+Decision:
+No macOS backend is approved. Keep readable text fallback on macOS. Exact blockers: outer Seatbelt crashes Chrome before CDP; Chrome's own sandbox leaves the controlling browser PID able to read arbitrary host files; measured process-tree RSS exceeds 200 MiB.

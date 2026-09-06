@@ -1,0 +1,35 @@
+{
+  "experiment": "macos-evaluation",
+  "terminal": "kitty 0.48.2 on macOS 26.4.1 arm64",
+  "capability_probe": {
+    "supported": true,
+    "cell_width": 14,
+    "cell_height": 25,
+    "reason": "Kitty graphics acknowledged"
+  },
+  "transfer": {
+    "acknowledged": true,
+    "png_bytes": 169065,
+    "protocol_bytes": 225951,
+    "write_flush_seconds": 0.0009543339838273823,
+    "ack_seconds_after_flush": 0.013899624987971038
+  },
+  "tui_scenarios": {
+    "graphical_card_received": true,
+    "resize": true,
+    "scroll": true,
+    "popup_hides_graphics": true,
+    "source_view": true,
+    "content_removal": true,
+    "restore": true,
+    "literal_html_stays_text": true,
+    "graphics_off_fallback": true,
+    "missing_renderer_fallback": true,
+    "clean_exit": true
+  },
+  "screen_capture": {
+    "captured": false,
+    "reason": "screencapture failed with 'could not create image from display'; the harness lacks macOS Screen Recording permission",
+    "substitute_evidence": "Kitty protocol acknowledgement and terminal text captured through Kitty remote control"
+  }
+}

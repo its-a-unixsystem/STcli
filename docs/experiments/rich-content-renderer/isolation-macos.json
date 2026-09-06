@@ -1,0 +1,71 @@
+{
+  "backend_approved": false,
+  "cleanup": {
+    "graceful": true,
+    "reaped": true,
+    "stderr": "RuntimeError: Trying to load the allocator multiple times. This is *not* supported. [37027:9672393:0906/182213.812840:ERROR:ui/display/mac/cv_display_link_mac.mm:195] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670 [37027:9672393:0906/182213.813 ... error message: PHONE_REGISTRATION_ERROR [37022:9672344:0906/182216.746279:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: PHONE_REGISTRATION_ERROR [37022:9672357:0906/182216.769085:ERROR:base/process/proces",
+    "temporary_removed": true
+  },
+  "experiment": "macos-evaluation",
+  "failed_criterion": "controlling browser process retains host filesystem authority",
+  "hostile_document": {
+    "denied_requests": [
+      "Other:https://stcli-render.invalid/favicon.ico"
+    ],
+    "dom": {
+      "child_frame_urls": [
+        "about:srcdoc",
+        "chrome-error://chromewebdata/",
+        "",
+        "",
+        "chrome-error://chromewebdata/",
+        "chrome-error://chromewebdata/"
+      ],
+      "main_url": "https://stcli-render.invalid/card.html",
+      "marker_state": "original",
+      "nested_document_loaded": false,
+      "nested_marker_count": 0
+    },
+    "listener_requests": [],
+    "unexpected_targets": []
+  },
+  "orphaned_profile_processes": [],
+  "positive_controls": {
+    "host_file_readable_outside": true,
+    "loopback_listener_outside": true,
+    "loopback_port": 49795
+  },
+  "positive_render": {
+    "denied_requests": [
+      "Other:https://stcli-render.invalid/favicon.ico"
+    ],
+    "height": 600,
+    "png_bytes": 169065,
+    "unexpected_targets": [],
+    "width": 800
+  },
+  "primary": {
+    "approach": "sandbox-exec deny-default outer Seatbelt profile",
+    "elapsed_seconds": 0.4362997499993071,
+    "exit_code": -11,
+    "profile": "(version 1)\n(deny default)\n(allow process*)\n(allow signal)\n(allow sysctl-read)\n(allow mach*)\n(allow ipc*)\n(allow file-read*)\n(deny file-read* (subpath \"/Users/thomas\"))\n(allow file-read* file-write* (subpath \"/private/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-seatbelt-primary-e08hoed1\"))\n(allow network*)\n(deny network* (remote ip))\n(deny network* (local ip))\n(allow file-read* file-write* (subpath \"/private/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T\"))\n",
+    "started": false,
+    "stderr": "[0906/182209.824561:ERROR:third_party/crashpad/crashpad/client/crash_report_database_mac.mm:90] stat /Users/thomas/Library/Application Support/Google/Chrome/Crashpad: Operation not permitted (1)\n[0906/182209.826185:ERROR:third_party/crashpad/crashpad/util/file/file_io.cc:103] ReadExactly: expected 8, observed 0\n[0906/182209.829120:ERROR:third_party/crashpad/crashpad/client/crash_report_database_mac.mm:90] stat /Users/thomas/Library/Application Support/Google/Chrome/Crashpad: Operation not permitted (1)\n"
+  },
+  "secondary": {
+    "approach": "Chrome built-in child-process Seatbelt plus CDP policy",
+    "browser_parent_sandbox_check": {
+      "allowed": true,
+      "operation": "file-read-data",
+      "path": "/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-host-sentinel-t9nqd71i",
+      "result": 0
+    },
+    "browser_version": {
+      "jsVersion": "15.2.124.19",
+      "product": "Chrome/152.0.7977.76",
+      "protocolVersion": "1.3",
+      "revision": "@0d89dfa2dd7c1ec4b8a14b9f303f887bb63b6174",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "approach": "sandbox-exec deny-default outer Seatbelt profile",
+  "elapsed_seconds": 0.4362997499993071,
+  "exit_code": -11,
+  "profile": "(version 1)\n(deny default)\n(allow process*)\n(allow signal)\n(allow sysctl-read)\n(allow mach*)\n(allow ipc*)\n(allow file-read*)\n(deny file-read* (subpath \"/Users/thomas\"))\n(allow file-read* file-write* (subpath \"/private/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-seatbelt-primary-e08hoed1\"))\n(allow network*)\n(deny network* (remote ip))\n(deny network* (local ip))\n(allow file-read* file-write* (subpath \"/private/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T\"))\n",
+  "started": false,
+  "stderr": "[0906/182209.824561:ERROR:third_party/crashpad/crashpad/client/crash_report_database_mac.mm:90] stat /Users/thomas/Library/Application Support/Google/Chrome/Crashpad: Operation not permitted (1)\n[0906/182209.826185:ERROR:third_party/crashpad/crashpad/util/file/file_io.cc:103] ReadExactly: expected 8, observed 0\n[0906/182209.829120:ERROR:third_party/crashpad/crashpad/client/crash_report_database_mac.mm:90] stat /Users/thomas/Library/Application Support/Google/Chrome/Crashpad: Operation not permitted (1)\n"
+}

@@ -736,21 +736,23 @@ def worker_cold_samples(renderer: Path) -> list[float]:
 def tty_exchange(query: bytes, pattern: bytes, timeout: float = .5) -> tuple[bytes, float]:
     fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     old = termios.tcgetattr(fd); changed = termios.tcgetattr(fd)
-    changed[3] &= ~(termios.ICANON | termios.ECHO); changed[6][termios.VMIN] = 0; changed[6][termios.VTIME] = 0
+    disabled = b"\0" if isinstance(changed[6][termios.VMIN], bytes) else 0
+    changed[3] &= ~(termios.ICANON | termios.ECHO); changed[6][termios.VMIN] = disabled; changed[6][termios.VTIME] = disabled
     start = time.monotonic(); response = bytearray()
     try:
         termios.tcsetattr(fd, termios.TCSANOW, changed)
         os.write(fd, query); termios.tcdrain(fd)
-        selector = selectors.DefaultSelector(); selector.register(fd, selectors.EVENT_READ)
         while time.monotonic() - start < timeout:
-            for _, _ in selector.select(max(0, timeout - (time.monotonic() - start))):
+            ready, _, _ = __import__("select").select(
+                [fd], [], [], max(0, timeout - (time.monotonic() - start))
+            )
+            if ready:
                 try: response.extend(os.read(fd, 4096))
                 except BlockingIOError: pass
                 if pattern in response: return bytes(response), time.monotonic() - start
         return bytes(response), time.monotonic() - start
     finally:
         termios.tcsetattr(fd, termios.TCSANOW, old); os.close(fd)
-
 
 def terminal_probe() -> int:
     result: dict[str, Any] = {"supported": False, "cell_width": 0, "cell_height": 0, "reason": "terminal did not acknowledge Kitty graphics within 500 ms"}
@@ -786,7 +788,8 @@ def terminal_transfer(png: Path, evidence: Path) -> int:
             payload.extend(b"\x1b_G" + controls.encode() + b";" + chunk + b"\x1b\\")
         fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
         old = termios.tcgetattr(fd); changed = termios.tcgetattr(fd)
-        changed[3] &= ~(termios.ICANON | termios.ECHO); changed[6][termios.VMIN] = 0; changed[6][termios.VTIME] = 0
+        disabled = b"\0" if isinstance(changed[6][termios.VMIN], bytes) else 0
+        changed[3] &= ~(termios.ICANON | termios.ECHO); changed[6][termios.VMIN] = disabled; changed[6][termios.VTIME] = disabled
         started = time.monotonic(); response = bytearray()
         try:
             termios.tcsetattr(fd, termios.TCSANOW, changed)
@@ -799,9 +802,11 @@ def terminal_transfer(png: Path, evidence: Path) -> int:
                     __import__("select").select([], [fd], [], .5)
             termios.tcdrain(fd)
             flushed = time.monotonic()
-            selector = selectors.DefaultSelector(); selector.register(fd, selectors.EVENT_READ)
             while time.monotonic() - flushed < .5 and f"i={image_id};OK".encode() not in response:
-                for _, _ in selector.select(max(0, .5 - (time.monotonic() - flushed))):
+                ready, _, _ = __import__("select").select(
+                    [fd], [], [], max(0, .5 - (time.monotonic() - flushed))
+                )
+                if ready:
                     try: response.extend(os.read(fd, 4096))
                     except BlockingIOError: pass
             acknowledged_at = time.monotonic()

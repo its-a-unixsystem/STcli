@@ -28,6 +28,12 @@ use std::{
 };
 use terminal::TerminalSession;
 
+#[cfg(target_os = "macos")]
+const HELPER: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/examples/rich_content_probe/renderer_macos.py"
+);
+#[cfg(not(target_os = "macos"))]
 const HELPER: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/examples/rich_content_probe/renderer.py"
@@ -193,6 +199,7 @@ struct ScopedWorker {
     child: Child,
     input: Option<ChildStdin>,
     output: BufReader<ChildStdout>,
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     unit: String,
     renders: u32,
 }
@@ -210,6 +217,16 @@ impl ScopedWorker {
             .unwrap_or_default()
             .as_nanos();
         let unit = format!("stcli-rich-probe-{}-{nonce}", std::process::id());
+        #[cfg(target_os = "macos")]
+        let mut child = Command::new("python3")
+            .args([HELPER, "--worker", "--renderer"])
+            .arg(renderer)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("failed to launch macOS renderer experiment worker")?;
+        #[cfg(not(target_os = "macos"))]
         let mut child = Command::new("systemd-run")
             .args([
                 "--user",
@@ -262,6 +279,7 @@ impl ScopedWorker {
 
         let completed = Arc::new(AtomicBool::new(false));
         let watchdog_completed = Arc::clone(&completed);
+        #[cfg(not(target_os = "macos"))]
         let watchdog_unit = self.unit.clone();
         let timeout = if self.renders == 0 {
             Duration::from_secs(10)
@@ -271,6 +289,7 @@ impl ScopedWorker {
         thread::spawn(move || {
             thread::sleep(timeout);
             if !watchdog_completed.load(Ordering::Acquire) {
+                #[cfg(not(target_os = "macos"))]
                 let _ = Command::new("systemctl")
                     .args([
                         "--user",
@@ -333,6 +352,7 @@ impl ScopedWorker {
                 Err(_) => break,
             }
         }
+        #[cfg(not(target_os = "macos"))]
         let _ = Command::new("systemctl")
             .args([
                 "--user",
@@ -888,6 +908,10 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 
 fn parse_options() -> Result<Options> {
     let mut graphics = GraphicsMode::Auto;
+    #[cfg(target_os = "macos")]
+    let mut renderer =
+        PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+    #[cfg(not(target_os = "macos"))]
     let mut renderer = PathBuf::from("/usr/lib/chromium/chromium");
     let mut evidence = env::temp_dir().join("stcli-rich-content-probe");
     let mut args = env::args().skip(1);

@@ -4,6 +4,8 @@
 
 Decided. The bounded ticket-01 experiment approves the tested Linux configuration: system Chromium rendered through mandatory Bubblewrap and cgroup isolation, displayed through Kitty's direct PNG graphics protocol. Other configurations retain readable fallback behavior.
 
+The 2026-09-06 macOS evaluation does not approve a graphical renderer. Keep the readable text fallback on macOS: an outer `sandbox-exec` profile crashed Chrome before CDP became available, while Chrome's built-in child-process Seatbelt sandbox left the controlling browser PID able to read an arbitrary host sentinel and the measured process tree exceeded the 200 MiB ticket ceiling.
+
 ## Context
 
 The TUI needs a safe path from untrusted static HTML/CSS to terminal graphics. ADR 0008 keeps presentation in the frontend; ADRs 0009 and 0010 keep Extension execution in QuickJS and retain broker and Replay authority. This experiment used no engine, Session, database, Plugin, or Extension integration.
@@ -36,6 +38,8 @@ Chromium is an optional system package updated by the user's OS package manager.
 | Alacritty | 0.17.0 (94e7c887); capability probe returned no Kitty acknowledgement, so the readable fallback path was selected |
 | Font | Read-only DejaVu Sans from `/usr/share/fonts/TTF/DejaVuSans.ttf` |
 | Assets | Repository-owned PNG, SHA-256 `f331033487acbbe3714bda038a21e91ef640c9f224748bb7078b9bd5e2eb4817` |
+| macOS | macOS 26.4.1 arm64; Google Chrome 152.0.7977.76; `sandbox-exec`; Kitty 0.48.2. Terminal graphics passed, but renderer isolation and memory limits failed, so text fallback remains selected. |
+
 ## Evidence and acceptance criteria
 
 Compact evidence is in `docs/experiments/rich-content-renderer/`: `results.json`, `reproduce.txt`, `isolation.json`, `measurements.json`, `terminal-transfer.json`, `rendered-card.png`, and `terminal-evidence.png`.
@@ -51,6 +55,22 @@ Compact evidence is in `docs/experiments/rich-content-renderer/`: `results.json`
 | Preserve QuickJS/Core/Session behavior | Met | Experiment-only frontend files; no production or domain changes. |
 | ADR, no production availability claim | Met | This decision does not claim shipped TUI availability. |
 | Real isolation and terminal evidence, no mock-only claim | Met | Real Chromium, OS boundary, Kitty, process cleanup, and terminal capture were exercised. |
+
+### macOS evaluation
+
+The macOS evidence is `results-macos.json`, `isolation-macos.json`, `seatbelt-primary.json`, `measurements-macos.json`, `terminal-macos.json`, `rendered-card-macos.png`, and `reproduce-macos.txt` in the same evidence directory.
+
+| macOS criterion | Result | Evidence |
+|---|---|---|
+| Positive controls and hostile-document denial | Partial | The host sentinel and loopback listener were reachable outside. The CDP policy kept the hostile marker unchanged, retained the main URL, loaded no nested marker, opened no unexpected target, and sent zero listener requests. |
+| OS process isolation | Unmet | The outer deny-default Seatbelt profile exited by signal 11 before CDP. With Chrome's built-in sandbox, `sandbox_check` on the live controlling browser PID reported `file-read-data` allowed for the host sentinel. Request interception and child-process Seatbelt do not confine that trusted browser parent. |
+| Positive rendering | Met experimentally, not approved | Card and columns rendered at 800/900 pixels; maximum PNGs were 182,336 and 103,376 bytes, below the ticket's 3 MiB ceiling. |
+| Terminal graphics and fallbacks | Met, screenshot unavailable | Kitty returned cell geometry and acknowledged the macOS-rendered card 0.0139 s after flush. Graphics-off and missing-renderer fallbacks were readable. Resize, scroll, popup, source, removal, restore, literal, and exit paths were exercised. `screencapture` was denied because the harness lacks Screen Recording permission. |
+| Startup and warm rendering | Met | Three starts were 1.121 s, 0.335 s, and 0.850 s. Card median/max were 0.717/0.825 s; columns were 0.696/0.712 s. |
+| Memory and task ceilings | Memory unmet; tasks met | The observed Chrome process tree used 1,094,025,216 bytes RSS, over the 200 MiB ticket ceiling. macOS `libproc` reported 125 aggregate threads, below the 256-task ceiling. |
+| Cleanup | Met | Chrome exited gracefully, the controller reaped it, the temporary profile was removed, and no private-profile process remained. |
+
+This rejection does not weaken the Linux decision or select Chrome's built-in sandbox as a substitute. A future macOS backend must repeat the experiment with an enforceable parent-process filesystem/network boundary, finite memory/task controls, and framebuffer capture permission before graphical support can be approved.
 
 
 ## Measurements and selected ceilings
@@ -74,10 +94,10 @@ Selected ceilings are: 256 KiB combined HTML/CSS; 1 MiB and 1,048,576 pixels per
 | Missing renderer | Tested readable fallback |
 | Alacritty 0.17.0 | Tested readable fallback after capability negotiation returned no Kitty acknowledgement |
 | Multiplexers, remote transport, other Linux terminals | Unverified; readable fallback intended |
-| macOS and Windows | Unverified; readable fallback intended |
+| macOS 26.4.1 with Kitty 0.48.2 | Kitty protocol tested; renderer rejected, readable fallback selected |
 
 ## Lifecycle and trust consequences
 
-Text-only startup does not launch Chromium. A successful browser is reused for sequential renders and retired after 30 seconds idle, explicit exit, or failure. Each render disposes its BrowserContext. Exit removes the owned Kitty placement and image, closes pipes, terminates and reaps the owned scope, and removes private profiles. The observed normal exit left no `rich_content_probe`, `stcli-rich-probe`, or private-profile process.
+On the approved Linux path, text-only startup does not launch Chromium. A successful browser is reused for sequential renders and retired after 30 seconds idle, explicit exit, or failure. Each render disposes its BrowserContext. Exit removes the owned Kitty placement and image, closes pipes, terminates and reaps the owned scope, and removes private profiles. The observed normal exit left no `rich_content_probe`, `stcli-rich-probe`, or private-profile process.
 
-The renderer never receives Session data, credentials, Extension authority, a user browser profile, arbitrary paths, network access, or generic CDP commands. Replay and headless use remain renderer-free. This experiment approves a direction and finite policy; it does not introduce production rendering or user-facing availability.
+The approved Linux renderer never receives Session data, credentials, Extension authority, a user browser profile, arbitrary paths, network access, or generic CDP commands. The rejected macOS secondary approach did retain host filesystem authority in its controlling browser PID and is therefore not an approved implementation. Replay and headless use remain renderer-free. This experiment introduces no production rendering or user-facing availability.

@@ -29,6 +29,24 @@
     "performance_samples": true,
     "normal_exit_cleanup": true
   },
+  "macos_evaluation": {
+    "tested_at": "2026-09-06",
+    "verdict": "backend rejected; text fallback selected",
+    "runtime": {
+      "macos": "26.4.1 arm64",
+      "chrome": "152.0.7977.76",
+      "kitty": "0.48.2",
+      "python": "3.14.7"
+    },
+    "failed_criteria": [
+      "outer sandbox-exec profile crashes Chrome before CDP/rendering",
+      "Chrome built-in sandbox leaves the controlling browser PID with host file authority",
+      "renderer process-tree RSS exceeds the 200 MiB macOS evaluation ceiling"
+    ],
+    "task_count": 125,
+    "terminal_transfer_acknowledged": true,
+    "details": "results-macos.json"
+  },
   "selected_ceilings": {
     "combined_html_css_bytes": 262144,
     "approved_png_bytes": 1048576,

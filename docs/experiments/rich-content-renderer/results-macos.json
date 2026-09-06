@@ -1,0 +1,11 @@
+{
+  "backend_approved": false,
+  "decision": "text fallback only on macOS",
+  "experiment": "macos-evaluation",
+  "failed_criteria": [
+    "outer sandbox-exec profile crashes Chrome before CDP/rendering",
+    "Chrome built-in sandbox leaves the controlling browser process with host file authority",
+    "observed renderer scope exceeds the 200 MiB memory ceiling"
+  ],
+  "terminal_graphics": "recorded separately by terminal probe and transfer"
+}
