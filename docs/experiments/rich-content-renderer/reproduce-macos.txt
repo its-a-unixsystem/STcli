@@ -43,9 +43,9 @@ Observed: readable Harbor Watch alternative and explicit disabled reason; no ren
 target/debug/examples/rich_content_probe --graphics auto --renderer /definitely-missing-stcli-renderer
 Observed: readable alternative, bounded missing-renderer reason, responsive controls, clean exit.
 
-Screenshot limitation:
-screencapture -x /tmp/stcli-desktop-capture.png
-Observed: "could not create image from display" because the harness process lacks macOS Screen Recording permission. This run therefore records the real Kitty graphics acknowledgement and Kitty remote-control text evidence, but cannot provide an OS framebuffer screenshot.
+Real terminal screenshots:
+After macOS Screen Recording permission was granted, `screencapture -x /tmp/stcli-capture-check.png` succeeded. Each dedicated Kitty window was then captured by its Kitty-reported `platform_window_id` with `screencapture -x -o -l ID PATH`.
+Observed: `terminal-card-macos.png` shows the graphical Harbor Watch card; `terminal-graphics-off-macos.png` shows the readable explicit graphics-off fallback; `terminal-missing-renderer-macos.png` shows the readable bounded missing-renderer diagnostic. This TCC permission affected evidence capture only. A fresh renderer evaluation still failed outer Seatbelt startup, browser-parent confinement, and the 200 MiB memory ceiling.
 
 Decision:
 No macOS backend is approved. Keep readable text fallback on macOS. Exact blockers: outer Seatbelt crashes Chrome before CDP; Chrome's own sandbox leaves the controlling browser PID able to read arbitrary host files; measured process-tree RSS exceeds 200 MiB.

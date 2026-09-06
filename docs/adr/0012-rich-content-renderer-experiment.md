@@ -58,14 +58,14 @@ Compact evidence is in `docs/experiments/rich-content-renderer/`: `results.json`
 
 ### macOS evaluation
 
-The macOS evidence is `results-macos.json`, `isolation-macos.json`, `seatbelt-primary.json`, `measurements-macos.json`, `terminal-macos.json`, `rendered-card-macos.png`, and `reproduce-macos.txt` in the same evidence directory.
+The macOS evidence is `results-macos.json`, `isolation-macos.json`, `seatbelt-primary.json`, `measurements-macos.json`, `terminal-macos.json`, `rendered-card-macos.png`, `terminal-card-macos.png`, `terminal-graphics-off-macos.png`, `terminal-missing-renderer-macos.png`, and `reproduce-macos.txt` in the same evidence directory.
 
 | macOS criterion | Result | Evidence |
 |---|---|---|
 | Positive controls and hostile-document denial | Partial | The host sentinel and loopback listener were reachable outside. The CDP policy kept the hostile marker unchanged, retained the main URL, loaded no nested marker, opened no unexpected target, and sent zero listener requests. |
 | OS process isolation | Unmet | The outer deny-default Seatbelt profile exited by signal 11 before CDP. With Chrome's built-in sandbox, `sandbox_check` on the live controlling browser PID reported `file-read-data` allowed for the host sentinel. Request interception and child-process Seatbelt do not confine that trusted browser parent. |
 | Positive rendering | Met experimentally, not approved | Card and columns rendered at 800/900 pixels; maximum PNGs were 182,336 and 103,376 bytes, below the ticket's 3 MiB ceiling. |
-| Terminal graphics and fallbacks | Met, screenshot unavailable | Kitty returned cell geometry and acknowledged the macOS-rendered card 0.0139 s after flush. Graphics-off and missing-renderer fallbacks were readable. Resize, scroll, popup, source, removal, restore, literal, and exit paths were exercised. `screencapture` was denied because the harness lacks Screen Recording permission. |
+| Terminal graphics and fallbacks | Met | Kitty returned cell geometry and acknowledged the macOS-rendered card 0.0139 s after flush. Dedicated real-Kitty window captures record the graphical card, graphics-off fallback, and missing-renderer fallback. Resize, scroll, popup, source, removal, restore, literal, and exit paths were exercised. |
 | Startup and warm rendering | Met | Three starts were 1.121 s, 0.335 s, and 0.850 s. Card median/max were 0.717/0.825 s; columns were 0.696/0.712 s. |
 | Memory and task ceilings | Memory unmet; tasks met | The observed Chrome process tree used 1,094,025,216 bytes RSS, over the 200 MiB ticket ceiling. macOS `libproc` reported 125 aggregate threads, below the 256-task ceiling. |
 | Cleanup | Met | Chrome exited gracefully, the controller reaped it, the temporary profile was removed, and no private-profile process remained. |

@@ -28,8 +28,17 @@
     "clean_exit": true
   },
   "screen_capture": {
-    "captured": false,
-    "reason": "screencapture failed with 'could not create image from display'; the harness lacks macOS Screen Recording permission",
-    "substitute_evidence": "Kitty protocol acknowledgement and terminal text captured through Kitty remote control"
+    "captured": true,
+    "permission_retest": {
+      "command": "screencapture -x /tmp/stcli-capture-check.png",
+      "result": "success",
+      "bytes": 487665
+    },
+    "windows": {
+      "graphical_card": "terminal-card-macos.png",
+      "graphics_off_fallback": "terminal-graphics-off-macos.png",
+      "missing_renderer_fallback": "terminal-missing-renderer-macos.png"
+    },
+    "scope": "Each image captures only its dedicated Kitty OS window by platform window ID."
   }
 }
