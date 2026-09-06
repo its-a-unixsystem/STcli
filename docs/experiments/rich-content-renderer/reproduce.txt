@@ -1,32 +1,44 @@
-Ticket 01 rich-content renderer experiment — 2026-09-05
+Ticket 01 rich-content renderer experiment — recovered 2026-09-06
 
 Versions:
-python3 --version
-/usr/lib/chromium/chromium --version
-kitty --version
-alacritty --version
-bwrap --version
-systemd-run --version
+python3 --version                         # Python 3.14.7
+/usr/lib/chromium/chromium --version      # Chromium 152.0.7977.82
+kitty --version                           # kitty 0.48.2
+alacritty --version                       # alacritty 0.17.0 (94e7c887)
+bwrap --version                           # bubblewrap 0.12.0
+systemd-run --version                     # systemd 261.2-1-arch
 
 Focused build proof:
 cargo check -p stcli-tui --examples --locked
 cargo build -p stcli-tui --example rich_content_probe --locked
 cargo test -p stcli-tui --locked markdown::tests
-Observed: examples compile; 2 focused tests passed.
+Observed: examples compiled; 2 focused tests passed.
+
+Recovery diagnostic:
+The original TasksMax=128 run reproduced `Target.createTarget: Failed to open new tab - no browser is open` and Chromium logged pthread_create resource errors. A one-variable TasksMax=256 run retained `newWindow=false`; it failed identically with pids.current=118 and pids.peak=120, disproving task exhaustion as the cause of Target.createTarget. A fresh BrowserContext needs its first target created with `newWindow=true` in this Chromium headless configuration. With that change, the benign fresh-context target and positive render succeeded. The selected TasksMax=256 remains finite and was measured independently; the successful measurement peaked at 127 tasks.
 
 Required isolation probe:
-systemd-run --user --scope --quiet --unit=stcli-rich-isolation -p MemoryMax=1G -p MemorySwapMax=0 -p TasksMax=128 -p CPUQuota=200% python3 crates/stcli-tui/examples/rich_content_probe/renderer.py --isolation --evidence docs/experiments/rich-content-renderer
-Observed: no backend approved. Owned host-file and loopback request/reply controls succeeded outside the boundary. With the required `/lib` and `/lib64` symlinks, the private Chromium `Browser.getVersion` CDP pipe handshake succeeded through Bubblewrap and the initial CLI `about:blank` target was observed. A second benign default-context target succeeded. A fresh incognito BrowserContext was created, but its benign `Target.createTarget` reported "Failed to open new tab - no browser is open" before any untrusted input. Adding `--renderer-process-limit=1` reduced peak task use but did not change this result, so it was removed. Reusing the default target would violate the approved fresh-context requirement. No TCP debugging fallback was opened.
+systemd-run --user --scope --quiet --unit=stcli-rich-isolation-final -p MemoryMax=1G -p MemorySwapMax=0 -p TasksMax=256 -p CPUQuota=200% python3 crates/stcli-tui/examples/rich_content_probe/renderer.py --isolation --evidence docs/experiments/rich-content-renderer
+Observed: backend approved. Browser.getVersion, the private CDP pipe, the fresh BrowserContext target, card render, output-limit denial, and deadline denial succeeded. The hostile document left its script/handler marker unchanged, retained its main URL, loaded no nested marker, opened no unexpected executable target, and sent no request to the live positive-control listener. Child frames were instantiated as blocked `about:srcdoc`/`chrome-error`/empty URLs with no nested marker content, which the probe classifies as denied frames rather than loaded documents. The Bubblewrap diagnostic could not see the host sentinel, host process root, `/run/user`, or listener. Observed Chromium renderer subprocesses showed Seccomp=2 with at least one filter, zero effective capabilities, `NoNewPrivs=1`, and no listening sockets. Cleanup was graceful, reaped, and removed its private temporary directory.
 
 Measurement probe:
-systemd-run --user --scope --quiet --unit=stcli-rich-measure -p MemoryMax=1G -p MemorySwapMax=0 -p TasksMax=128 -p CPUQuota=200% python3 crates/stcli-tui/examples/rich_content_probe/renderer.py --measure --evidence docs/experiments/rich-content-renderer
-Observed: stopped at the same mandatory prerequisite; no timing/resource samples claimed.
+systemd-run --user --scope --quiet --unit=stcli-rich-measure-final -p MemoryMax=1G -p MemorySwapMax=0 -p TasksMax=256 -p CPUQuota=200% python3 crates/stcli-tui/examples/rich_content_probe/renderer.py --measure --evidence docs/experiments/rich-content-renderer
+Observed: full worker cold path (systemd scope, controller, Chromium, first restricted card, framed response, cleanup) 0.681/0.669/0.700 s. Chromium-only startup 0.139/0.142/0.164 s. Ten card renders: median 0.240 s, max 0.398 s, max PNG 181,767 bytes at 900x600. Ten columns renders: median 0.213 s, max 0.257 s, max PNG 80,994 bytes at 900x841. Scope peak: 182,935,552 bytes and 127 tasks. Full samples and CPU accounting are in measurements.json.
 
-TUI fallback:
-target/debug/examples/rich_content_probe --graphics off --evidence docs/experiments/rich-content-renderer
-Observed through a supervised PTY: native Ratatui controls and readable Harbor Watch alternative, with "graphics disabled by --graphics off". Keys 3,s,p,d,r,2,q were sent; the process exited and no Chromium process was launched. No valid visual capture was retained.
+Real terminal:
+Run in a dedicated Kitty 0.48.2 window on Wayland/Sway. Observed the restricted Chromium card in a real terminal and saved the exact displayed payload as `rendered-card.png`; `terminal-evidence.png` records the real Kitty placement. Sent 2, PageDown, PageUp, p, s, p, d, r, 3, r, 1, q through the dedicated Kitty control socket. The process exited normally; pgrep found no probe, browser, or private-profile descendants.
 
-target/debug/examples/rich_content_probe --graphics auto --renderer /definitely-missing-stcli-renderer --evidence docs/experiments/rich-content-renderer
-Observed through a supervised PTY: readable alternative remained visible with a bounded diagnostic and controls remained active. The initial terminal probe exposed a missing Python re import; it was fixed after this observation.
 
-Terminal graphics scenarios were not run because isolated Chromium could not create a target before untrusted HTML was supplied. No terminal-transfer acknowledgement, graphical-backend proof, or display-latency claim is made.
+The original fallback observations remain applicable:
+target/debug/examples/rich_content_probe --graphics off
+Observed readable Harbor Watch alternative and disabled reason; no Chromium process.
+target/debug/examples/rich_content_probe --graphics auto --renderer /definitely-missing-stcli-renderer
+Observed readable alternative, bounded missing-renderer diagnostic, responsive controls, and clean exit.
+Alacritty capability fallback:
+target/debug/examples/rich_content_probe --graphics auto --renderer /usr/lib/chromium/chromium
+Run in a dedicated Alacritty 0.17.0 window. The Kitty capability query received no acknowledgement, so the example retained the readable text path and did not treat terminal identity as graphics support.
+
+
+Transfer measurement:
+python3 crates/stcli-tui/examples/rich_content_probe/renderer.py --terminal-transfer /tmp/stcli-card-raw.png --evidence docs/experiments/rich-content-renderer
+Run inside a dedicated Kitty terminal using the restricted renderer's card PNG. Observed 227,386 PNG bytes, 303,886 protocol bytes, 0.00056 s write/flush, and matching `i=918273;OK` acknowledgement 0.0105 s after flush. This proves protocol receipt, not display latency.

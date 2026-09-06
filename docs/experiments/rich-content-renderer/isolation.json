@@ -1,5 +1,12 @@
 {
-  "backend_approved": false,
+  "backend_approved": true,
+  "boundary_probe": {
+    "host_file_visible": false,
+    "host_proc_visible": false,
+    "loopback_reachable": false,
+    "run_user_visible": false,
+    "same_namespace_policy": true
+  },
   "browser_version": {
     "jsVersion": "15.2.124.21",
     "product": "Chrome/152.0.7977.82",
@@ -27,31 +34,191 @@
       "cpu.max": "200000 100000",
       "memory.max": "1073741824",
       "memory.swap.max": "0",
-      "pids.max": "128"
+      "pids.max": "256"
     },
     "mismatches": {},
-    "path": "/user.slice/user-1000.slice/user@1000.service/app.slice/stcli-rich-isolation.scope",
+    "path": "/user.slice/user-1000.slice/user@1000.service/app.slice/stcli-rich-isolation-final2.scope",
     "values": {
       "cpu.max": "200000 100000",
-      "cpu.stat": "usage_usec 388935\nuser_usec 217880\nsystem_usec 171055\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 2\nnr_throttled 1\nthrottled_usec 4397\nnr_bursts 0\nburst_usec 0",
+      "cpu.stat": "usage_usec 382368\nuser_usec 220902\nsystem_usec 161465\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 2\nnr_throttled 1\nthrottled_usec 63638\nnr_bursts 0\nburst_usec 0",
       "memory.max": "1073741824",
-      "memory.peak": "158621696",
+      "memory.peak": "152993792",
       "memory.swap.max": "0",
-      "pids.current": "117",
-      "pids.max": "128",
-      "pids.peak": "117"
+      "pids.current": "116",
+      "pids.max": "256",
+      "pids.peak": "116"
     }
   },
+  "chromium_processes": [
+    {
+      "command": "/usr/lib/chromium/chromium --headless=new --remote-debugging-pipe --user-data-dir=/tmp/profile --no-first-run --no-default-browser-check --disable-background-networking --disable-component-update --disable-domain-reliability --disable-sync --metrics-recording-only --disable-breakpad --disable-features=MediaRouter,OptimizationHints,AutofillServerCommunication --password-store=basic --use-mock-keychain --disable-gpu about:blank ",
+      "listening_sockets": [],
+      "pid": 3602490,
+      "status": {
+        "CapEff": "0000000000000000",
+        "NSpid": "3602490\t2",
+        "NoNewPrivs": "1",
+        "PPid": "3602489",
+        "Pid": "3602490",
+        "Seccomp": "0",
+        "Seccomp_filters": "0",
+        "Threads": "32"
+      }
+    },
+    {
+      "command": "/usr/lib/chromium/chromium --type=zygote --no-zygote-sandbox --headless=new --crashpad-handler-pid=4 --enable-crash-reporter=, --noerrdialogs --user-data-dir=/tmp/profile --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl ",
+      "listening_sockets": [],
+      "pid": 3602498,
+      "status": {
+        "CapEff": "0000000000000000",
+        "NSpid": "3602498\t10",
+        "NoNewPrivs": "1",
+        "PPid": "3602490",
+        "Pid": "3602498",
+        "Seccomp": "0",
+        "Seccomp_filters": "0",
+        "Threads": "1"
+      }
+    },
+    {
+      "command": "/usr/lib/chromium/chromium --type=zygote --headless=new --crashpad-handler-pid=4 --enable-crash-reporter=, --noerrdialogs --user-data-dir=/tmp/profile --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl ",
+      "listening_sockets": [],
+      "pid": 3602499,
+      "status": {
+        "CapEff": "0000000000000000",
+        "NSpid": "3602499\t11\t1",
+        "NoNewPrivs": "1",
+        "PPid": "3602490",
+        "Pid": "3602499",
+        "Seccomp": "0",
+        "Seccomp_filters": "0",
+        "Threads": "1"
+      }
+    },
+    {
+      "command": "/usr/lib/chromium/chromium --type=zygote --headless=new --crashpad-handler-pid=4 --enable-crash-reporter=, --noerrdialogs --user-data-dir=/tmp/profile --change-stack-guard-on-fork=enable --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl ",
+      "listening_sockets": [],
+      "pid": 3602501,
+      "status": {
+        "CapEff": "0000000000200000",
+        "NSpid": "3602501\t13\t3",
+        "NoNewPrivs": "1",
+        "PPid": "3602499",
+        "Pid": "3602501",
+        "Seccomp": "0",
+        "Seccomp_filters": "0",
+        "Threads": "1"
+      }
+    },
+    {
+      "command": "/usr/lib/chromium/chromium --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --use-angle=swiftshader-webgl --crashpad-handler-pid=4 --enable-crash-reporter=, --noerrdialogs --user-data-dir=/tmp/profile --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,9947746311764176 ",
+      "listening_sockets": [],
+      "pid": 3602550,
+      "status": {
+        "CapEff": "0000000000000000",
+        "NSpid": "3602550\t62\t4\t1",
+        "NoNewPrivs": "1",
+        "PPid": "3602501",
+        "Pid": "3602550",
+        "Seccomp": "2",
+        "Seccomp_filters": "1",
+        "Threads": "8"
+      }
+    },
+    {
+      "command": "/usr/lib/chromium/chromium --type=renderer --top-chrome-webui --crashpad-handler-pid=4 --enable-crash-reporter=, --noerrdialogs --user-data-dir=/tmp/profile --change-stack-guard-on-fork=enable --disable-breakpad --remote-debugging-pipe --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client- ",
+      "listening_sockets": [],
+      "pid": 3602576,
+      "status": {
+        "CapEff": "0000000000000000",
+        "NSpid": "3602576\t88\t12\t1",
+        "NoNewPrivs": "1",
+        "PPid": "3602501",
+        "Pid": "3602576",
+        "Seccomp": "2",
+        "Seccomp_filters": "1",
+        "Threads": "16"
+      }
+    },
+    {
+      "command": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=4 --enable-crash-reporter=, --noerrdialogs --user-data-dir=/tmp/profile --change-stack-guard-on-fork=enable --disable-breakpad --remote-debugging-pipe --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=6 --launch-time- ",
+      "listening_sockets": [],
+      "pid": 3602586,
+      "status": {
+        "CapEff": "0000000000000000",
+        "NSpid": "3602586\t98\t22\t1",
+        "NoNewPrivs": "1",
+        "PPid": "3602501",
+        "Pid": "3602586",
+        "Seccomp": "2",
+        "Seccomp_filters": "1",
+        "Threads": "9"
+      }
+    },
+    {
+      "command": "/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=4 --enable-crash-reporter=, --noerrdialogs --user-data-dir=/tmp/profile --extension-process --change-stack-guard-on-fork=enable --disable-breakpad --remote-debugging-pipe --ozone-platform=headless --disable-gpu-compositing --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client ",
+      "listening_sockets": [],
+      "pid": 3602608,
+      "status": {
+        "CapEff": "0000000000000000",
+        "NSpid": "3602608\t117\t40\t1",
+        "NoNewPrivs": "1",
+        "PPid": "3602501",
+        "Pid": "3602608",
+        "Seccomp": "2",
+        "Seccomp_filters": "1",
+        "Threads": "9"
+      }
+    },
+    {
+      "command": "/usr/lib/chromium/chromium --type=gpu-process --disable-breakpad --headless=new --ozone-platform=headless --use-angle=swiftshader-webgl --crashpad-handler-pid=4 --enable-crash-reporter=, --noerrdialogs --user-data-dir=/tmp/profile --change-stack-guard-on-fork=enable --gpu-preferences=YAAAAAAAAAAgAAAEAAAAAAAAAAAAAGAASAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAA ",
+      "listening_sockets": [],
+      "pid": 3602522,
+      "status": {
+        "CapEff": "0000000000000000",
+        "NSpid": "3602522\t34",
+        "NoNewPrivs": "1",
+        "PPid": "3602498",
+        "Pid": "3602522",
+        "Seccomp": "0",
+        "Seccomp_filters": "0",
+        "Threads": "27"
+      }
+    }
+  ],
   "cleanup": {
     "graceful": true,
     "reaped": true,
-    "stderr": "RuntimeError: [2:20:0905/212152.201464:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory [2:20:0905/212152.201484:ERROR:dbus/bus.cc:405] Failed to connect to the bus: C ... 590:ERROR:base/threading/platform_thread_posix.cc:162] pthread_create: Resource temporarily unavailable (11) [138:1:0905/212152.348746:ERROR:base/threading/platform_thread_posix.cc:162] pthread_create: Resource temporarily unavailable (11) [0905/212152.",
+    "stderr": "RuntimeError: [2:21:0906/074040.618082:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory [2:21:0906/074040.618097:ERROR:dbus/bus.cc:405] Failed to connect to the bus: C ... 1:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:  Fontconfig error: Cannot load default config file: File not found: /etc/fonts/fonts.conf [2:82:0906/0740",
     "temporary_removed": true
   },
+  "deadline_denial": "TimeoutError: CDP response deadline exceeded",
   "experiment": "ticket-01",
+  "hostile_document": {
+    "denied_requests": [
+      "Other:https://stcli-render.invalid/favicon.ico"
+    ],
+    "dom": {
+      "child_frame_urls": [
+        "about:srcdoc",
+        "chrome-error://chromewebdata/",
+        "",
+        "",
+        "chrome-error://chromewebdata/",
+        "chrome-error://chromewebdata/"
+      ],
+      "main_url": "https://stcli-render.invalid/card.html",
+      "marker_state": "original",
+      "nested_document_loaded": false,
+      "nested_marker_count": 0
+    },
+    "listener_requests": [],
+    "png_bytes": 6908,
+    "unexpected_targets": []
+  },
   "initial_target": {
     "attached": false,
-    "targetId": "F8104EED9DD4AD019A6C737CC975FC92",
+    "targetId": "AAC023C4816419925A8791485BBA13BF",
     "url": "about:blank"
   },
   "mode": "isolation",
@@ -78,7 +245,7 @@
     ],
     [
       "--ro-bind",
-      "/tmp/stcli-rich-probe-ldt8qfx9/fonts.conf",
+      "/tmp/stcli-rich-probe-7panhpn_/fonts.conf",
       "/etc/fonts/fonts.conf"
     ],
     [
@@ -93,29 +260,38 @@
     ]
   ],
   "namespaces": {
-    "cgroup": "cgroup:[4026533256]",
-    "ipc": "ipc:[4026533251]",
-    "mnt": "mnt:[4026533237]",
-    "net": "net:[4026533257]",
-    "pid": "pid:[4026533252]",
-    "user": "user:[4026533589]",
-    "uts": "uts:[4026533244]"
+    "cgroup": "cgroup:[4026533257]",
+    "ipc": "ipc:[4026533254]",
+    "mnt": "mnt:[4026533251]",
+    "net": "net:[4026533258]",
+    "pid": "pid:[4026533256]",
+    "user": "user:[4026533586]",
+    "uts": "uts:[4026533252]"
   },
-  "no_backend": "RuntimeError: CDP Target.createTarget failed: Failed to open new tab - no browser is open",
+  "oversize_denial": "ValueError: width outside 160..1600",
   "positive_controls": {
     "host_file_readable_outside": true,
     "loopback_listener_outside": true,
-    "loopback_port": 48219
+    "loopback_port": 58415
+  },
+  "positive_render": {
+    "denied_requests": [
+      "Other:https://stcli-render.invalid/favicon.ico"
+    ],
+    "height": 600,
+    "png_bytes": 168045,
+    "unexpected_targets": [],
+    "width": 800
   },
   "process": {
     "listening_sockets": [],
-    "observed_pid": 3207778,
+    "observed_pid": 3602489,
     "status": {
       "CapEff": "0000000000000000",
-      "NSpid": "3207778\t1",
+      "NSpid": "3602489\t1",
       "NoNewPrivs": "1",
-      "PPid": "3207777",
-      "Pid": "3207778",
+      "PPid": "3602488",
+      "Pid": "3602489",
       "Seccomp": "0",
       "Seccomp_filters": "0",
       "Threads": "1"
@@ -123,6 +299,6 @@
   },
   "target_diagnostic": {
     "default_context_target": "created",
-    "fresh_context_target": "RuntimeError: CDP Target.createTarget failed: Failed to open new tab - no browser is open"
+    "fresh_context_target": "created"
   }
 }

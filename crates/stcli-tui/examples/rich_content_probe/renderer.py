@@ -102,7 +102,7 @@ def cgroup_observation() -> dict[str, Any]:
         path = root / key
         if path.exists():
             values[key] = path.read_text().strip()[:2048]
-    expected = {"memory.max": "1073741824", "memory.swap.max": "0", "pids.max": "128", "cpu.max": "200000 100000"}
+    expected = {"memory.max": "1073741824", "memory.swap.max": "0", "pids.max": "256", "cpu.max": "200000 100000"}
     mismatches = {key: {"expected": wanted, "actual": values.get(key)} for key, wanted in expected.items() if values.get(key) != wanted}
     return {"path": "/" + relative, "values": values, "expected": expected, "effective": not mismatches, "mismatches": mismatches}
 
@@ -147,6 +147,91 @@ def process_observation(pid: int) -> dict[str, Any]:
                     sockets.append({"table": table, "local": fields[1]})
     return {"status": selected, "listening_sockets": sockets}
 
+def chromium_process_observations(root_pid: int) -> list[dict[str, Any]]:
+    observations = []
+    for pid in [root_pid, *descendants(root_pid)]:
+        try:
+            executable = os.readlink(f"/proc/{pid}/exe")
+            if Path(executable).name != "chromium":
+                continue
+            command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            observation = process_observation(pid)
+            observation["pid"] = pid
+            observation["command"] = command[:512]
+            observations.append(observation)
+        except OSError:
+            continue
+    return observations
+
+
+def diagnostic_boundary(renderer: Path, sentinel: str, port: int) -> dict[str, Any]:
+    fontconfig = tempfile.NamedTemporaryFile("w", prefix="stcli-fonts-", suffix=".conf", delete=False)
+    fontconfig.write('<?xml version="1.0"?><fontconfig><dir>/fonts</dir></fontconfig>')
+    fontconfig.close()
+    script = (
+        "import json,os,socket;"
+        f"p={sentinel!r};port={port};"
+        "r={'host_file_visible':os.path.exists(p),'run_user_visible':os.path.exists('/run/user/1000'),"
+        "'host_proc_visible':os.path.exists('/proc/1/root/home')};"
+        "s=socket.socket();s.settimeout(.25);"
+        "\ntry:s.connect(('127.0.0.1',port));r['loopback_reachable']=True"
+        "\nexcept OSError:r['loopback_reachable']=False"
+        "\nprint(json.dumps(r))"
+    )
+    command = ["bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--clearenv",
+               "--proc", "/proc", "--dev", "/dev", "--size", str(128 * 1024 * 1024), "--tmpfs", "/tmp",
+               "--dir", "/fonts", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64",
+               "--ro-bind", "/usr/lib", "/usr/lib", "--ro-bind", "/usr/bin/python3", "/usr/bin/python3",
+               "--ro-bind", "/etc/ld.so.cache", "/etc/ld.so.cache", "--ro-bind", str(FONT), "/fonts/DejaVuSans.ttf",
+               "--ro-bind", fontconfig.name, "/etc/fonts/fonts.conf", "--setenv", "PATH", "/usr/bin",
+               "--setenv", "HOME", "/tmp/home", "--setenv", "LANG", "C.UTF-8", "--", "/usr/bin/python3", "-c", script]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=2, check=True)
+        result = json.loads(completed.stdout)
+        result["same_namespace_policy"] = True
+        return result
+    finally:
+        os.unlink(fontconfig.name)
+
+
+def hostile_document(sentinel: str, port: int) -> bytes:
+    loopback = f"http://127.0.0.1:{port}"
+    return f'''<!doctype html><html data-state="original"><head>
+<meta http-equiv="refresh" content="0;url={loopback}/redirect-marker">
+<style>@import url("{loopback}/css-marker");@font-face{{font-family:x;src:url("{loopback}/font-marker")}}body{{background-image:url("file://{sentinel}")}}#marker{{background:url("{loopback}/css-image-marker");font-family:x}}</style>
+<script>document.documentElement.dataset.state="script-ran"</script>
+<script src="{loopback}/script-marker"></script></head>
+<body id="marker" data-state="original" onload="this.dataset.state='onload-ran'" onerror="this.dataset.state='onerror-ran'">
+<img src="{loopback}/image-marker" onerror="this.dataset.state='image-handler-ran'">
+<img src="file://{sentinel}"><img src="file:///proc/self/status"><img src="file:///proc/self/fd/3">
+<iframe srcdoc="<p id=nested-marker>srcdoc marker</p>"></iframe><iframe src="data:text/html,nested-data-marker"></iframe>
+<iframe src="javascript:document.body.textContent='javascript-marker'"></iframe><iframe src="chrome://version"></iframe>
+<iframe src="{loopback}/json/version"></iframe><iframe src="ws://127.0.0.1:{port}/devtools/browser/control"></iframe>
+<object data="{loopback}/object-marker"></object><embed src="{loopback}/embed-marker">
+<a href="javascript:document.documentElement.dataset.state='javascript-ran'">inactive link</a>
+</body></html>'''.encode()
+
+
+def dom_isolation_observation(cdp: "CDP", session: str) -> dict[str, Any]:
+    document = cdp.call("DOM.getDocument", {"depth": -1, "pierce": True}, session=session)
+    root = document["root"]["nodeId"]
+    marker = cdp.call("DOM.querySelector", {"nodeId": root, "selector": "#marker"}, session=session).get("nodeId", 0)
+    attributes = cdp.call("DOM.getAttributes", {"nodeId": marker}, session=session).get("attributes", []) if marker else []
+    marker_attributes = dict(zip(attributes[::2], attributes[1::2]))
+    frames = cdp.call("Page.getFrameTree", session=session).get("frameTree", {})
+    history = cdp.call("Page.getNavigationHistory", session=session)
+    current = history.get("currentIndex", 0)
+    entries = history.get("entries", [])
+    current_url = entries[current].get("url", "") if 0 <= current < len(entries) else ""
+    child_urls = [child.get("frame", {}).get("url", "") for child in frames.get("childFrames", [])]
+    search = cdp.call("DOM.performSearch", {"query": "nested-marker OR nested-data-marker OR javascript-marker"}, session=session)
+    count = search.get("resultCount", 0)
+    if search.get("searchId"):
+        cdp.call("DOM.discardSearchResults", {"searchId": search["searchId"]}, session=session)
+    loaded_urls = [url for url in child_urls if url not in ("", "about:blank", "about:srcdoc", "chrome-error://chromewebdata/")]
+    return {"marker_state": marker_attributes.get("data-state"), "main_url": current_url,
+            "child_frame_urls": child_urls, "nested_marker_count": count,
+            "nested_document_loaded": bool(loaded_urls or count)}
 
 class CDP:
     def __init__(self, read_fd: int, write_fd: int):
@@ -326,7 +411,7 @@ class Browser:
             context = self.cdp.call("Target.createBrowserContext", {"disposeOnDetach": True},
                                     timeout=RENDER_TIMEOUT)["browserContextId"]
             target = self.cdp.call("Target.createTarget", {"url": "about:blank", "browserContextId": context,
-                                                           "newWindow": False}, timeout=RENDER_TIMEOUT)["targetId"]
+                                                           "newWindow": True}, timeout=RENDER_TIMEOUT)["targetId"]
             result["fresh_context_target"] = "created"
             self.cdp.call("Target.closeTarget", {"targetId": target}, timeout=RENDER_TIMEOUT)
         except Exception as exc:
@@ -342,11 +427,15 @@ class Browser:
     def _reply(self, method: str, params: dict[str, Any], session: str) -> None:
         self.cdp.call(method, params, session=session, timeout=RENDER_TIMEOUT)
 
-    def render(self, fixture: str, width: int, deadline: float = RENDER_TIMEOUT) -> dict[str, Any]:
+    def render(self, fixture: str, width: int, deadline: float = RENDER_TIMEOUT,
+               document: bytes | None = None, observe_dom: bool = False) -> dict[str, Any]:
         if fixture not in self.fixtures:
             raise ValueError("unknown fixture")
         if isinstance(width, bool) or not isinstance(width, int) or width < 160 or width > MAX_WIDTH:
             raise ValueError("width outside 160..1600")
+        content = self.fixtures[fixture] if document is None else document
+        if len(content) > MAX_HTML:
+            raise ValueError("document exceeds HTML ceiling")
         end = time.monotonic() + deadline
         context = self.cdp.call("Target.createBrowserContext", {"disposeOnDetach": True}, timeout=deadline)["browserContextId"]
         unexpected: list[str] = []
@@ -355,7 +444,7 @@ class Browser:
         loaded = False
         session = ""
         try:
-            target = self.cdp.call("Target.createTarget", {"url": "about:blank", "browserContextId": context, "newWindow": False}, timeout=deadline)["targetId"]
+            target = self.cdp.call("Target.createTarget", {"url": "about:blank", "browserContextId": context, "newWindow": True}, timeout=deadline)["targetId"]
             session = self.cdp.call("Target.attachToTarget", {"targetId": target, "flatten": True}, timeout=deadline)["sessionId"]
             def handler(event: dict[str, Any]) -> None:
                 nonlocal served_main, loaded
@@ -370,8 +459,6 @@ class Browser:
                         unexpected.append(str(info.get("type", "unknown"))[:64])
                         child_session = params.get("sessionId")
                         if child_session:
-                            self._reply("Runtime.runIfWaitingForDebugger", {}, child_session)
-                        if info.get("targetId"):
                             self.cdp.call("Target.closeTarget", {"targetId": info["targetId"]}, timeout=max(.05, end-time.monotonic()))
                 elif method == "Fetch.requestPaused" and sid == session:
                     request_id = params["requestId"]
@@ -380,7 +467,7 @@ class Browser:
                     resource = params.get("resourceType", "")
                     if url == ORIGIN + f"/{fixture}.html" and resource == "Document" and not served_main:
                         served_main = True
-                        body = base64.b64encode(self.fixtures[fixture]).decode()
+                        body = base64.b64encode(content).decode()
                         headers = [{"name": "Content-Type", "value": "text/html; charset=utf-8"},
                                    {"name": "Content-Security-Policy", "value": CSP},
                                    {"name": "Cache-Control", "value": "no-store"}]
@@ -396,7 +483,7 @@ class Browser:
                 ("Page.enable", {}),
                 ("Runtime.enable", {}),
                 ("Emulation.setScriptExecutionDisabled", {"value": True}),
-                ("Emulation.setDeviceMetricsOverride", {"width": width, "height": MAX_HEIGHT, "deviceScaleFactor": 1, "mobile": False}),
+                ("Emulation.setDeviceMetricsOverride", {"width": width, "height": 600, "deviceScaleFactor": 1, "mobile": False}),
                 ("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]}),
                 ("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True}),
             )
@@ -413,7 +500,7 @@ class Browser:
             metrics = self.cdp.call("Page.getLayoutMetrics", session=session, timeout=max(.05, end-time.monotonic()), handler=handler)
             size = metrics.get("cssContentSize") or metrics.get("contentSize") or {}
             height = max(1, int(float(size.get("height", 0)) + .999))
-            actual_width = max(1, int(float(size.get("width", width)) + .999))
+            actual_width = width
             if actual_width > MAX_WIDTH or height > MAX_HEIGHT or actual_width * height > MAX_WIDTH * MAX_HEIGHT:
                 raise ValueError("rendered output exceeds pixel ceiling")
             shot = self.cdp.call("Page.captureScreenshot", {"format": "png", "fromSurface": True,
@@ -428,8 +515,10 @@ class Browser:
             png_width, png_height = png_dimensions(raw, MAX_WIDTH * MAX_HEIGHT)
             if png_width != actual_width or png_height != height:
                 raise RuntimeError("screenshot dimensions do not match layout")
-            return {"width": actual_width, "height": height, "png_base64": encoded,
-                    "observations": {"denied_requests": denied, "unexpected_targets": unexpected}}
+            observations = {"denied_requests": denied, "unexpected_targets": unexpected}
+            if observe_dom:
+                observations["dom"] = dom_isolation_observation(self.cdp, session)
+            return {"width": actual_width, "height": height, "png_base64": encoded, "observations": observations}
         finally:
             try:
                 self.cdp.call("Target.disposeBrowserContext", {"browserContextId": context}, timeout=1.0)
@@ -533,15 +622,55 @@ def isolation(renderer: Path, evidence: Path) -> int:
         result.update({"browser_version": browser.version, "initial_target": browser.initial_target,
                        "target_diagnostic": browser.target_diagnostic(), "mounts": browser.mounts,
                        "cgroup": browser.cgroup, "namespaces": browser.namespaces,
-                       "process": browser.process_info})
+                       "process": browser.process_info,
+                       "chromium_processes": chromium_process_observations(browser.process.pid),
+                       "boundary_probe": diagnostic_boundary(renderer, sentinel.name, loopback_port)})
         try:
             rendered = browser.render("card", 800)
-            result.update({"backend_approved": True, "browser_version": browser.version, "mounts": browser.mounts,
+            result.update({"browser_version": browser.version, "mounts": browser.mounts,
                            "cgroup": browser.cgroup, "namespaces": browser.namespaces, "process": browser.process_info,
                            "positive_render": {"width": rendered["width"], "height": rendered["height"],
                                                "png_bytes": len(base64.b64decode(rendered["png_base64"])),
                                                **rendered["observations"]}})
-            # Explicit over-limit and deadline controls use the same renderer policy.
+            hostile = browser.render("card", 800, document=hostile_document(sentinel.name, loopback_port), observe_dom=True)
+            result["hostile_document"] = hostile["observations"]
+            result["hostile_document"]["png_bytes"] = len(base64.b64decode(hostile["png_base64"]))
+            result["hostile_document"]["listener_requests"] = []
+            listener.setblocking(False)
+            try:
+                while True:
+                    connection, _ = listener.accept()
+                    result["hostile_document"]["listener_requests"].append(connection.recv(512).decode(errors="replace")[:512])
+                    connection.close()
+            except BlockingIOError:
+                pass
+            boundary = result["boundary_probe"]
+            dom = result["hostile_document"].get("dom", {})
+            processes = result["chromium_processes"]
+            renderer_processes = [process for process in processes if "--type=renderer" in process.get("command", "")]
+            process_boundary_holds = (
+                bool(renderer_processes)
+                and all(not process.get("listening_sockets") for process in processes)
+                and all(process.get("status", {}).get("CapEff") == "0000000000000000" for process in renderer_processes)
+                and all(process.get("status", {}).get("NoNewPrivs") == "1" for process in renderer_processes)
+                and all(process.get("status", {}).get("Seccomp") == "2" for process in renderer_processes)
+                and all(int(process.get("status", {}).get("Seccomp_filters", "0")) >= 1 for process in renderer_processes)
+            )
+            result["backend_approved"] = (
+                all(result["positive_controls"].get(key) for key in ("host_file_readable_outside", "loopback_listener_outside"))
+                and result["cgroup"].get("effective") is True
+                and not result["hostile_document"]["listener_requests"]
+                and not boundary.get("host_file_visible")
+                and not boundary.get("host_proc_visible")
+                and not boundary.get("loopback_reachable")
+                and not boundary.get("run_user_visible")
+                and boundary.get("same_namespace_policy") is True
+                and dom.get("marker_state") == "original"
+                and dom.get("main_url") == ORIGIN + "/card.html"
+                and not dom.get("nested_document_loaded")
+                and not result["hostile_document"].get("unexpected_targets")
+                and process_boundary_holds
+            )
             try: browser.render("card", MAX_WIDTH + 1)
             except Exception as exc: result["oversize_denial"] = compact_error(exc)
             try: browser.render("columns", 800, .000001)
@@ -559,6 +688,7 @@ def isolation(renderer: Path, evidence: Path) -> int:
 def measure(renderer: Path, evidence: Path) -> int:
     result: dict[str, Any] = {"experiment": "ticket-01", "mode": "measure", "backend_approved": False, "cold_starts": [], "renders": {}}
     try:
+        result["worker_cold_paths"] = worker_cold_samples(renderer)
         for _ in range(3):
             browser = Browser(renderer); result["cold_starts"].append(browser.start_seconds); browser.close()
         browser = Browser(renderer)
@@ -583,6 +713,26 @@ def measure(renderer: Path, evidence: Path) -> int:
     return 0 if result["backend_approved"] else 2
 
 
+def worker_cold_samples(renderer: Path) -> list[float]:
+    samples = []
+    helper = Path(__file__).resolve()
+    for index in range(3):
+        unit = f"stcli-rich-cold-{os.getpid()}-{index}"
+        command = ["systemd-run", "--user", "--scope", "--quiet", f"--unit={unit}",
+                   "-p", "MemoryMax=1G", "-p", "MemorySwapMax=0", "-p", "TasksMax=256", "-p", "CPUQuota=200%",
+                   "python3", str(helper), "--worker", "--renderer", str(renderer)]
+        started = time.monotonic()
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        request = b'{"id":1,"fixture":"card","width":900}\n'
+        stdout, _ = process.communicate(request, timeout=START_TIMEOUT)
+        elapsed = time.monotonic() - started
+        reply = json.loads(stdout)
+        if reply.get("id") != 1 or "png_base64" not in reply or process.returncode != 0:
+            raise RuntimeError("cold worker path did not return the rendered card")
+        samples.append(elapsed)
+    return samples
+
+
 def tty_exchange(query: bytes, pattern: bytes, timeout: float = .5) -> tuple[bytes, float]:
     fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     old = termios.tcgetattr(fd); changed = termios.tcgetattr(fd)
@@ -605,15 +755,15 @@ def tty_exchange(query: bytes, pattern: bytes, timeout: float = .5) -> tuple[byt
 def terminal_probe() -> int:
     result: dict[str, Any] = {"supported": False, "cell_width": 0, "cell_height": 0, "reason": "terminal did not acknowledge Kitty graphics within 500 ms"}
     try:
-        # Query graphics support and pixel/cell geometry (CSI 16 t, CSI 18 t).
-        response, _ = tty_exchange(b"\x1b_Gi=31,a=q,t=d,f=24,s=1,v=1;AAAA\x1b\\\x1b[16t\x1b[18t", b"OK", .5)
-        text = response.decode("ascii", "ignore")
-        pixel = re.search(r"\x1b\[6;(\d+);(\d+)t", text)
-        cells = re.search(r"\x1b\[8;(\d+);(\d+)t", text)
-        if b"OK" in response and pixel and cells:
-            ph, pw = map(int, pixel.groups()); rows, cols = map(int, cells.groups())
-            if ph and pw and rows and cols:
-                result = {"supported": True, "cell_width": max(1, pw // cols), "cell_height": max(1, ph // rows), "reason": "Kitty graphics acknowledged"}
+        response, _ = tty_exchange(b"\x1b_Gi=31,a=q,t=d,f=24,s=1,v=1;AAAA\x1b\\", b"OK", .5)
+        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+        try:
+            rows, columns, pixel_width, pixel_height = struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))
+        finally:
+            os.close(fd)
+        if b"OK" in response and rows and columns and pixel_width and pixel_height:
+            result = {"supported": True, "cell_width": max(1, pixel_width // columns),
+                      "cell_height": max(1, pixel_height // rows), "reason": "Kitty graphics acknowledged"}
         elif response:
             result["reason"] = "terminal replied without complete Kitty graphics and cell metrics"
     except Exception as exc:
@@ -632,16 +782,36 @@ def terminal_transfer(png: Path, evidence: Path) -> int:
         payload = bytearray()
         for index, chunk in enumerate(chunks):
             more = 1 if index + 1 < len(chunks) else 0
-            controls = f"a=T,t=d,f=100,i={image_id},q=0,m={more}" if index == 0 else f"q=0,m={more}"
+            controls = f"a=t,t=d,f=100,i={image_id},q=0,m={more}" if index == 0 else f"m={more}"
             payload.extend(b"\x1b_G" + controls.encode() + b";" + chunk + b"\x1b\\")
-        started = time.monotonic(); response, ack = tty_exchange(bytes(payload), f"i={image_id};OK".encode(), .5)
-        write_flush = max(0.0, (started + ack) - started)
-        # Delete only this owned image regardless of acknowledgement.
+        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+        old = termios.tcgetattr(fd); changed = termios.tcgetattr(fd)
+        changed[3] &= ~(termios.ICANON | termios.ECHO); changed[6][termios.VMIN] = 0; changed[6][termios.VTIME] = 0
+        started = time.monotonic(); response = bytearray()
+        try:
+            termios.tcsetattr(fd, termios.TCSANOW, changed)
+            view = memoryview(payload)
+            while view:
+                try:
+                    written = os.write(fd, view)
+                    view = view[written:]
+                except BlockingIOError:
+                    __import__("select").select([], [fd], [], .5)
+            termios.tcdrain(fd)
+            flushed = time.monotonic()
+            selector = selectors.DefaultSelector(); selector.register(fd, selectors.EVENT_READ)
+            while time.monotonic() - flushed < .5 and f"i={image_id};OK".encode() not in response:
+                for _, _ in selector.select(max(0, .5 - (time.monotonic() - flushed))):
+                    try: response.extend(os.read(fd, 4096))
+                    except BlockingIOError: pass
+            acknowledged_at = time.monotonic()
+        finally:
+            termios.tcsetattr(fd, termios.TCSANOW, old); os.close(fd)
         try: tty_exchange(f"\x1b_Ga=d,d=I,i={image_id},q=2\x1b\\".encode(), b"never", .01)
         except Exception: pass
         result.update({"acknowledged": f"i={image_id};OK".encode() in response, "png_bytes": len(data),
-                       "protocol_bytes": len(payload), "write_flush_seconds_upper_bound": write_flush,
-                       "ack_seconds": ack, "image_id": image_id})
+                       "protocol_bytes": len(payload), "write_flush_seconds": flushed - started,
+                       "ack_seconds_after_flush": acknowledged_at - flushed, "image_id": image_id})
     except Exception as exc:
         result["error"] = compact_error(exc)
     write_evidence(evidence, "terminal-transfer.json", result); emit(result)

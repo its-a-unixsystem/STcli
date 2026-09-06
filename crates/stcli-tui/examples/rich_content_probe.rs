@@ -49,6 +49,7 @@ enum GraphicsMode {
 struct Options {
     graphics: GraphicsMode,
     renderer: PathBuf,
+    evidence: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -220,7 +221,7 @@ impl ScopedWorker {
                 "-p",
                 "MemorySwapMax=0",
                 "-p",
-                "TasksMax=128",
+                "TasksMax=256",
                 "-p",
                 "CPUQuota=200%",
                 "python3",
@@ -440,6 +441,8 @@ struct App {
     worker: Option<WorkerHandle>,
     pane: Rect,
     renderer: PathBuf,
+    evidence: PathBuf,
+    evidence_written: bool,
 }
 
 impl App {
@@ -467,6 +470,8 @@ impl App {
             worker: None,
             pane: Rect::default(),
             renderer: options.renderer,
+            evidence: options.evidence,
+            evidence_written: false,
         }
     }
 
@@ -561,6 +566,14 @@ impl App {
         while let Ok(event) = worker.events.try_recv() {
             match event {
                 WorkerEvent::Rendered(image) if Some(image.id) == self.current_id => {
+                    #[allow(clippy::collapsible_if)]
+                    if !self.evidence_written {
+                        if let Ok(bytes) = decode_base64(&image.png_base64) {
+                            let _ = std::fs::create_dir_all(&self.evidence);
+                            let _ = std::fs::write(self.evidence.join("rendered-card.png"), bytes);
+                            self.evidence_written = true;
+                        }
+                    }
                     self.fallback_reason.clear();
                     self.current_id = None;
                     self.image = Some(image);
@@ -681,9 +694,9 @@ impl App {
             image.transmitted = true;
         }
         let crop_y = self.scroll_rows.saturating_mul(self.capability.cell_height);
-        let crop_h = u32::from(self.pane.height)
-            .saturating_mul(self.capability.cell_height)
-            .min(image.height.saturating_sub(crop_y));
+        let pane_pixel_height =
+            u32::from(self.pane.height).saturating_mul(self.capability.cell_height);
+        let crop_h = pane_pixel_height.min(image.height.saturating_sub(crop_y));
         let crop_w = u32::from(self.pane.width)
             .saturating_mul(self.capability.cell_width)
             .min(image.width);
@@ -694,8 +707,8 @@ impl App {
         move_cursor(self.pane.x, self.pane.y);
         kitty_command(
             &format!(
-                "a=p,i={IMAGE_ID},p={PLACEMENT_ID},q=2,c={},r={},x=0,y={crop_y},w={crop_w},h={crop_h}",
-                self.pane.width, self.pane.height
+                "a=p,i={IMAGE_ID},p={PLACEMENT_ID},q=2,C=1,z=-1,c={},x=0,y={crop_y},w={crop_w},h={crop_h}",
+                self.pane.width
             ),
             None,
         );
@@ -876,7 +889,7 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 fn parse_options() -> Result<Options> {
     let mut graphics = GraphicsMode::Auto;
     let mut renderer = PathBuf::from("/usr/lib/chromium/chromium");
-    let mut _evidence = env::temp_dir().join("stcli-rich-content-probe");
+    let mut evidence = env::temp_dir().join("stcli-rich-content-probe");
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -890,7 +903,7 @@ fn parse_options() -> Result<Options> {
                 renderer = PathBuf::from(args.next().context("--renderer requires a path")?)
             }
             "--evidence" => {
-                _evidence = PathBuf::from(args.next().context("--evidence requires a directory")?)
+                evidence = PathBuf::from(args.next().context("--evidence requires a directory")?)
             }
             "-h" | "--help" => {
                 println!(
@@ -901,7 +914,11 @@ fn parse_options() -> Result<Options> {
             _ => bail!("unknown argument {arg:?}"),
         }
     }
-    Ok(Options { graphics, renderer })
+    Ok(Options {
+        graphics,
+        renderer,
+        evidence,
+    })
 }
 
 fn run_capability_probe() -> Result<ProbeReply> {
@@ -997,4 +1014,36 @@ fn filter_diagnostic(value: &str) -> String {
 
 fn is_base64_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')
+}
+
+fn decode_base64(value: &str) -> Result<Vec<u8>> {
+    let mut output = Vec::with_capacity(value.len() * 3 / 4);
+    let mut quartet = [0u8; 4];
+    let mut count = 0;
+    for byte in value.bytes() {
+        quartet[count] = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => 64,
+            _ => bail!("invalid base64 evidence payload"),
+        };
+        count += 1;
+        if count == 4 {
+            output.push((quartet[0] << 2) | (quartet[1] >> 4));
+            if quartet[2] != 64 {
+                output.push((quartet[1] << 4) | (quartet[2] >> 2));
+            }
+            if quartet[3] != 64 {
+                output.push((quartet[2] << 6) | quartet[3]);
+            }
+            count = 0;
+        }
+    }
+    if count != 0 {
+        bail!("incomplete base64 evidence payload");
+    }
+    Ok(output)
 }

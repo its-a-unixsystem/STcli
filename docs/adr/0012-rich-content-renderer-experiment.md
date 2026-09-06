@@ -1,71 +1,83 @@
-# Rich-content renderer experiment: no backend approved
+# Rich-content renderer experiment: Chromium and Kitty approved
 
 ## Status
 
-Decided. The bounded ticket-01 experiment approves no renderer backend. Renderer-dependent follow-on work remains blocked.
+Decided. The bounded ticket-01 experiment approves the tested Linux configuration: system Chromium rendered through mandatory Bubblewrap and cgroup isolation, displayed through Kitty's direct PNG graphics protocol. Other configurations retain readable fallback behavior.
 
 ## Context
 
-The TUI needs a safe path from untrusted static HTML/CSS to terminal graphics. ADR 0008 keeps presentation in the frontend; ADRs 0009 and 0010 keep Extension execution in QuickJS and retain broker/Replay authority. This experiment therefore used no engine, Session, database, Plugin, or Extension integration.
+The TUI needs a safe path from untrusted static HTML/CSS to terminal graphics. ADR 0008 keeps presentation in the frontend; ADRs 0009 and 0010 keep Extension execution in QuickJS and retain broker and Replay authority. This experiment used no engine, Session, database, Plugin, or Extension integration.
 
-The candidate was system Chromium rendered through an isolated Bubblewrap process, controlled only by Chromium's private remote-debugging pipe, and displayed through Kitty's direct PNG graphics protocol. The controller was to run inside a transient user systemd scope.
+The initial attempt created an incognito BrowserContext but passed `newWindow: false` when creating that context's first target. Chromium 152 returned `Failed to open new tab - no browser is open`. Creating the first target with `newWindow: true` is required for a fresh context in this headless configuration. A diagnostic 256-task run proved that increasing the task ceiling alone did not fix the original call. The recovered configuration combines the corrected target call with a measured 256-task ceiling; the successful workload peaked at 127 tasks.
 
 ## Decision
 
-**No backend approved.** Chromium's private `Browser.getVersion` CDP pipe handshake succeeded through Bubblewrap with the required `/lib` and `/lib64` symlinks. The initial CLI `about:blank` target was observed, and a second benign target in the default browser context succeeded. Creating the required fresh incognito BrowserContext also succeeded, but `Target.createTarget` inside that context failed with `Failed to open new tab - no browser is open` before any untrusted input was supplied. The required per-job isolated positive render therefore could not begin.
+Use system-provided Chromium with all of the following requirements:
 
-Opening a DevTools TCP port, weakening Bubblewrap isolation, using `--no-sandbox`, or feeding hostile fixtures to an unprotected browser would violate the approved trust model. The experiment therefore stopped before untrusted rendering and did not substitute a weaker backend.
+- Chromium runs inside Bubblewrap with new user, PID, mount, network, IPC, and UTS namespaces, no capabilities, no inherited host environment, private `/tmp`, minimal `/dev`, and only the recorded read-only runtime and DejaVu font mounts.
+- The trusted controller and Chromium run in a transient user systemd scope capped at 1 GiB memory, zero swap, 256 tasks, and 200% CPU.
+- Control uses inherited private CDP file descriptors with NUL-terminated JSON. No debugging TCP port is opened.
+- Every job creates and disposes a fresh incognito BrowserContext and creates that context's first target with `newWindow: true`.
+- Script execution and downloads are disabled before navigation. Request interception supplies exactly one controller-owned main document and exact digest-bound PNG assets. Every other resource is denied.
+- Documents receive the recorded CSP header. Output, input, asset, response, time, resource, and concurrency limits remain mandatory.
+- Kitty direct PNG graphics is the approved terminal path. Capability and cell geometry are queried; identity alone is not accepted.
+- Text fallback remains available for unsupported terminals, disabled graphics, missing renderers, and renderer failures.
 
-The candidate finite ceilings remain candidate values, not selected production policy. Reusing the initial/default-context target would weaken the approved fresh-context isolation and is not accepted. Renderer-dependent work must repeat the proof with a backend/configuration that can create a page inside a fresh incognito BrowserContext.
+Chromium is an optional system package updated by the user's OS package manager. STcli must not download browsers, reuse user browser profiles, change the default terminal, or install or update packages. Renderer changes require this proof to be repeated.
 
 ## Observed configuration
 
 | Component | Tested version / policy |
 |---|---|
-| Chromium | 152.0.7977.82, system package, private profile intended |
-| Bubblewrap | 0.12.0; private CDP pipe transport succeeded; isolated positive render did not |
-| systemd | 261.2-1-arch; requested 1 GiB memory, zero swap, 128 tasks, 200% CPU |
-| Kitty | 0.48.2; direct PNG protocol candidate, graphical transfer not reached |
-| Alacritty | 0.17.0 (94e7c887); graphical/fallback capability not claimed |
-| Font | Read-only DejaVu Sans candidate |
-| Assets | Repository-owned PNG only, SHA-256 `f331033487acbbe3714bda038a21e91ef640c9f224748bb7078b9bd5e2eb4817` |
-| Distribution | Optional system packages updated by the user's OS package manager; STcli must not download or update a browser |
-
+| Chromium | 152.0.7977.82, system package, fresh private profile |
+| Bubblewrap | 0.12.0; isolated namespaces and restricted mounts |
+| systemd | 261.2-1-arch; 1 GiB memory, zero swap, 256 tasks, 200% CPU |
+| Kitty | 0.48.2; direct PNG stream protocol with owned image and placement IDs |
+| Alacritty | 0.17.0 (94e7c887); capability probe returned no Kitty acknowledgement, so the readable fallback path was selected |
+| Font | Read-only DejaVu Sans from `/usr/share/fonts/TTF/DejaVuSans.ttf` |
+| Assets | Repository-owned PNG, SHA-256 `f331033487acbbe3714bda038a21e91ef640c9f224748bb7078b9bd5e2eb4817` |
 ## Evidence and acceptance criteria
 
-Compact evidence is in `docs/experiments/rich-content-renderer/`: `results.json`, `reproduce.txt`, `isolation.json`, and `measurements.json`.
+Compact evidence is in `docs/experiments/rich-content-renderer/`: `results.json`, `reproduce.txt`, `isolation.json`, `measurements.json`, `terminal-transfer.json`, `rendered-card.png`, and `terminal-evidence.png`.
 
 | Ticket criterion | Result | Evidence |
 |---|---|---|
-| Styled card, columns, and approved asset inside a terminal | Unmet | Fixtures and digest exist, but restricted Chromium could not create a target. |
-| Resize, scroll, popup, removal, missing renderer, no graphics | Partly met | The real TUI fallback and controls ran; graphical lifecycle was not exercised. |
-| Deny scripts, handlers, network, files, redirects, nested documents, control access | Unmet | Positive outside controls succeeded; isolated Chromium failed before hostile input. |
-| Startup, warm render, transfer, peak resource measurements | Unmet | Measurement stopped at the same safety prerequisite; no samples are claimed. |
-| Installation/update, support, asset/font, lifecycle, fallback policy | Met for decision outcome | This ADR records the candidate policies and readable fallback requirement. |
-| Select backend or exact unmet requirement | Met | No backend approved; isolated Chromium could not create the benign page target required for rendering. |
+| Styled card, columns, and approved asset inside a terminal | Met | `rendered-card.png` is the exact restricted-renderer image displayed by the TUI; `terminal-evidence.png` records its real Kitty placement. |
+| Resize, scroll, popup, removal, missing renderer, no graphics | Met | The dedicated Kitty TUI received fixture, scroll, popup, source, removal, restore, literal, and exit keys. Missing-renderer and graphics-off fallback were retained from the original run. |
+| Deny scripts, handlers, network, files, redirects, nested documents, control access | Met | `isolation.json`: marker unchanged, main URL unchanged, zero nested markers, zero unexpected targets, zero listener requests; the same Bubblewrap boundary could not see the host sentinel, host process root, runtime sockets, or loopback listener. Observed Chromium renderer subprocesses had seccomp filtering, no capabilities, `NoNewPrivs=1`, and no listening sockets. |
+| Startup, warm render, transfer, peak resource measurements | Met | `measurements.json` and `terminal-transfer.json`. |
+| Installation/update, support, asset/font, lifecycle, fallback policy | Met | This ADR records the selected policies. |
+| Deny scripts, handlers, network, files, redirects, nested documents, control access | Met | `isolation.json`: marker unchanged, main URL unchanged, zero nested markers, zero unexpected targets, zero listener requests; the same Bubblewrap boundary could not see the host sentinel, host process root, runtime sockets, or loopback listener. Observed Chromium renderer subprocesses had seccomp filtering, no capabilities, `NoNewPrivs=1`, and no listening sockets. Child frames were instantiated as blocked `about:srcdoc`/`chrome-error`/empty URLs with no nested marker content, which the probe classifies as denied frames rather than loaded documents. |
 | Preserve QuickJS/Core/Session behavior | Met | Experiment-only frontend files; no production or domain changes. |
-| ADR, no production availability claim | Met | This document is the decision; user documentation is unchanged. |
-| Real isolation and terminal evidence, no mock-only claim | Partly met | Real process and TUI probes ran; failed graphical/isolation criteria remain explicit. |
+| ADR, no production availability claim | Met | This decision does not claim shipped TUI availability. |
+| Real isolation and terminal evidence, no mock-only claim | Met | Real Chromium, OS boundary, Kitty, process cleanup, and terminal capture were exercised. |
 
-## Candidate policy not selected
 
-The attempted ceilings were: 256 KiB combined HTML/CSS; 1 MiB and 1,048,576 pixels per approved PNG; 4 MiB aggregate assets; 1600×4096 output; 32 MiB PNG; 48 MiB framed response; 10 seconds cold startup; 3 seconds warm render; one active plus one replaceable pending request; 1 GiB scope memory; zero swap; 128 tasks; two CPUs; 128 MiB private `/tmp`; and 64 MiB private `/dev/shm`.
+## Measurements and selected ceilings
+The full cold path—transient systemd scope, Python controller, Chromium startup, first restricted card render, response framing, and process cleanup—was measured three times at 0.681 s, 0.669 s, and 0.700 s. Chromium-only startup was 0.139 s, 0.142 s, and 0.164 s. Ten sequential 900-pixel renders per fixture produced:
 
-Because no positive render or measurement completed, none is approved as a production limit.
+| Fixture | Median render | Maximum render | Maximum PNG | Output |
+|---|---:|---:|---:|---:|
+| Card | 0.240 s | 0.398 s | 181,767 bytes | 900×600 |
+| Columns | 0.213 s | 0.257 s | 80,994 bytes | 900×841 |
+
+The measured scope peak was 182,935,552 bytes memory and 127 tasks. CPU accounting is recorded in `measurements.json`. The Kitty transfer used 303,886 protocol bytes for a 227,386-byte PNG; write and flush took 0.00056 s and the matching protocol acknowledgement arrived 0.0105 s after flush. The acknowledgement proves receipt, not display latency.
+
+Selected ceilings are: 256 KiB combined HTML/CSS; 1 MiB and 1,048,576 pixels per approved PNG; 4 MiB aggregate assets; 1600×4096 output; 32 MiB PNG; 48 MiB framed response; 10 seconds for the full cold path; 3 seconds warm rendering; one active plus one replaceable pending request; 1 GiB scope memory; zero swap; 256 tasks; two CPUs; 128 MiB private `/tmp`; and 64 MiB private `/dev/shm`. Observed values fit these ceilings without widening fidelity or isolation.
+
 
 ## Support table
-
 | Environment | Outcome |
 |---|---|
-| Text and `--graphics off` on this Linux setup | Tested readable fallback |
+| Kitty 0.48.2 on the tested Linux/Sway setup | Tested graphical path |
+| Text and `--graphics off` on this Linux setup | Tested readable fallback; no Chromium launch |
 | Missing renderer | Tested readable fallback |
-| Kitty 0.48.2 graphics | Unverified; isolation prerequisite blocked rendering and transfer |
-| Alacritty 0.17.0 | Unverified; no identity-based capability claim |
+| Alacritty 0.17.0 | Tested readable fallback after capability negotiation returned no Kitty acknowledgement |
 | Multiplexers, remote transport, other Linux terminals | Unverified; readable fallback intended |
 | macOS and Windows | Unverified; readable fallback intended |
 
 ## Lifecycle and trust consequences
 
-Text-only startup must not launch Chromium. A future renderer must use a fresh private profile, fresh browser context per job, digest-bound PNG assets, header CSP, disabled scripts, denied downloads/navigation/resources, bounded dimensions/time/memory/concurrency, capped diagnostics, and explicit context/process/profile cleanup. It must never receive Session data, credentials, Extension authority, a user profile, arbitrary paths, network access, or generic CDP commands. Replay and headless use remain renderer-free.
+Text-only startup does not launch Chromium. A successful browser is reused for sequential renders and retired after 30 seconds idle, explicit exit, or failure. Each render disposes its BrowserContext. Exit removes the owned Kitty placement and image, closes pipes, terminates and reaps the owned scope, and removes private profiles. The observed normal exit left no `rich_content_probe`, `stcli-rich-probe`, or private-profile process.
 
-No graphical availability is shipped or documented by this experiment.
+The renderer never receives Session data, credentials, Extension authority, a user browser profile, arbitrary paths, network access, or generic CDP commands. Replay and headless use remain renderer-free. This experiment approves a direction and finite policy; it does not introduce production rendering or user-facing availability.

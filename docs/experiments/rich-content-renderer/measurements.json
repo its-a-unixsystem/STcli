@@ -1,5 +1,5 @@
 {
-  "backend_approved": false,
+  "backend_approved": true,
   "browser_version": {
     "jsVersion": "15.2.124.21",
     "product": "Chrome/152.0.7977.82",
@@ -13,31 +13,31 @@
       "cpu.max": "200000 100000",
       "memory.max": "1073741824",
       "memory.swap.max": "0",
-      "pids.max": "128"
+      "pids.max": "256"
     },
     "mismatches": {},
-    "path": "/user.slice/user-1000.slice/user@1000.service/app.slice/stcli-rich-measure.scope",
+    "path": "/user.slice/user-1000.slice/user@1000.service/app.slice/stcli-rich-measure-reviewed.scope",
     "values": {
       "cpu.max": "200000 100000",
-      "cpu.stat": "usage_usec 1817917\nuser_usec 1036507\nsystem_usec 781410\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 10\nnr_throttled 6\nthrottled_usec 394977\nnr_bursts 0\nburst_usec 0",
+      "cpu.stat": "usage_usec 1770311\nuser_usec 972358\nsystem_usec 797953\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 16\nnr_throttled 6\nthrottled_usec 649711\nnr_bursts 0\nburst_usec 0",
       "memory.max": "1073741824",
-      "memory.peak": "174239744",
+      "memory.peak": "182935552",
       "memory.swap.max": "0",
-      "pids.current": "123",
-      "pids.max": "128",
+      "pids.current": "122",
+      "pids.max": "256",
       "pids.peak": "127"
     }
   },
   "cleanup": {
     "graceful": true,
     "reaped": true,
-    "stderr": "RuntimeError: [2:20:0905/212216.819641:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory [2:20:0905/212216.819675:ERROR:dbus/bus.cc:405] Failed to connect to the bus: C ...  Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\") [92:4:0905/212216.934473:ERROR:base/threading/platform_thread_posix.cc:162] pthread_create: Resource temporarily unavailable (11) [92:1:0905/212",
+    "stderr": "RuntimeError: [2:20:0906/074213.917859:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory [2:20:0906/074213.917878:ERROR:dbus/bus.cc:405] Failed to connect to the bus: C ... 6:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type:  [2:83:0906/074218.767407:ERROR:content/browser/devtools/devtools_pipe_handler.cc:188] Connection termina",
     "temporary_removed": true
   },
   "cold_starts": [
-    0.1631989210145548,
-    0.16417675599223003,
-    0.17001710896147415
+    0.139108472969383,
+    0.14181253698188812,
+    0.16388223500689492
   ],
   "experiment": "ticket-01",
   "mode": "measure",
@@ -64,7 +64,7 @@
     ],
     [
       "--ro-bind",
-      "/tmp/stcli-rich-probe-l2ail6yq/fonts.conf",
+      "/tmp/stcli-rich-probe-8e9pk7r1/fonts.conf",
       "/etc/fonts/fonts.conf"
     ],
     [
@@ -79,28 +79,167 @@
     ]
   ],
   "namespaces": {
-    "cgroup": "cgroup:[4026533502]",
-    "ipc": "ipc:[4026533494]",
-    "mnt": "mnt:[4026533257]",
-    "net": "net:[4026533503]",
-    "pid": "pid:[4026533497]",
-    "user": "user:[4026533717]",
-    "uts": "uts:[4026533258]"
+    "cgroup": "cgroup:[4026533591]",
+    "ipc": "ipc:[4026533435]",
+    "mnt": "mnt:[4026533256]",
+    "net": "net:[4026533596]",
+    "pid": "pid:[4026533493]",
+    "user": "user:[4026533773]",
+    "uts": "uts:[4026533257]"
   },
-  "no_backend": "RuntimeError: CDP Target.createTarget failed: Failed to open new tab - no browser is open",
   "process": {
     "listening_sockets": [],
-    "observed_pid": 3208737,
+    "observed_pid": 3604875,
     "status": {
       "CapEff": "0000000000000000",
-      "NSpid": "3208737\t1",
+      "NSpid": "3604875\t1",
       "NoNewPrivs": "1",
-      "PPid": "3208736",
-      "Pid": "3208737",
+      "PPid": "3604874",
+      "Pid": "3604875",
       "Seccomp": "0",
       "Seccomp_filters": "0",
       "Threads": "1"
     }
   },
-  "renders": {}
+  "renders": {
+    "card": {
+      "max_png_bytes": 181767,
+      "max_seconds": 0.3982249510008842,
+      "median_seconds": 0.23970169899985194,
+      "samples": [
+        {
+          "height": 600,
+          "png_bytes": 181767,
+          "seconds": 0.3982249510008842,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 181767,
+          "seconds": 0.2452067449921742,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 181767,
+          "seconds": 0.20193212205776945,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 181767,
+          "seconds": 0.2707651300006546,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 181767,
+          "seconds": 0.22391424595844,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 181767,
+          "seconds": 0.26381164096528664,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 181767,
+          "seconds": 0.23419665300752968,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 181767,
+          "seconds": 0.2219042840297334,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 181767,
+          "seconds": 0.2665509610087611,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 181767,
+          "seconds": 0.2152743409969844,
+          "width": 900
+        }
+      ]
+    },
+    "columns": {
+      "max_png_bytes": 80994,
+      "max_seconds": 0.25689421902643517,
+      "median_seconds": 0.21346450498094782,
+      "samples": [
+        {
+          "height": 841,
+          "png_bytes": 80994,
+          "seconds": 0.2008470359724015,
+          "width": 900
+        },
+        {
+          "height": 841,
+          "png_bytes": 80994,
+          "seconds": 0.25592214398784563,
+          "width": 900
+        },
+        {
+          "height": 841,
+          "png_bytes": 80994,
+          "seconds": 0.2116360529907979,
+          "width": 900
+        },
+        {
+          "height": 841,
+          "png_bytes": 80994,
+          "seconds": 0.21678203099872917,
+          "width": 900
+        },
+        {
+          "height": 841,
+          "png_bytes": 80994,
+          "seconds": 0.21529295697109774,
+          "width": 900
+        },
+        {
+          "height": 841,
+          "png_bytes": 80994,
+          "seconds": 0.20093120395904407,
+          "width": 900
+        },
+        {
+          "height": 841,
+          "png_bytes": 80994,
+          "seconds": 0.25689421902643517,
+          "width": 900
+        },
+        {
+          "height": 841,
+          "png_bytes": 80994,
+          "seconds": 0.20544144802261144,
+          "width": 900
+        },
+        {
+          "height": 841,
+          "png_bytes": 80994,
+          "seconds": 0.2204056610353291,
+          "width": 900
+        },
+        {
+          "height": 841,
+          "png_bytes": 80994,
+          "seconds": 0.20042127696797252,
+          "width": 900
+        }
+      ]
+    }
+  },
+  "worker_cold_paths": [
+    0.6814413579995744,
+    0.6688189299893565,
+    0.7001497269957326
+  ]
 }
