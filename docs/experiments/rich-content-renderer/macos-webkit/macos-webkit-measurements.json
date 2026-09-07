@@ -1,0 +1,504 @@
+{
+  "bounds": {
+    "aggregate_assets": "aggregate assets exceed ceiling",
+    "asset": "asset exceeds ceiling",
+    "height": "output exceeds 4096 px ceiling",
+    "html": "document exceeds HTML ceiling",
+    "sigterm_seconds": 0.0016217910451814532,
+    "sigterm_under_750_ms": true
+  },
+  "build_seconds": 1.8857602499774657,
+  "cleanup": {
+    "exit_code": 0,
+    "forced_kill": false,
+    "seconds": 0.011464249982964247,
+    "stderr": ""
+  },
+  "cold_paths": [
+    {
+      "height": 600,
+      "png_bytes": 1312847,
+      "seconds": 0.6537567499908619,
+      "width": 900
+    },
+    {
+      "height": 600,
+      "png_bytes": 1312847,
+      "seconds": 0.35893708403455094,
+      "width": 900
+    },
+    {
+      "height": 600,
+      "png_bytes": 1136183,
+      "seconds": 0.31061474996386096,
+      "width": 900
+    }
+  ],
+  "cold_process_snapshots": [
+    {
+      "aggregate_phys_footprint_bytes": 161712960,
+      "aggregate_rss_bytes": 185303040,
+      "aggregate_threads": 46,
+      "attribution_limit": "Timing correlation can over-attribute unrelated WebKit services created during the controlled two-second window; shared service reuse can under-attribute.",
+      "attribution_method": "parent tree plus controlled-run timing correlation against pre-launch baseline",
+      "process_count": 4,
+      "rows": [
+        {
+          "command": "/Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/webkit_helper/build/RichContentWebKitProbe.app/Contents/MacOS/RichContentWebKitProbe --worker --fixtures-dir /Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/fixtures",
+          "lifetime_max_phys_footprint_bytes": 47809472,
+          "phys_footprint_bytes": 33014696,
+          "pid": 51803,
+          "ppid": 51781,
+          "responsible_pid": 39153,
+          "rss_bytes": 82706432,
+          "system_time_ns": 1089956,
+          "threads": 19,
+          "user_time_ns": 3406241
+        },
+        {
+          "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU",
+          "lifetime_max_phys_footprint_bytes": 96469784,
+          "phys_footprint_bytes": 86409984,
+          "pid": 51805,
+          "ppid": 1,
+          "responsible_pid": 39153,
+          "rss_bytes": 48578560,
+          "system_time_ns": 831009,
+          "threads": 12,
+          "user_time_ns": 1180327
+        },
+        {
+          "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking",
+          "lifetime_max_phys_footprint_bytes": 6111712,
+          "phys_footprint_bytes": 6111712,
+          "pid": 51806,
+          "ppid": 1,
+          "responsible_pid": 39153,
+          "rss_bytes": 14188544,
+          "system_time_ns": 226425,
+          "threads": 6,
+          "user_time_ns": 475667
+        },
+        {
+          "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+          "lifetime_max_phys_footprint_bytes": 44827320,
+          "phys_footprint_bytes": 36176568,
+          "pid": 51807,
+          "ppid": 1,
+          "responsible_pid": 39153,
+          "rss_bytes": 39829504,
+          "system_time_ns": 467366,
+          "threads": 9,
+          "user_time_ns": 1333187
+        }
+      ],
+      "shared_memory_note": "Per-process RSS and physical footprint sums can double-count shared WebKit mappings."
+    },
+    {
+      "aggregate_phys_footprint_bytes": 156437456,
+      "aggregate_rss_bytes": 184926208,
+      "aggregate_threads": 43,
+      "attribution_limit": "Timing correlation can over-attribute unrelated WebKit services created during the controlled two-second window; shared service reuse can under-attribute.",
+      "attribution_method": "parent tree plus controlled-run timing correlation against pre-launch baseline",
+      "process_count": 4,
+      "rows": [
+        {
+          "command": "/Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/webkit_helper/build/RichContentWebKitProbe.app/Contents/MacOS/RichContentWebKitProbe --worker --fixtures-dir /Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/fixtures",
+          "lifetime_max_phys_footprint_bytes": 47645608,
+          "phys_footprint_bytes": 32785296,
+          "pid": 51812,
+          "ppid": 51781,
+          "responsible_pid": 39153,
+          "rss_bytes": 82444288,
+          "system_time_ns": 758155,
+          "threads": 16,
+          "user_time_ns": 2991059
+        },
+        {
+          "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU",
+          "lifetime_max_phys_footprint_bytes": 95273776,
+          "phys_footprint_bytes": 80839472,
+          "pid": 51813,
+          "ppid": 1,
+          "responsible_pid": 39153,
+          "rss_bytes": 48218112,
+          "system_time_ns": 612887,
+          "threads": 12,
+          "user_time_ns": 1082622
+        },
+        {
+          "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking",
+          "lifetime_max_phys_footprint_bytes": 6193704,
+          "phys_footprint_bytes": 6193704,
+          "pid": 51814,
+          "ppid": 1,
+          "responsible_pid": 39153,
+          "rss_bytes": 14188544,
+          "system_time_ns": 154999,
+          "threads": 6,
+          "user_time_ns": 409484
+        },
+        {
+          "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+          "lifetime_max_phys_footprint_bytes": 45351656,
+          "phys_footprint_bytes": 36618984,
+          "pid": 51815,
+          "ppid": 1,
+          "responsible_pid": 39153,
+          "rss_bytes": 40075264,
+          "system_time_ns": 362410,
+          "threads": 9,
+          "user_time_ns": 1219928
+        }
+      ],
+      "shared_memory_note": "Per-process RSS and physical footprint sums can double-count shared WebKit mappings."
+    },
+    {
+      "aggregate_phys_footprint_bytes": 158468880,
+      "aggregate_rss_bytes": 187351040,
+      "aggregate_threads": 47,
+      "attribution_limit": "Timing correlation can over-attribute unrelated WebKit services created during the controlled two-second window; shared service reuse can under-attribute.",
+      "attribution_method": "parent tree plus controlled-run timing correlation against pre-launch baseline",
+      "process_count": 4,
+      "rows": [
+        {
+          "command": "/Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/webkit_helper/build/RichContentWebKitProbe.app/Contents/MacOS/RichContentWebKitProbe --worker --fixtures-dir /Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/fixtures",
+          "lifetime_max_phys_footprint_bytes": 47793064,
+          "phys_footprint_bytes": 32506768,
+          "pid": 51820,
+          "ppid": 51781,
+          "responsible_pid": 39153,
+          "rss_bytes": 82264064,
+          "system_time_ns": 769951,
+          "threads": 18,
+          "user_time_ns": 2966089
+        },
+        {
+          "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU",
+          "lifetime_max_phys_footprint_bytes": 98190104,
+          "phys_footprint_bytes": 88179432,
+          "pid": 51821,
+          "ppid": 1,
+          "responsible_pid": 39153,
+          "rss_bytes": 51183616,
+          "system_time_ns": 588531,
+          "threads": 12,
+          "user_time_ns": 1108756
+        },
+        {
+          "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking",
+          "lifetime_max_phys_footprint_bytes": 6144480,
+          "phys_footprint_bytes": 6144480,
+          "pid": 51822,
+          "ppid": 1,
+          "responsible_pid": 39153,
+          "rss_bytes": 14221312,
+          "system_time_ns": 182907,
+          "threads": 7,
+          "user_time_ns": 436889
+        },
+        {
+          "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+          "lifetime_max_phys_footprint_bytes": 40272568,
+          "phys_footprint_bytes": 31638200,
+          "pid": 51823,
+          "ppid": 1,
+          "responsible_pid": 39153,
+          "rss_bytes": 39682048,
+          "system_time_ns": 348805,
+          "threads": 10,
+          "user_time_ns": 1218695
+        }
+      ],
+      "shared_memory_note": "Per-process RSS and physical footprint sums can double-count shared WebKit mappings."
+    }
+  ],
+  "experiment": "macos-webkit",
+  "fidelity": {
+    "card_800": {
+      "height": 600,
+      "png_bytes": 1005333,
+      "width": 800
+    },
+    "card_900": {
+      "height": 600,
+      "png_bytes": 1136183,
+      "width": 900
+    },
+    "columns_three_column_source_rule": "grid-template-columns:repeat(3,minmax(0,1fr))",
+    "font_note": "Fixture requests DejaVu Sans; the tested Mac used WebKit font substitution because no font was installed or mounted.",
+    "https_fixture_asset_loaded": false,
+    "literal_worker_invocation": false,
+    "viewport_change_not_stale": true
+  },
+  "memory_reference_met": false,
+  "png_evidence_ceiling_met": true,
+  "process_snapshot": {
+    "aggregate_phys_footprint_bytes": 418108048,
+    "aggregate_rss_bytes": 490569728,
+    "aggregate_threads": 64,
+    "attribution_limit": "Timing correlation can over-attribute unrelated WebKit services created during the controlled two-second window; shared service reuse can under-attribute.",
+    "attribution_method": "parent tree plus controlled-run timing correlation against pre-launch baseline",
+    "process_count": 6,
+    "rows": [
+      {
+        "command": "/Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/webkit_helper/build/RichContentWebKitProbe.app/Contents/MacOS/RichContentWebKitProbe --worker --fixtures-dir /Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/fixtures",
+        "lifetime_max_phys_footprint_bytes": 247366808,
+        "phys_footprint_bytes": 240600192,
+        "pid": 51829,
+        "ppid": 51781,
+        "responsible_pid": 39153,
+        "rss_bytes": 296255488,
+        "system_time_ns": 5860441,
+        "threads": 20,
+        "user_time_ns": 36510870
+      },
+      {
+        "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU",
+        "lifetime_max_phys_footprint_bytes": 104432624,
+        "phys_footprint_bytes": 85214168,
+        "pid": 51830,
+        "ppid": 1,
+        "responsible_pid": 39153,
+        "rss_bytes": 68534272,
+        "system_time_ns": 3043500,
+        "threads": 14,
+        "user_time_ns": 6352796
+      },
+      {
+        "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking",
+        "lifetime_max_phys_footprint_bytes": 6308392,
+        "phys_footprint_bytes": 6095376,
+        "pid": 51831,
+        "ppid": 1,
+        "responsible_pid": 39153,
+        "rss_bytes": 15286272,
+        "system_time_ns": 567616,
+        "threads": 7,
+        "user_time_ns": 957130
+      },
+      {
+        "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+        "lifetime_max_phys_footprint_bytes": 37012152,
+        "phys_footprint_bytes": 29426360,
+        "pid": 51859,
+        "ppid": 1,
+        "responsible_pid": 39153,
+        "rss_bytes": 39141376,
+        "system_time_ns": 371898,
+        "threads": 9,
+        "user_time_ns": 1164228
+      },
+      {
+        "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+        "lifetime_max_phys_footprint_bytes": 40075984,
+        "phys_footprint_bytes": 31326928,
+        "pid": 51860,
+        "ppid": 1,
+        "responsible_pid": 39153,
+        "rss_bytes": 39550976,
+        "system_time_ns": 364158,
+        "threads": 9,
+        "user_time_ns": 1196145
+      },
+      {
+        "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+        "lifetime_max_phys_footprint_bytes": 25690784,
+        "phys_footprint_bytes": 25445024,
+        "pid": 51861,
+        "ppid": 1,
+        "responsible_pid": 39153,
+        "rss_bytes": 31801344,
+        "system_time_ns": 330163,
+        "threads": 5,
+        "user_time_ns": 642944
+      }
+    ],
+    "shared_memory_note": "Per-process RSS and physical footprint sums can double-count shared WebKit mappings."
+  },
+  "reference_goals": {
+    "linux_scope_bytes": 1073741824,
+    "old_macos_bytes": 209715200,
+    "threads": 256
+  },
+  "sampling": "Endpoint process snapshot after renders plus one endpoint snapshot per cold path; not continuous peak sampling.",
+  "thread_ceiling_met": true,
+  "warm": {
+    "card": {
+      "max_png_bytes": 1136183,
+      "max_protocol_bytes": 1515254,
+      "max_seconds": 0.28164937504334375,
+      "median_seconds": 0.17435529149952345,
+      "samples": [
+        {
+          "height": 600,
+          "png_bytes": 1136183,
+          "protocol_bytes": 1515254,
+          "scale_factor": 2,
+          "seconds": 0.28164937504334375,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 1136183,
+          "protocol_bytes": 1515254,
+          "scale_factor": 2,
+          "seconds": 0.17502508300822228,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 1136183,
+          "protocol_bytes": 1515254,
+          "scale_factor": 2,
+          "seconds": 0.1744035829906352,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 1136183,
+          "protocol_bytes": 1515254,
+          "scale_factor": 2,
+          "seconds": 0.18054287502309307,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 1136183,
+          "protocol_bytes": 1515254,
+          "scale_factor": 2,
+          "seconds": 0.16335608396911994,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 1136183,
+          "protocol_bytes": 1515254,
+          "scale_factor": 2,
+          "seconds": 0.1747624579584226,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 1136183,
+          "protocol_bytes": 1515254,
+          "scale_factor": 2,
+          "seconds": 0.17053095798473805,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 1136183,
+          "protocol_bytes": 1515254,
+          "scale_factor": 2,
+          "seconds": 0.17422520800027996,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 1136183,
+          "protocol_bytes": 1515254,
+          "scale_factor": 2,
+          "seconds": 0.1743070000084117,
+          "width": 900
+        },
+        {
+          "height": 600,
+          "png_bytes": 1136183,
+          "protocol_bytes": 1515254,
+          "scale_factor": 2,
+          "seconds": 0.17040041700238362,
+          "width": 900
+        }
+      ]
+    },
+    "columns": {
+      "max_png_bytes": 267195,
+      "max_protocol_bytes": 356608,
+      "max_seconds": 0.12724454200360924,
+      "median_seconds": 0.11772697899141349,
+      "samples": [
+        {
+          "height": 840,
+          "png_bytes": 267195,
+          "protocol_bytes": 356608,
+          "scale_factor": 2,
+          "seconds": 0.12724454200360924,
+          "width": 900
+        },
+        {
+          "height": 840,
+          "png_bytes": 267195,
+          "protocol_bytes": 356608,
+          "scale_factor": 2,
+          "seconds": 0.11813304101815447,
+          "width": 900
+        },
+        {
+          "height": 840,
+          "png_bytes": 267195,
+          "protocol_bytes": 356608,
+          "scale_factor": 2,
+          "seconds": 0.11894887499511242,
+          "width": 900
+        },
+        {
+          "height": 840,
+          "png_bytes": 267195,
+          "protocol_bytes": 356608,
+          "scale_factor": 2,
+          "seconds": 0.11782204202609137,
+          "width": 900
+        },
+        {
+          "height": 840,
+          "png_bytes": 267195,
+          "protocol_bytes": 356608,
+          "scale_factor": 2,
+          "seconds": 0.11577962496085092,
+          "width": 900
+        },
+        {
+          "height": 840,
+          "png_bytes": 267195,
+          "protocol_bytes": 356608,
+          "scale_factor": 2,
+          "seconds": 0.11975062504643574,
+          "width": 900
+        },
+        {
+          "height": 840,
+          "png_bytes": 267195,
+          "protocol_bytes": 356608,
+          "scale_factor": 2,
+          "seconds": 0.11763191595673561,
+          "width": 900
+        },
+        {
+          "height": 840,
+          "png_bytes": 267195,
+          "protocol_bytes": 356608,
+          "scale_factor": 2,
+          "seconds": 0.11741920805070549,
+          "width": 900
+        },
+        {
+          "height": 840,
+          "png_bytes": 267195,
+          "protocol_bytes": 356608,
+          "scale_factor": 2,
+          "seconds": 0.11567154200747609,
+          "width": 900
+        },
+        {
+          "height": 840,
+          "png_bytes": 267195,
+          "protocol_bytes": 356608,
+          "scale_factor": 2,
+          "seconds": 0.11682162497891113,
+          "width": 900
+        }
+      ]
+    }
+  }
+}

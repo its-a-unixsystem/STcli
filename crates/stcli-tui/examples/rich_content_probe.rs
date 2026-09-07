@@ -4,6 +4,7 @@
 #[path = "../src/terminal.rs"]
 mod terminal;
 use anyhow::{Context, Result, anyhow, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
@@ -52,9 +53,16 @@ enum GraphicsMode {
     Off,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RendererKind {
+    Python,
+    WebKit,
+}
+
 struct Options {
     graphics: GraphicsMode,
     renderer: PathBuf,
+    renderer_kind: RendererKind,
     evidence: PathBuf,
 }
 
@@ -107,6 +115,8 @@ impl Fixture {
 struct RenderRequest {
     id: u64,
     fixture: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    document_base64: Option<String>,
     width: u32,
 }
 
@@ -149,7 +159,7 @@ struct WorkerHandle {
 }
 
 impl WorkerHandle {
-    fn start(renderer: PathBuf) -> Self {
+    fn start(renderer: PathBuf, renderer_kind: RendererKind) -> Self {
         let queue = Arc::new((
             Mutex::new(RequestQueue {
                 pending: None,
@@ -159,7 +169,8 @@ impl WorkerHandle {
         ));
         let (event_tx, event_rx) = mpsc::channel();
         let worker_queue = Arc::clone(&queue);
-        let join = thread::spawn(move || worker_thread(worker_queue, event_tx, renderer));
+        let join =
+            thread::spawn(move || worker_thread(worker_queue, event_tx, renderer, renderer_kind));
         Self {
             queue,
             events: event_rx,
@@ -205,11 +216,11 @@ struct ScopedWorker {
 }
 
 impl ScopedWorker {
-    fn launch(renderer: &Path) -> Result<Self> {
+    fn launch(renderer: &Path, renderer_kind: RendererKind) -> Result<Self> {
         if !renderer.is_file() {
             bail!("renderer executable is missing: {}", renderer.display());
         }
-        if !Path::new(HELPER).is_file() {
+        if renderer_kind == RendererKind::Python && !Path::new(HELPER).is_file() {
             bail!("renderer helper is missing: {HELPER}");
         }
         let nonce = SystemTime::now()
@@ -218,14 +229,27 @@ impl ScopedWorker {
             .as_nanos();
         let unit = format!("stcli-rich-probe-{}-{nonce}", std::process::id());
         #[cfg(target_os = "macos")]
-        let mut child = Command::new("python3")
-            .args([HELPER, "--worker", "--renderer"])
-            .arg(renderer)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("failed to launch macOS renderer experiment worker")?;
+        let mut child = if renderer_kind == RendererKind::WebKit {
+            let fixtures =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rich_content_probe/fixtures");
+            Command::new(renderer)
+                .args(["--worker", "--fixtures-dir"])
+                .arg(fixtures)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .context("failed to launch sandboxed WebKit experiment worker")?
+        } else {
+            Command::new("python3")
+                .args([HELPER, "--worker", "--renderer"])
+                .arg(renderer)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .context("failed to launch macOS renderer experiment worker")?
+        };
         #[cfg(not(target_os = "macos"))]
         let mut child = Command::new("systemd-run")
             .args([
@@ -380,6 +404,7 @@ fn worker_thread(
     queue: Arc<(Mutex<RequestQueue>, Condvar)>,
     events: Sender<WorkerEvent>,
     renderer: PathBuf,
+    renderer_kind: RendererKind,
 ) {
     let mut worker: Option<ScopedWorker> = None;
     loop {
@@ -411,7 +436,7 @@ fn worker_thread(
         };
 
         if worker.is_none() {
-            match ScopedWorker::launch(&renderer) {
+            match ScopedWorker::launch(&renderer, renderer_kind) {
                 Ok(started) => worker = Some(started),
                 Err(error) => {
                     let _ = events.send(WorkerEvent::Failed {
@@ -461,6 +486,7 @@ struct App {
     worker: Option<WorkerHandle>,
     pane: Rect,
     renderer: PathBuf,
+    renderer_kind: RendererKind,
     evidence: PathBuf,
     evidence_written: bool,
 }
@@ -490,6 +516,7 @@ impl App {
             worker: None,
             pane: Rect::default(),
             renderer: options.renderer,
+            renderer_kind: options.renderer_kind,
             evidence: options.evidence,
             evidence_written: false,
         }
@@ -560,9 +587,14 @@ impl App {
                 .worker_name()
                 .expect("checked graphical fixture"),
             width,
+            document_base64: (self.renderer_kind == RendererKind::WebKit)
+                .then(|| BASE64.encode(self.fixture.source().as_bytes())),
         };
         if self.worker.is_none() {
-            self.worker = Some(WorkerHandle::start(self.renderer.clone()));
+            self.worker = Some(WorkerHandle::start(
+                self.renderer.clone(),
+                self.renderer_kind,
+            ));
         }
         if let Err(error) = self
             .worker
@@ -913,6 +945,7 @@ fn parse_options() -> Result<Options> {
         PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
     #[cfg(not(target_os = "macos"))]
     let mut renderer = PathBuf::from("/usr/lib/chromium/chromium");
+    let mut renderer_kind = RendererKind::Python;
     let mut evidence = env::temp_dir().join("stcli-rich-content-probe");
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -923,6 +956,14 @@ fn parse_options() -> Result<Options> {
                 Some(value) => bail!("invalid --graphics value {value:?}; expected auto or off"),
                 None => bail!("--graphics requires auto or off"),
             },
+            "--renderer-kind" => match args.next().as_deref() {
+                Some("python") => renderer_kind = RendererKind::Python,
+                Some("webkit") => renderer_kind = RendererKind::WebKit,
+                Some(value) => {
+                    bail!("invalid --renderer-kind value {value:?}; expected python or webkit")
+                }
+                None => bail!("--renderer-kind requires python or webkit"),
+            },
             "--renderer" => {
                 renderer = PathBuf::from(args.next().context("--renderer requires a path")?)
             }
@@ -931,7 +972,7 @@ fn parse_options() -> Result<Options> {
             }
             "-h" | "--help" => {
                 println!(
-                    "Usage: rich_content_probe [--graphics auto|off] [--renderer PATH] [--evidence DIR]"
+                    "Usage: rich_content_probe [--graphics auto|off] [--renderer-kind python|webkit] [--renderer PATH] [--evidence DIR]"
                 );
                 std::process::exit(0);
             }
@@ -941,6 +982,7 @@ fn parse_options() -> Result<Options> {
     Ok(Options {
         graphics,
         renderer,
+        renderer_kind,
         evidence,
     })
 }

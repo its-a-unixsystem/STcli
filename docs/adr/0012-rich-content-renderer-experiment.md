@@ -4,7 +4,7 @@
 
 Decided. The bounded ticket-01 experiment approves the tested Linux configuration: system Chromium rendered through mandatory Bubblewrap and cgroup isolation, displayed through Kitty's direct PNG graphics protocol. Other configurations retain readable fallback behavior.
 
-The 2026-09-06 macOS evaluation does not approve a graphical renderer. Keep the readable text fallback on macOS: an outer `sandbox-exec` profile crashed Chrome before CDP became available, while Chrome's built-in child-process Seatbelt sandbox left the controlling browser PID able to read an arbitrary host sentinel and the measured process tree exceeded the 200 MiB ticket ceiling.
+The macOS WebKit helper experiment is functionally viable under its clarified constraints. Its measured footprint is accepted, it may be started directly from the terminal, and its renderer-level network policy is documented below. This does not yet select a production macOS backend; text fallback remains the current default.
 
 ## Context
 
@@ -72,6 +72,22 @@ The macOS evidence is `results-macos.json`, `isolation-macos.json`, `seatbelt-pr
 
 This rejection does not weaken the Linux decision or select Chrome's built-in sandbox as a substitute. A future macOS backend must repeat the experiment with an enforceable parent-process filesystem/network boundary, finite memory/task controls, and framebuffer capture permission before graphical support can be approved.
 
+### macOS WebKit evaluation
+
+Ticket [13](../../.scratch/extension-interactions-and-rich-content/issues/13-evaluate-macos-sandboxed-webkit.md) evaluated an experiment-only, ad-hoc-signed app bundle using App Sandbox and WKWebView. Evidence is in [`docs/experiments/rich-content-renderer/macos-webkit/`](../experiments/rich-content-renderer/macos-webkit/). The helper is functionally viable under the clarified constraints: the measured footprint is accepted and direct terminal launch is sufficient for this use case. This experiment still does not by itself select a production macOS backend, so text fallback remains the current behavior.
+
+| macOS WebKit criterion | Result | Evidence |
+|---|---|---|
+| Signed helper and parent/child file confinement | Met in the controlled run | `macos-webkit-entitlements.json` records exactly `app-sandbox` and `network.client`; `macos-webkit-isolation.json` records denied sentinel reads/writes for the helper and timing-correlated WebKit services. Attribution may over-count services created during the controlled window or under-count reused shared services. |
+| Hostile-document denial and approved asset control | Met | Content JavaScript stayed disabled, the marker remained `original`, no nested marker loaded, navigation was cancelled, and the loopback listener received zero document requests. The digest-bound `stcli-probe` asset loaded at 128 pixels wide. |
+| Unchanged fixture fidelity | Known policy limitation | Card and columns snapshots were valid and viewport changes produced different PNGs. macOS substituted the requested DejaVu font. The fixture's emblem is an arbitrary external HTTPS URL, which the renderer correctly does not fetch. The trusted controller supplies verified/content-addressed asset bytes, and WebKit exposes them to the document over the local `stcli-probe://` scheme instead. |
+| Bounds and cancellation | Met for the experiment | HTML, single-asset, aggregate-asset, and 4096-pixel output ceilings rejected excess input; SIGTERM completed in 0.00162 seconds. Resource use is measured rather than cgroup-enforced on macOS; that is accepted for this helper evaluation. |
+| Startup and warm rendering | Met | Three cold paths were 0.654, 0.359, and 0.311 seconds. Card warm median/max were 0.174/0.282 seconds; full samples and columns values are in `macos-webkit-measurements.json`. |
+| Memory and threads | Accepted | Endpoint aggregate physical footprint was 418,108,048 bytes and aggregate RSS was 490,569,728 bytes, with shared-memory double-counting caveats. This footprint is accepted for the macOS helper. The attributed process set had 64 threads, below 256. |
+| Terminal lifecycle and cleanup | Met with one evidence gap | Real Kitty displayed the card and acknowledged direct PNG transfer; popup, source, removal, restore, literal, crash, and fallback paths remained responsive. Explicit graphics-off and missing-renderer states were captured. A non-TTY shell could not provide an additional raw-mode non-graphics run. No owned helper remained after exit. |
+| Distribution | Met for the CLI launch model | The ad-hoc-signed helper launched directly from the terminal without an IDE. Gatekeeper acceptance, Developer ID signing, and notarization are not requirements for this development/CLI model; they would become prerequisites only for normal end-user distribution. WebKit is OS-provided. The helper needed a logged-in GUI session but no visible window or Screen Recording permission. Only macOS 26.4.1 arm64 was exercised. |
+WKWebView terminated under App Sandbox without `com.apple.security.network.client`; the working configuration therefore requires that entitlement. It gives the helper process outbound-connect capability, which remains documented as residual OS authority. Rendered documents do not receive general network capability: content JavaScript is disabled, content rules block external subresources, and navigation delegates reject non-`stcli-probe://` navigation. ADR 0010 Brokered HTTPS Egress covers deliberate Extension `fetch` and secondary-inference/provider calls; it does not turn arbitrary renderer URLs into allowed effects. The trusted controller resolves approved assets as verified/content-addressed bytes and serves them to WebKit over the local `stcli-probe://` scheme, so WebKit never fetches their original URLs. Therefore the blocked external HTTPS emblem demonstrates the intended resource policy, not a proxy failure. With the measured footprint and direct-terminal launch model accepted, the helper is a viable experimental backend; production integration of this resolver remains a separate decision.
+
 
 ## Measurements and selected ceilings
 The full cold path—transient systemd scope, Python controller, Chromium startup, first restricted card render, response framing, and process cleanup—was measured three times at 0.681 s, 0.669 s, and 0.700 s. Chromium-only startup was 0.139 s, 0.142 s, and 0.164 s. Ten sequential 900-pixel renders per fixture produced:
@@ -94,10 +110,9 @@ Selected ceilings are: 256 KiB combined HTML/CSS; 1 MiB and 1,048,576 pixels per
 | Missing renderer | Tested readable fallback |
 | Alacritty 0.17.0 | Tested readable fallback after capability negotiation returned no Kitty acknowledgement |
 | Multiplexers, remote transport, other Linux terminals | Unverified; readable fallback intended |
-| macOS 26.4.1 with Kitty 0.48.2 | Kitty protocol tested; renderer rejected, readable fallback selected |
-
+| macOS 26.4.1 with Kitty 0.48.2 | Kitty protocol and the WebKit helper were tested; the helper is functionally viable under its documented no-arbitrary-network policy, but text fallback remains the current default pending production integration. |
 ## Lifecycle and trust consequences
 
 On the approved Linux path, text-only startup does not launch Chromium. A successful browser is reused for sequential renders and retired after 30 seconds idle, explicit exit, or failure. Each render disposes its BrowserContext. Exit removes the owned Kitty placement and image, closes pipes, terminates and reaps the owned scope, and removes private profiles. The observed normal exit left no `rich_content_probe`, `stcli-rich-probe`, or private-profile process.
 
-The approved Linux renderer never receives Session data, credentials, Extension authority, a user browser profile, arbitrary paths, network access, or generic CDP commands. The rejected macOS secondary approach did retain host filesystem authority in its controlling browser PID and is therefore not an approved implementation. Replay and headless use remain renderer-free. This experiment introduces no production rendering or user-facing availability.
+The approved Linux renderer never receives Session data, credentials, Extension authority, a user browser profile, arbitrary paths, network access, or generic CDP commands. The macOS WebKit experiment now records a viable CLI-started helper with accepted footprint, but it does not grant rendered HTML network access. ADR 0010's Brokered HTTPS Egress remains the deliberate live-effect path for Extension `fetch` and secondary inference; renderer resources use explicit verified references. Replay and headless use remain renderer-free. This experiment introduces no production rendering or user-facing availability.

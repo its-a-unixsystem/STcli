@@ -1,0 +1,126 @@
+{
+  "binary": "/Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/webkit_helper/build/RichContentWebKitProbe.app/Contents/MacOS/RichContentWebKitProbe",
+  "bundle": "/Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/webkit_helper/build/RichContentWebKitProbe.app",
+  "codesign_details": {
+    "command": [
+      "/usr/bin/codesign",
+      "-dvvv",
+      "/Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/webkit_helper/build/RichContentWebKitProbe.app"
+    ],
+    "exit_code": 0,
+    "stderr": "Executable=/Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/webkit_helper/build/RichContentWebKitProbe.app/Contents/MacOS/RichContentWebKitProbe\nIdentifier=dev.stcli.rich-content-webkit-probe\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20500 size=708 flags=0x10002(adhoc,runtime) hashes=11+7 location=embedded\nHash type=sha256 size=32\nCandidateCDHash sha256=958e88fd149690585e5dee551fba13057fc16d2c\nCandidateCDHashFull sha256=958e88fd149690585e5dee551fba13057fc16d2c329c10d5aa4397ad56570a46\nHash choices=sha256\nCMSDigest=958e88fd149690585e5dee551fba13057fc16d2c329c10d5aa4397ad56570a46\nCMSDigestType=2\nCDHash=958e88fd149690585e5dee551fba13057fc16d2c\nSignature=adhoc\nInfo.plist entries=6\nTeamIdentifier=not set\nRuntime Version=26.2.0\nSealed Resources version=2 rules=13 files=0\nInternal requirements count=0 size=12\n",
+    "stdout": ""
+  },
+  "distribution_note": "Ad-hoc signing proves local sandbox behavior, not end-user Gatekeeper installation. Developer ID signing and notarization remain untested prerequisites.",
+  "effective_entitlements": {
+    "command": [
+      "/usr/bin/codesign",
+      "-d",
+      "--entitlements",
+      "-",
+      "/Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/webkit_helper/build/RichContentWebKitProbe.app"
+    ],
+    "exit_code": 0,
+    "stderr": "Executable=/Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/webkit_helper/build/RichContentWebKitProbe.app/Contents/MacOS/RichContentWebKitProbe\n",
+    "stdout": "[Dict]\n\t[Key] com.apple.security.app-sandbox\n\t[Value]\n\t\t[Bool] true\n\t[Key] com.apple.security.network.client\n\t[Value]\n\t\t[Bool] true\n"
+  },
+  "entitlement_policy": [
+    "com.apple.security.app-sandbox",
+    "com.apple.security.network.client"
+  ],
+  "gatekeeper": {
+    "command": [
+      "/usr/sbin/spctl",
+      "-a",
+      "-vv",
+      "/Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/webkit_helper/build/RichContentWebKitProbe.app"
+    ],
+    "exit_code": 3,
+    "stderr": "/Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/webkit_helper/build/RichContentWebKitProbe.app: rejected\n",
+    "stdout": ""
+  },
+  "launch_ipc": "Controller directly execs the signed bundle Mach-O and uses piped stdin/stdout JSON lines.",
+  "process_tree": {
+    "aggregate_phys_footprint_bytes": 212504776,
+    "aggregate_rss_bytes": 272613376,
+    "aggregate_threads": 54,
+    "attribution_limit": "Timing correlation can over-attribute unrelated WebKit services created during the controlled two-second window; shared service reuse can under-attribute.",
+    "attribution_method": "parent tree plus controlled-run timing correlation against pre-launch baseline",
+    "process_count": 6,
+    "rows": [
+      {
+        "command": "/Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/webkit_helper/build/RichContentWebKitProbe.app/Contents/MacOS/RichContentWebKitProbe --worker --fixtures-dir /Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/fixtures",
+        "lifetime_max_phys_footprint_bytes": 81265624,
+        "phys_footprint_bytes": 65930176,
+        "pid": 51717,
+        "ppid": 51692,
+        "responsible_pid": 39153,
+        "rss_bytes": 118833152,
+        "system_time_ns": 1980444,
+        "threads": 19,
+        "user_time_ns": 7960035
+      },
+      {
+        "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU",
+        "lifetime_max_phys_footprint_bytes": 91538176,
+        "phys_footprint_bytes": 79823712,
+        "pid": 51718,
+        "ppid": 1,
+        "responsible_pid": 39153,
+        "rss_bytes": 43270144,
+        "system_time_ns": 1181747,
+        "threads": 14,
+        "user_time_ns": 1442555
+      },
+      {
+        "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking",
+        "lifetime_max_phys_footprint_bytes": 6357544,
+        "phys_footprint_bytes": 6062584,
+        "pid": 51719,
+        "ppid": 1,
+        "responsible_pid": 39153,
+        "rss_bytes": 14712832,
+        "system_time_ns": 314979,
+        "threads": 6,
+        "user_time_ns": 575647
+      },
+      {
+        "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+        "lifetime_max_phys_footprint_bytes": 28607136,
+        "phys_footprint_bytes": 20972192,
+        "pid": 51727,
+        "ppid": 1,
+        "responsible_pid": 39153,
+        "rss_bytes": 32047104,
+        "system_time_ns": 420693,
+        "threads": 5,
+        "user_time_ns": 845181
+      },
+      {
+        "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+        "lifetime_max_phys_footprint_bytes": 27476616,
+        "phys_footprint_bytes": 19792520,
+        "pid": 51728,
+        "ppid": 1,
+        "responsible_pid": 39153,
+        "rss_bytes": 31752192,
+        "system_time_ns": 331583,
+        "threads": 5,
+        "user_time_ns": 684299
+      },
+      {
+        "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+        "lifetime_max_phys_footprint_bytes": 27607688,
+        "phys_footprint_bytes": 19923592,
+        "pid": 51729,
+        "ppid": 1,
+        "responsible_pid": 39153,
+        "rss_bytes": 31997952,
+        "system_time_ns": 327629,
+        "threads": 5,
+        "user_time_ns": 660456
+      }
+    ],
+    "shared_memory_note": "Per-process RSS and physical footprint sums can double-count shared WebKit mappings."
+  }
+}

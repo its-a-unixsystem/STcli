@@ -1,0 +1,315 @@
+{
+  "assertions": {
+    "digest_bound_asset_loaded": true,
+    "ephemeral_storage": true,
+    "file_denials": true,
+    "hostile_document_denied": true
+  },
+  "asset_positive_control": {
+    "asset_natural_width": 128,
+    "cookie": "",
+    "denied_navigations": [],
+    "external_frame_count": 0,
+    "main_url": "stcli-probe://render/document.html",
+    "marker_state": null,
+    "nested_marker_count": 0,
+    "scheme_requests": [
+      "stcli-probe://render/document.html",
+      "stcli-probe://render/assets/emblem.png"
+    ],
+    "webcontent_terminated": false
+  },
+  "card": {
+    "height": 600,
+    "observations": {
+      "asset_natural_width": 0,
+      "cookie": "",
+      "denied_navigations": [],
+      "external_frame_count": 0,
+      "main_url": "stcli-probe://render/card.html",
+      "marker_state": null,
+      "nested_marker_count": 0,
+      "scheme_requests": [
+        "stcli-probe://render/card.html"
+      ],
+      "webcontent_terminated": false
+    },
+    "png_bytes": 1160106,
+    "width": 800
+  },
+  "child_sandbox_checks": [
+    {
+      "allowed": false,
+      "operation": "file-read-data",
+      "path": "/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-host-sentinel-0xi4d8mz",
+      "pid": 51717,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-write-data",
+      "path": "/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-host-sentinel-0xi4d8mz",
+      "pid": 51717,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-read-data",
+      "path": "/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-host-sentinel-0xi4d8mz",
+      "pid": 51718,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-write-data",
+      "path": "/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-host-sentinel-0xi4d8mz",
+      "pid": 51718,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-read-data",
+      "path": "/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-host-sentinel-0xi4d8mz",
+      "pid": 51719,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-write-data",
+      "path": "/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-host-sentinel-0xi4d8mz",
+      "pid": 51719,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-read-data",
+      "path": "/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-host-sentinel-0xi4d8mz",
+      "pid": 51727,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-write-data",
+      "path": "/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-host-sentinel-0xi4d8mz",
+      "pid": 51727,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-read-data",
+      "path": "/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-host-sentinel-0xi4d8mz",
+      "pid": 51728,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-write-data",
+      "path": "/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-host-sentinel-0xi4d8mz",
+      "pid": 51728,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-read-data",
+      "path": "/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-host-sentinel-0xi4d8mz",
+      "pid": 51729,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-write-data",
+      "path": "/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-host-sentinel-0xi4d8mz",
+      "pid": 51729,
+      "result": 1
+    }
+  ],
+  "cleanup": {
+    "container_removed": false,
+    "exit_code": 0,
+    "forced_kill": false,
+    "remaining_attributed_processes": [],
+    "seconds": 0.01191950001521036,
+    "stderr": ""
+  },
+  "experiment": "macos-webkit",
+  "helper_sandbox_checks": [
+    {
+      "allowed": false,
+      "operation": "file-read-data",
+      "path": "/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-host-sentinel-0xi4d8mz",
+      "pid": 51717,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-write-data",
+      "path": "/var/folders/lh/g84g_4qj5zqfrwngj1h2mv7m0000gn/T/stcli-host-sentinel-0xi4d8mz",
+      "pid": 51717,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-read-data",
+      "path": "/Users/thomas/.zshrc",
+      "pid": 51717,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-write-data",
+      "path": "/Users/thomas/.zshrc",
+      "pid": 51717,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-read-data",
+      "path": "/Users/thomas/.ssh/config",
+      "pid": 51717,
+      "result": 1
+    },
+    {
+      "allowed": false,
+      "operation": "file-write-data",
+      "path": "/Users/thomas/.ssh/config",
+      "pid": 51717,
+      "result": 1
+    }
+  ],
+  "hostile_document": {
+    "asset_natural_width": 0,
+    "cookie": "",
+    "denied_navigations": [
+      "about:blank",
+      "data:text/html,nested-data-marker",
+      "about:blank",
+      "chrome://version",
+      "http://127.0.0.1:53907/json/version",
+      "ws://127.0.0.1:53907/devtools/browser/control",
+      "http://127.0.0.1:53907/object-marker",
+      "http://127.0.0.1:53907/embed-marker",
+      "http://127.0.0.1:53907/redirect-marker"
+    ],
+    "external_frame_count": 4,
+    "listener_requests": [],
+    "main_url": "stcli-probe://render/hostile.html",
+    "marker_state": "original",
+    "nested_marker_count": 0,
+    "scheme_requests": [
+      "stcli-probe://render/hostile.html"
+    ],
+    "webcontent_terminated": false
+  },
+  "network_authority": {
+    "document_level": "Content rules plus navigation delegate deny external document requests.",
+    "os_level": "com.apple.security.network.client is mandatory for WKWebView and permits outbound connections from the helper process."
+  },
+  "positive_controls": {
+    "host_file_readable_outside": true,
+    "loopback_listener_outside": true,
+    "loopback_port": 53907
+  },
+  "process_snapshot": {
+    "aggregate_phys_footprint_bytes": 212504776,
+    "aggregate_rss_bytes": 272613376,
+    "aggregate_threads": 54,
+    "attribution_limit": "Timing correlation can over-attribute unrelated WebKit services created during the controlled two-second window; shared service reuse can under-attribute.",
+    "attribution_method": "parent tree plus controlled-run timing correlation against pre-launch baseline",
+    "process_count": 6,
+    "rows": [
+      {
+        "command": "/Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/webkit_helper/build/RichContentWebKitProbe.app/Contents/MacOS/RichContentWebKitProbe --worker --fixtures-dir /Users/thomas/src/STcli/crates/stcli-tui/examples/rich_content_probe/fixtures",
+        "lifetime_max_phys_footprint_bytes": 81265624,
+        "phys_footprint_bytes": 65930176,
+        "pid": 51717,
+        "ppid": 51692,
+        "responsible_pid": 39153,
+        "rss_bytes": 118833152,
+        "system_time_ns": 1980444,
+        "threads": 19,
+        "user_time_ns": 7960035
+      },
+      {
+        "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU",
+        "lifetime_max_phys_footprint_bytes": 91538176,
+        "phys_footprint_bytes": 79823712,
+        "pid": 51718,
+        "ppid": 1,
+        "responsible_pid": 39153,
+        "rss_bytes": 43270144,
+        "system_time_ns": 1181747,
+        "threads": 14,
+        "user_time_ns": 1442555
+      },
+      {
+        "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking",
+        "lifetime_max_phys_footprint_bytes": 6357544,
+        "phys_footprint_bytes": 6062584,
+        "pid": 51719,
+        "ppid": 1,
+        "responsible_pid": 39153,
+        "rss_bytes": 14712832,
+        "system_time_ns": 314979,
+        "threads": 6,
+        "user_time_ns": 575647
+      },
+      {
+        "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+        "lifetime_max_phys_footprint_bytes": 28607136,
+        "phys_footprint_bytes": 20972192,
+        "pid": 51727,
+        "ppid": 1,
+        "responsible_pid": 39153,
+        "rss_bytes": 32047104,
+        "system_time_ns": 420693,
+        "threads": 5,
+        "user_time_ns": 845181
+      },
+      {
+        "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+        "lifetime_max_phys_footprint_bytes": 27476616,
+        "phys_footprint_bytes": 19792520,
+        "pid": 51728,
+        "ppid": 1,
+        "responsible_pid": 39153,
+        "rss_bytes": 31752192,
+        "system_time_ns": 331583,
+        "threads": 5,
+        "user_time_ns": 684299
+      },
+      {
+        "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+        "lifetime_max_phys_footprint_bytes": 27607688,
+        "phys_footprint_bytes": 19923592,
+        "pid": 51729,
+        "ppid": 1,
+        "responsible_pid": 39153,
+        "rss_bytes": 31997952,
+        "system_time_ns": 327629,
+        "threads": 5,
+        "user_time_ns": 660456
+      }
+    ],
+    "shared_memory_note": "Per-process RSS and physical footprint sums can double-count shared WebKit mappings."
+  },
+  "storage": {
+    "after_job_a": [
+      ".com.apple.containermanagerd.metadata.plist",
+      "Data/.CFUserTextEncoding",
+      "Data/Library/Preferences/com.apple.ExtensionsPreferences.ShareMenu.plist",
+      "Data/Library/WebKit/ContentRuleLists/ContentRuleList-dev.stcli.rich-content-webkit-probe"
+    ],
+    "after_job_b": [
+      ".com.apple.containermanagerd.metadata.plist",
+      "Data/.CFUserTextEncoding",
+      "Data/Library/Preferences/com.apple.ExtensionsPreferences.ShareMenu.plist",
+      "Data/Library/WebKit/ContentRuleLists/ContentRuleList-dev.stcli.rich-content-webkit-probe"
+    ],
+    "before": [
+      ".com.apple.containermanagerd.metadata.plist"
+    ],
+    "job_a_cookie": "",
+    "job_b_cookie": "",
+    "persistent_cookie_cache_files": []
+  }
+}

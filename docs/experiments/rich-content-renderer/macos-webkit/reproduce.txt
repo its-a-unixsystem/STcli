@@ -1,0 +1,67 @@
+macOS App Sandbox + WKWebView renderer evaluation - 2026-09-06
+
+Goal:
+Evaluate a disposable signed App Sandbox helper. This is evidence, not production integration.
+
+Machine and versions:
+sw_vers                         # macOS 26.4.1 (25E253)
+uname -m                        # arm64
+git rev-parse HEAD              # db14f10f9e9da18a676cdb361b56c79fcb26708a
+rustc --version                 # rustc 1.89.0 (29483883e 2025-08-04)
+python3 --version                # Python 3.14.7
+/usr/bin/swiftc --version        # Apple Swift 6.2.4, target arm64-apple-macosx26.0
+xcrun --show-sdk-version         # 26.2
+kitty --version                  # kitty 0.48.2
+
+Build and helper gate:
+cd crates/stcli-tui/examples/rich_content_probe/webkit_helper
+./build.sh
+python3 -c 'import base64,subprocess,pathlib; p=pathlib.Path("../fixtures/card.html"); subprocess.run(["build/RichContentWebKitProbe.app/Contents/MacOS/RichContentWebKitProbe","--self-test","--fixtures-dir",str(p.parent.resolve()),"--self-test-document-base64",base64.b64encode(p.read_bytes()).decode()],check=True)'
+Observed: self_test=ok, PNG dimensions valid, WebContent stayed alive, external request blocked, distinct WKWebView instances.
+
+The helper cannot read repository fixture paths under App Sandbox. The unsandboxed controller therefore sends fixture bytes over the bounded JSON-lines request channel. --fixtures-dir remains present for protocol compatibility but is not an authority grant.
+
+Isolation and measurements:
+python3 crates/stcli-tui/examples/rich_content_probe/webkit_evaluate.py --isolation --fixtures-dir crates/stcli-tui/examples/rich_content_probe/fixtures --evidence docs/experiments/rich-content-renderer/macos-webkit
+python3 crates/stcli-tui/examples/rich_content_probe/webkit_evaluate.py --measure --fixtures-dir crates/stcli-tui/examples/rich_content_probe/fixtures --evidence docs/experiments/rich-content-renderer/macos-webkit
+
+Observed isolation:
+- Effective entitlements are exactly app-sandbox plus network.client.
+- Controller positive controls read the owned host sentinel and reached the owned loopback listener.
+- sandbox_check denied helper and attributed WebKit service reads/writes of the sentinel.
+- Hostile marker remained original, nested marker count was zero, and the listener received zero document requests.
+- Digest-bound asset bytes supplied by the controller and served through `stcli-probe://` loaded at naturalWidth=128.
+- The unchanged card's direct HTTPS emblem did not load. Fixtures were not rewritten; renderer documents intentionally have no direct web fetch.
+- Two sequential documents returned empty cookies and created no persistent cookie/cache marker.
+- App Sandbox `network.client` remains process-level outbound authority; document filtering does not remove it. ADR 0010's broker is for Extension `fetch` and secondary inference, while renderer assets are verified/content-addressed bytes supplied by the trusted controller over the local scheme.
+
+Observed bounds and resources:
+- Oversized HTML, single asset, aggregate assets, and output height returned their bounded errors.
+- SIGTERM ended the helper in 0.00162 s, under 750 ms.
+- Endpoint aggregate physical footprint was 418,108,048 bytes and ps RSS was 490,569,728 bytes. Both sums may double-count shared mappings. This footprint is accepted for the macOS helper experiment.
+- Aggregate attributed threads were 64, below 256.
+- Cold full paths were 0.654, 0.359, and 0.311 s. Warm medians/maxima are in macos-webkit-measurements.json.
+- No cgroup-equivalent memory, CPU, or task enforcement was available; resource use is measured rather than enforced for this CLI experiment.
+
+TUI build:
+PATH="$HOME/.rustup/toolchains/1.89.0-aarch64-apple-darwin/bin:$PATH" cargo build -p stcli-tui --example rich_content_probe --locked
+
+Real Kitty terminal:
+kitty --listen-on unix:/tmp/stcli-wk-kit -o allow_remote_control=yes -o background_opacity=1
+target/debug/examples/rich_content_probe --graphics auto --renderer-kind webkit --renderer crates/stcli-tui/examples/rich_content_probe/webkit_helper/build/RichContentWebKitProbe.app/Contents/MacOS/RichContentWebKitProbe --evidence docs/experiments/rich-content-renderer/macos-webkit/runtime
+
+Sent PageDown, PageUp, p, p, s, s, d, r, 3, 1, p, p, q through the dedicated Kitty socket. The graphical card and native popup were captured. Kitty direct-PNG transfer acknowledged 1,136,183 PNG bytes / 1,518,269 protocol bytes in 0.2528 s after flush. A worker SIGKILL left the TUI responsive to r and q.
+
+Fallbacks:
+target/debug/examples/rich_content_probe --graphics off --renderer-kind webkit --renderer /definitely-missing
+target/debug/examples/rich_content_probe --graphics auto --renderer-kind webkit --renderer /definitely-missing
+Observed readable graphics-off and missing-renderer states; graphics-off did not launch the helper. The non-TTY shell could not enable raw mode, so non-graphics-terminal proof is limited to the explicit graphics-off real-Kitty path and the existing unchanged capability fallback.
+
+Cleanup:
+After q, pgrep found no RichContentWebKitProbe or current rich_content_probe process. The helper container was removed by the evaluator. OS-managed shared WebKit services were not killed. Dedicated terminal evidence screenshots used Screen Recording permission; WKWebView takeSnapshot itself ran offscreen without Screen Recording permission or a visible app window.
+
+Distribution reality:
+- The terminal directly execs the signed app-bundle Mach-O without an IDE. The experiment uses an ad-hoc hardened-runtime signature, and direct terminal launch is the accepted model. Gatekeeper/Developer ID/notarization are relevant only to normal end-user distribution, which is outside this experiment. WebKit is OS-provided and OS-updated. AppKit requires a logged-in GUI/WindowServer session, but no foreground or visible helper window was required. LSMinimumSystemVersion declares 13.0; only macOS 26.4.1 arm64 was exercised.
+
+Verdict:
+- Functionally viable experiment under the clarified decisions. The footprint and direct CLI launch of the ad-hoc-signed bundle Mach-O are accepted. Renderer documents deliberately deny direct web fetches. ADR 0010 Brokered HTTPS Egress is reserved for Extension `fetch` and secondary-inference/provider calls; the renderer instead ingests trusted-controller-supplied, verified/content-addressed asset bytes over `stcli-probe://`. The unchanged external HTTPS emblem is consequently a known asset-policy limitation, not a failed proxy requirement. Production integration remains a separate decision.

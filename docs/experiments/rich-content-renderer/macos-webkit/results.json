@@ -1,0 +1,29 @@
+{
+  "backend_approved": true,
+  "criteria": {
+    "ac1_parent_child_file_denials": true,
+    "ac2_ephemeral_storage": true,
+    "ac3_hostile_document_denied": true,
+    "ac4_snapshot_and_resize": true,
+    "ac5_bounds": true,
+    "memory_reference": "accepted_for_this_experiment",
+    "thread_ceiling": true
+  },
+  "decision_required": "None for the measured footprint or terminal launch model. The residual network entitlement is documented as an OS-level WebKit prerequisite; it is not a grant to rendered documents.",
+  "distribution_gap": "None for the experiment's CLI launch model: direct terminal execution is sufficient. Developer ID signing and notarization would be required only for normal end-user distribution.",
+  "evidence": [
+    "macos-webkit-entitlements.json",
+    "macos-webkit-isolation.json",
+    "macos-webkit-measurements.json"
+  ],
+  "experiment": "macos-webkit",
+  "fidelity_gap": "The unchanged card fixture references an external HTTPS emblem. The renderer intentionally does not fetch arbitrary remote resources; only explicit digest-bound resources are served. This is a known policy limitation, not a host-isolation failure.",
+  "machine_conditions_met": true,
+  "network_policy": {
+    "renderer_documents": "No arbitrary document network. JavaScript, external subresources, redirects, and non-stcli-probe navigations are denied.",
+    "approved_assets": "Verified/content-addressed asset bytes are supplied by the trusted controller and served to the document over the local stcli-probe:// scheme; WebKit does not fetch their original URLs.",
+    "broker_scope": "ADR 0010 Brokered HTTPS Egress covers deliberate Extension fetch and secondary-inference/provider calls. Rich-content renderer documents do not receive that capability or direct web fetches.",
+    "os_residual": "App Sandbox requires com.apple.security.network.client for WKWebView; the helper retains process-level outbound capability even while the document layer is denied network access."
+  },
+  "verdict": "functionally viable experiment; terminal launch and measured footprint accepted; retain text fallback until production integration is separately approved"
+}

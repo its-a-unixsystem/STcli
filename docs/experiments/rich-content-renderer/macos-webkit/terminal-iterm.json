@@ -1,0 +1,9 @@
+{
+  "cell_height": 0,
+  "cell_width": 0,
+  "graphics_protocol": "Kitty direct PNG",
+  "reason": "terminal did not acknowledge Kitty graphics within 500 ms",
+  "supported": false,
+  "terminal": "iTerm.app",
+  "verdict": "The TUI runs with its readable text fallback; the current rich-image path is not supported in iTerm."
+}

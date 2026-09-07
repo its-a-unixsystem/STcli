@@ -1,0 +1,10 @@
+{
+  "ack_seconds_after_flush": 0.2527642500353977,
+  "acknowledged": true,
+  "experiment": "ticket-01",
+  "image_id": 918273,
+  "mode": "terminal-transfer",
+  "png_bytes": 1136183,
+  "protocol_bytes": 1518269,
+  "write_flush_seconds": 0.03792979195713997
+}
