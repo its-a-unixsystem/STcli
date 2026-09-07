@@ -10,7 +10,8 @@ use stcli_core::{
     ArtifactKind, ArtifactRecord, AttemptStatus, BranchHistory, BranchProjection,
     CHAT_COMPLETION_CHARACTER_ID, CandidateProjection, ChatRole, ContentHash,
     DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID, EngineCommand, EngineInspection, EngineQuery, EngineResult,
-    EntityId, Persona, PersonaStore, PresetPatch, PromptPreset, ProviderEvent, ProviderSettings,
+    EntityId, InteractionControl, InteractionOutcome, InteractionSurface, InteractionValue,
+    Persona, PersonaStore, PresetPatch, PromptPreset, ProviderEvent, ProviderSettings,
     ProviderTemplate, RegexPlacement, SessionConfiguration, SessionSummary, StcliEngine,
     available_duplicated_session_name, clone_and_patch_preset, decode_artifact, set_credential,
     transform_preset_content, validate_provider_settings,
@@ -759,11 +760,148 @@ pub enum Popup {
     ProviderProfile(Box<ProviderProfileState>),
     ClonePreset(Box<ClonePresetState>),
     GenerationSettings(GenerationSettingsState),
+    ExtensionInteractions {
+        surfaces: Vec<stcli_core::InteractionSurface>,
+        selected: usize,
+    },
+    InteractionForm(Box<InteractionFormState>),
     Personas(Box<PersonasState>),
     PersonaEditor(Box<PersonaEditorState>),
     ImportPersonas(Box<ImportPersonasState>),
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum InteractionDraftValue {
+    Boolean(bool),
+    Number(String),
+    Text(String),
+    Choice(InteractionValue),
+}
+
+#[derive(Clone, Debug)]
+pub struct InteractionDraft {
+    pub target: ContentHash,
+    pub original: Option<InteractionValue>,
+    pub value: InteractionDraftValue,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct InteractionFormState {
+    pub surface: InteractionSurface,
+    pub drafts: Vec<InteractionDraft>,
+    pub focused: usize,
+    pub cursor_position: usize,
+    pub scroll: usize,
+    pub notice: Option<String>,
+    pub output: Option<String>,
+    pub stale: bool,
+}
+
+#[derive(Clone, Debug)]
+struct PendingInteraction {
+    session_id: EntityId,
+    branch_id: Option<EntityId>,
+    surface_id: ContentHash,
+    kind: &'static str,
+}
+impl InteractionFormState {
+    fn new(surface: InteractionSurface) -> Self {
+        let drafts = surface
+            .groups
+            .iter()
+            .flat_map(|group| group.fields.iter())
+            .map(|field| InteractionDraft {
+                target: field.target.clone(),
+                original: field.value.clone(),
+                value: match (&field.control, &field.value) {
+                    (InteractionControl::Boolean, Some(InteractionValue::Boolean(value))) => {
+                        InteractionDraftValue::Boolean(*value)
+                    }
+                    (InteractionControl::Number, Some(InteractionValue::Number(value))) => {
+                        InteractionDraftValue::Number(value.to_string())
+                    }
+                    (InteractionControl::Choice, Some(value)) => {
+                        InteractionDraftValue::Choice(value.clone())
+                    }
+                    (_, Some(InteractionValue::Text(value))) => {
+                        InteractionDraftValue::Text(value.clone())
+                    }
+                    (InteractionControl::Boolean, _) => InteractionDraftValue::Boolean(false),
+                    (InteractionControl::Number, _) => InteractionDraftValue::Number(String::new()),
+                    (InteractionControl::Choice, _) => InteractionDraftValue::Choice(
+                        field
+                            .choices
+                            .first()
+                            .map(|choice| choice.value.clone())
+                            .unwrap_or_else(|| InteractionValue::Text(String::new())),
+                    ),
+                    _ => InteractionDraftValue::Text(String::new()),
+                },
+                error: field.error.clone(),
+            })
+            .collect();
+        Self {
+            surface,
+            drafts,
+            focused: 0,
+            cursor_position: 0,
+            scroll: 0,
+            notice: None,
+            output: None,
+            stale: false,
+        }
+    }
+
+    pub fn dirty(&self) -> bool {
+        self.drafts
+            .iter()
+            .any(|draft| Self::draft_value(draft).as_ref().ok() != Some(&draft.original))
+    }
+
+    fn draft_value(draft: &InteractionDraft) -> Result<Option<InteractionValue>, String> {
+        match &draft.value {
+            InteractionDraftValue::Boolean(value) => Ok(Some(InteractionValue::Boolean(*value))),
+            InteractionDraftValue::Text(value) => Ok(Some(InteractionValue::Text(value.clone()))),
+            InteractionDraftValue::Choice(value) => Ok(Some(value.clone())),
+            InteractionDraftValue::Number(value) => {
+                let parsed = value
+                    .trim()
+                    .parse::<serde_json::Number>()
+                    .map_err(|_| "Enter a valid number".to_owned())?;
+                Ok(Some(InteractionValue::Number(parsed)))
+            }
+        }
+    }
+
+    pub(crate) fn item_count(&self) -> usize {
+        self.drafts.len() + 2 + self.surface.actions.len()
+    }
+
+    fn field(&self, index: usize) -> Option<&stcli_core::InteractionField> {
+        self.surface
+            .groups
+            .iter()
+            .flat_map(|group| group.fields.iter())
+            .nth(index)
+    }
+
+    fn field_mut_error(&mut self, target: &ContentHash, error: Option<String>) {
+        if let Some(draft) = self.drafts.iter_mut().find(|draft| &draft.target == target) {
+            draft.error = error;
+        }
+    }
+
+    fn focus(&mut self, index: usize) {
+        self.focused = index.min(self.item_count().saturating_sub(1));
+        self.cursor_position = match self.drafts.get(self.focused).map(|draft| &draft.value) {
+            Some(InteractionDraftValue::Number(value) | InteractionDraftValue::Text(value)) => {
+                value.chars().count()
+            }
+            _ => 0,
+        };
+    }
+}
 #[derive(Clone, Debug)]
 pub struct Toast {
     pub message: String,
@@ -855,6 +993,7 @@ pub struct App {
     pending_directive_warnings: Vec<String>,
     pending_generation_settings_update: bool,
     pending_branch_creation: bool,
+    pending_interaction: Option<PendingInteraction>,
 }
 
 impl App {
@@ -897,6 +1036,7 @@ impl App {
             pending_generation_settings_update: false,
             pending_preset_toggle: None,
             pending_branch_creation: false,
+            pending_interaction: None,
         };
         app.reload_sessions()?;
         if let Some(session_id) = direct_session
@@ -1297,8 +1437,16 @@ impl App {
             KeyCode::Char('b') => return self.create_branch_from_focus(),
             KeyCode::Char('B') => self.open_branch_popup(),
             KeyCode::Char('s') => self.open_generation_settings(),
+            KeyCode::Char('E') => return self.open_extension_interactions(),
             KeyCode::Char('p') => self.open_provider_popup(ModalTarget::Chat),
             KeyCode::Char('P') => self.open_preset_popup(ModalTarget::Chat),
+            KeyCode::Char('e') => {
+                if let Some(turn_id) = self.current_turn_id()
+                    && self.current_candidate_id().is_some()
+                {
+                    return Effect::Start(EngineCommand::Continue { turn_id });
+                }
+            }
             KeyCode::Char('c') => {
                 if let Some(content) = self.focused_content() {
                     return Effect::Copy(content.to_owned());
@@ -1307,13 +1455,6 @@ impl App {
             KeyCode::Char('r') => {
                 if let Some(turn_id) = self.current_turn_id() {
                     return Effect::Start(EngineCommand::Regenerate { turn_id });
-                }
-            }
-            KeyCode::Char('e') => {
-                if let Some(turn_id) = self.current_turn_id()
-                    && self.current_candidate_id().is_some()
-                {
-                    return Effect::Start(EngineCommand::Continue { turn_id });
                 }
             }
             KeyCode::Char('x') => return self.delete_focused(),
@@ -1368,12 +1509,54 @@ impl App {
                     }
                 }
                 Popup::ImportPersonas(state) => self.popup = Some(Popup::Personas(state.manager)),
+                Popup::ExtensionInteractions { .. } => self.popup = None,
+                Popup::InteractionForm(state) => {
+                    let session_id = state.surface.session_id;
+                    let branch_id = state.surface.branch_id;
+                    match self.engine.inspect(EngineQuery::ExtensionInteractions {
+                        session_id,
+                        branch_id,
+                    }) {
+                        Ok(EngineInspection::ExtensionInteractions(surfaces)) => {
+                            self.popup = Some(Popup::ExtensionInteractions {
+                                surfaces,
+                                selected: 0,
+                            });
+                        }
+                        Ok(_) => self.show_error("Unexpected Extension interaction response"),
+                        Err(error) => self.show_error(error.to_string()),
+                    }
+                }
                 _ => {}
             }
             return Effect::None;
         }
         match &mut popup {
             Popup::Help => {}
+            Popup::ExtensionInteractions { surfaces, selected } => match key.code {
+                KeyCode::Up | KeyCode::Char('k') => *selected = selected.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    *selected = (*selected + 1).min(surfaces.len().saturating_sub(1));
+                }
+                KeyCode::Enter => {
+                    if let Some(surface) = surfaces.get(*selected).cloned() {
+                        self.popup = Some(Popup::InteractionForm(Box::new(
+                            InteractionFormState::new(surface),
+                        )));
+                        return Effect::None;
+                    }
+                }
+                _ => {}
+            },
+            Popup::InteractionForm(state) => {
+                if self.pending_interaction.is_some() {
+                    state.notice =
+                        Some("Another Extension interaction is still pending".to_owned());
+                } else if let Some(effect) = self.handle_interaction_form_key(key, state) {
+                    self.popup = Some(Popup::InteractionForm(state.clone()));
+                    return effect;
+                }
+            }
             Popup::ConfirmExit => match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
                     if let Some(attempt_id) = self.running_attempt() {
@@ -2438,6 +2621,250 @@ impl App {
             Err(error) => self.show_error(error.to_string()),
             _ => unreachable!(),
         }
+    }
+
+    fn handle_interaction_form_key(
+        &mut self,
+        key: KeyEvent,
+        state: &mut InteractionFormState,
+    ) -> Option<Effect> {
+        let field_count = state.drafts.len();
+        let action_start = field_count + 1;
+        let cancel_index = action_start + state.surface.actions.len();
+        if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            state.focus(field_count);
+            return Some(self.submit_interaction_save(state));
+        }
+        match key.code {
+            KeyCode::Tab => {
+                state.focus((state.focused + 1) % state.item_count().max(1));
+                return None;
+            }
+            KeyCode::BackTab => {
+                state.focus(state.focused.checked_sub(1).unwrap_or(cancel_index));
+                return None;
+            }
+            KeyCode::Up if state.focused < field_count => {
+                state.focus(state.focused.saturating_sub(1));
+                return None;
+            }
+            KeyCode::Down if state.focused < field_count => {
+                state.focus((state.focused + 1).min(cancel_index));
+                return None;
+            }
+            _ => {}
+        }
+        if state.focused == field_count {
+            return (key.code == KeyCode::Enter).then(|| self.submit_interaction_save(state));
+        }
+        if state.focused >= action_start && state.focused < cancel_index {
+            if key.code != KeyCode::Enter {
+                return None;
+            }
+            if state.dirty() {
+                state.notice = Some("Save or discard edits before running this action".to_owned());
+                return None;
+            }
+            let action = &state.surface.actions[state.focused - action_start];
+            if !action.enabled {
+                state.notice = action.unavailable_reason.clone();
+                return None;
+            }
+            self.pending_interaction = Some(PendingInteraction {
+                session_id: state.surface.session_id,
+                branch_id: state.surface.branch_id,
+                surface_id: state.surface.id.clone(),
+                kind: "action",
+            });
+            state.notice = Some("Running action…".to_owned());
+            return Some(Effect::Execute(EngineCommand::SubmitExtensionInteraction {
+                session_id: state.surface.session_id,
+                branch_id: state.surface.branch_id,
+                extension_id: state.surface.extension_id.clone(),
+                surface_id: state.surface.id.clone(),
+                expected_revision: state.surface.revision.clone(),
+                submission: stcli_core::InteractionSubmission::Invoke {
+                    target: action.target.clone(),
+                },
+            }));
+        }
+        if state.focused == cancel_index && key.code == KeyCode::Enter {
+            let session_id = state.surface.session_id;
+            let branch_id = state.surface.branch_id;
+            if let Ok(EngineInspection::ExtensionInteractions(surfaces)) =
+                self.engine.inspect(EngineQuery::ExtensionInteractions {
+                    session_id,
+                    branch_id,
+                })
+            {
+                self.popup = Some(Popup::ExtensionInteractions {
+                    surfaces,
+                    selected: 0,
+                });
+            }
+            return Some(Effect::None);
+        }
+
+        let field = state.field(state.focused).cloned()?;
+        let draft = &mut state.drafts[state.focused];
+        draft.error = None;
+        match &mut draft.value {
+            InteractionDraftValue::Boolean(value) => {
+                if matches!(
+                    key.code,
+                    KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right
+                ) {
+                    *value = !*value;
+                }
+            }
+            InteractionDraftValue::Choice(value) => {
+                let direction = match key.code {
+                    KeyCode::Left => -1,
+                    KeyCode::Right | KeyCode::Char(' ') => 1,
+                    _ => 0,
+                };
+                if direction != 0 && !field.choices.is_empty() {
+                    let current = field
+                        .choices
+                        .iter()
+                        .position(|choice| choice.value == *value)
+                        .unwrap_or(0);
+                    let next = current
+                        .saturating_add_signed(direction)
+                        .min(field.choices.len() - 1);
+                    *value = field.choices[next].value.clone();
+                }
+            }
+            InteractionDraftValue::Number(value) | InteractionDraftValue::Text(value) => {
+                let multiline = field.control == InteractionControl::MultilineText;
+                let mut cursor = state.cursor_position.min(value.chars().count());
+                match key.code {
+                    KeyCode::Left => cursor = cursor.saturating_sub(1),
+                    KeyCode::Right => cursor = (cursor + 1).min(value.chars().count()),
+                    KeyCode::Home => cursor = 0,
+                    KeyCode::End => cursor = value.chars().count(),
+                    KeyCode::Backspace if cursor > 0 => {
+                        let start = char_byte_index(value, cursor - 1);
+                        let end = char_byte_index(value, cursor);
+                        value.replace_range(start..end, "");
+                        cursor -= 1;
+                    }
+                    KeyCode::Delete if cursor < value.chars().count() => {
+                        let start = char_byte_index(value, cursor);
+                        let end = char_byte_index(value, cursor + 1);
+                        value.replace_range(start..end, "");
+                    }
+                    KeyCode::Enter if multiline => {
+                        value.insert(char_byte_index(value, cursor), '\n');
+                        cursor += 1;
+                    }
+                    KeyCode::Enter => state.focus((state.focused + 1).min(cancel_index)),
+                    KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        value.insert(char_byte_index(value, cursor), character);
+                        cursor += 1;
+                    }
+                    _ => {}
+                }
+                state.cursor_position = cursor;
+            }
+        }
+        None
+    }
+
+    fn submit_interaction_save(&mut self, state: &mut InteractionFormState) -> Effect {
+        if state.stale {
+            state.notice =
+                Some("Close and reopen this form to refresh its stale revision".to_owned());
+            return Effect::None;
+        }
+        let mut edits = Vec::new();
+        for index in 0..state.drafts.len() {
+            let draft = &state.drafts[index];
+            let value = match InteractionFormState::draft_value(draft) {
+                Ok(Some(value)) => value,
+                Ok(None) => continue,
+                Err(error) => {
+                    let target = draft.target.clone();
+                    state.field_mut_error(&target, Some(error));
+                    return Effect::None;
+                }
+            };
+            if Some(&value) != draft.original.as_ref() {
+                let field = state.field(index).expect("draft field exists");
+                if field.constraints.integer
+                    && !matches!(&value, InteractionValue::Number(number) if number.as_i64().is_some() || number.as_u64().is_some())
+                {
+                    let target = draft.target.clone();
+                    state.field_mut_error(&target, Some("Enter a whole number".to_owned()));
+                    return Effect::None;
+                }
+                if let InteractionValue::Number(number) = &value {
+                    let number = number.as_f64().unwrap_or(f64::NAN);
+                    if field
+                        .constraints
+                        .minimum
+                        .as_ref()
+                        .and_then(serde_json::Number::as_f64)
+                        .is_some_and(|minimum| number < minimum)
+                        || field
+                            .constraints
+                            .maximum
+                            .as_ref()
+                            .and_then(serde_json::Number::as_f64)
+                            .is_some_and(|maximum| number > maximum)
+                    {
+                        let target = draft.target.clone();
+                        state.field_mut_error(
+                            &target,
+                            Some("Number is outside the allowed range".to_owned()),
+                        );
+                        return Effect::None;
+                    }
+                }
+                edits.push(stcli_core::InteractionEdit {
+                    target: draft.target.clone(),
+                    value,
+                });
+            }
+        }
+        self.pending_interaction = Some(PendingInteraction {
+            session_id: state.surface.session_id,
+            branch_id: state.surface.branch_id,
+            surface_id: state.surface.id.clone(),
+            kind: "save",
+        });
+        state.notice = Some("Saving…".to_owned());
+        Effect::Execute(EngineCommand::SubmitExtensionInteraction {
+            session_id: state.surface.session_id,
+            branch_id: state.surface.branch_id,
+            extension_id: state.surface.extension_id.clone(),
+            surface_id: state.surface.id.clone(),
+            expected_revision: state.surface.revision.clone(),
+            submission: stcli_core::InteractionSubmission::Save {
+                target: state.surface.save.target.clone(),
+                edits,
+            },
+        })
+    }
+
+    fn open_extension_interactions(&mut self) -> Effect {
+        let Some(history) = &self.history else {
+            return Effect::None;
+        };
+        match self.engine.inspect(EngineQuery::ExtensionInteractions {
+            session_id: history.session.session_id,
+            branch_id: Some(history.branch.branch_id),
+        }) {
+            Ok(EngineInspection::ExtensionInteractions(surfaces)) => {
+                self.popup = Some(Popup::ExtensionInteractions {
+                    surfaces,
+                    selected: 0,
+                });
+            }
+            Ok(_) => self.show_error("Unexpected Extension interaction response"),
+            Err(error) => self.show_error(error.to_string()),
+        }
+        Effect::None
     }
     fn open_provider_popup(&mut self, return_to: ModalTarget) {
         let selected_name = match &return_to {
@@ -4203,6 +4630,91 @@ impl App {
                 }
                 true
             }
+            Ok(EngineResult::ExtensionInteraction(result)) => {
+                let pending = self.pending_interaction.take();
+                let same_context = pending.as_ref().is_some_and(|pending| {
+                    pending.session_id == result.surface.session_id
+                        && pending.branch_id == result.surface.branch_id
+                        && pending.surface_id == result.surface.id
+                });
+                if !same_context {
+                    return false;
+                }
+                if let Err(error) = self.reload_history() {
+                    self.show_error(error.to_string());
+                }
+                let open_same_form = matches!(
+                    &self.popup,
+                    Some(Popup::InteractionForm(state)) if state.surface.id == result.surface.id
+                );
+                match &result.outcome {
+                    InteractionOutcome::Saved {
+                        configuration_revision,
+                    } => {
+                        self.show_info(format!(
+                            "Saved Extension settings in Session Configuration Revision {}",
+                            short_revision(configuration_revision)
+                        ));
+                        if open_same_form {
+                            self.popup = Some(Popup::InteractionForm(Box::new(
+                                InteractionFormState::new(result.surface.clone()),
+                            )));
+                        }
+                    }
+                    InteractionOutcome::Invoked { result: command } => {
+                        let failed = command.receipt.inference.iter().any(|receipt| {
+                            receipt.status != stcli_core::InferenceStatus::Completed
+                        });
+                        let output =
+                            command
+                                .receipt
+                                .effects
+                                .iter()
+                                .find_map(|effect| match effect {
+                                    stcli_core::PluginEffect::Observe { value } => value
+                                        .get("output")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(str::to_owned),
+                                    _ => None,
+                                });
+                        let message = if failed {
+                            "Extension action inference did not complete".to_owned()
+                        } else if output.as_deref().is_none_or(str::is_empty) {
+                            "Action completed without output".to_owned()
+                        } else {
+                            "Extension action completed".to_owned()
+                        };
+                        self.show_info(message);
+                        if open_same_form {
+                            let mut state = InteractionFormState::new(result.surface.clone());
+                            state.output = output;
+                            self.popup = Some(Popup::InteractionForm(Box::new(state)));
+                        }
+                    }
+                    InteractionOutcome::Rejected { reason } => {
+                        if open_same_form {
+                            let mut old = match self.popup.take() {
+                                Some(Popup::InteractionForm(state)) => *state,
+                                _ => unreachable!(),
+                            };
+                            for field in
+                                result.surface.groups.iter().flat_map(|group| &group.fields)
+                            {
+                                if field.error.is_some() {
+                                    old.field_mut_error(&field.target, field.error.clone());
+                                }
+                            }
+                            old.notice = Some(reason.clone());
+                            if reason.to_ascii_lowercase().contains("stale") {
+                                old.stale = true;
+                            }
+                            self.popup = Some(Popup::InteractionForm(Box::new(old)));
+                        }
+                        self.show_error(reason.clone());
+                    }
+                }
+                pending.is_some_and(|pending| pending.kind == "save")
+            }
             Ok(_) => {
                 self.popup = None;
                 match self.screen {
@@ -4222,6 +4734,7 @@ impl App {
             Err(error) => {
                 self.pending_branch_creation = false;
                 self.pending_generation_settings_update = false;
+                self.pending_interaction = None;
                 self.show_error(error);
                 false
             }
@@ -4390,7 +4903,9 @@ impl App {
                 | Popup::ClonePreset(_)
                 | Popup::GenerationSettings(_)
                 | Popup::PersonaEditor(_)
-                | Popup::ImportPersonas(_),
+                | Popup::ImportPersonas(_)
+                | Popup::ExtensionInteractions { .. }
+                | Popup::InteractionForm(_),
             ) => return,
             None => {}
         }
@@ -4460,6 +4975,12 @@ impl App {
             None => Effect::None,
         }
     }
+}
+fn char_byte_index(value: &str, position: usize) -> usize {
+    value
+        .char_indices()
+        .nth(position)
+        .map_or(value.len(), |(index, _)| index)
 }
 
 pub fn selected_candidate(turn: &stcli_core::EngineTurn) -> Option<&CandidateProjection> {

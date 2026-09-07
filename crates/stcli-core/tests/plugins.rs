@@ -12,6 +12,95 @@ use tempfile::tempdir;
 fn proof_directory() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/proof")
 }
+#[test]
+fn declared_interaction_schema_cannot_escape_its_package() {
+    use std::fs;
+
+    let directory = tempdir().unwrap();
+    let package = directory.path().join("package");
+    fs::create_dir(&package).unwrap();
+    fs::write(package.join("component.wasm"), b"component").unwrap();
+    fs::write(directory.path().join("outside.json"), b"{}").unwrap();
+    let digest = stcli_core::plugin_digest(b"component");
+    fs::write(
+        package.join("manifest.json"),
+        serde_json::to_vec(&json!({
+            "schema": "stcli.plugin-manifest/v1",
+            "id": "escape-proof",
+            "version": "1.0.0",
+            "engine": ">=0.1.0, <0.2.0",
+            "runtime": "wasm",
+            "component": "component.wasm",
+            "component_sha256": digest,
+            "dependencies": [],
+            "license": "MIT",
+            "subscriptions": [],
+            "prompt_slots": [],
+            "commands": [],
+            "macros": [],
+            "settings_schema": "../outside.json",
+            "requested_capabilities": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let error = PluginRegistry::new(directory.path().join("registry"))
+        .doctor(&package)
+        .unwrap_err();
+    assert!(matches!(error, PluginError::UnsafePath(path) if path == "../outside.json"));
+}
+#[cfg(feature = "scripting")]
+#[test]
+fn declared_interaction_projects_pins_without_losing_runtime_state() {
+    use stcli_core::{PluginRuntime, StateKey, VariableScope};
+
+    let package = PluginRegistry::new(tempdir().unwrap().path())
+        .doctor(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../extensions/memory"))
+        .unwrap();
+    assert_eq!(package.manifest.runtime, PluginRuntime::StBridge);
+    let grant = PluginGrant {
+        id: package.manifest.id.clone(),
+        version: package.manifest.version.clone(),
+        component_sha256: package.manifest.component_sha256.clone(),
+        capabilities: package.manifest.requested_capabilities.clone(),
+        settings: json!({"promptWords": 123}),
+        egress_allow_list: Vec::new(),
+        enabled: true,
+    };
+    let receipt = PluginHost::new(Default::default())
+        .execute(
+            &package,
+            &grant,
+            PluginInput {
+                event: PluginEvent::PrePrompt,
+                plugin_id: String::new(),
+                settings: json!({}),
+                context: json!({}),
+                payload: serde_json::Value::Null,
+                state: json!({"settings": {"promptWords": 9, "checkpoints": [{"sentinel": true}], "unknown": "kept"}}),
+                artifact: serde_json::Value::Null,
+                session: json!({"session_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}),
+            },
+        )
+        .unwrap();
+    assert_eq!(receipt.input.state["settings"]["promptWords"], 123);
+    assert_eq!(
+        receipt.input.state["settings"]["checkpoints"][0]["sentinel"],
+        true
+    );
+    assert_eq!(receipt.input.state["settings"]["unknown"], "kept");
+    assert!(receipt.effects.iter().any(|effect| matches!(
+        effect,
+        stcli_core::PluginEffect::StateWrite {
+            key: StateKey { scope: VariableScope::Local, name },
+            value,
+        } if name == "extension.memory.settings"
+            && value["promptWords"] == 123
+            && value["checkpoints"][0]["sentinel"] == true
+            && value["unknown"] == "kept"
+    )));
+}
 
 fn configuration(
     character_revision: stcli_core::ContentHash,

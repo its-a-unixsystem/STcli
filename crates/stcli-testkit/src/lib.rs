@@ -493,19 +493,20 @@ async fn broker_capture(
             entry.push_str(&value);
         }
     }
-    let mut state = state.data.lock().await;
-    state.requests.push(CapturedRequest {
-        method: method.to_string(),
-        path: uri.path().to_owned(),
-        query,
-        headers: captured_headers,
-        body,
-    });
-    let queued = state
-        .responses
-        .pop_front()
-        .expect("broker test server response queue is exhausted");
-    drop(state);
+    let queued = {
+        let mut state = state.data.lock().await;
+        state.requests.push(CapturedRequest {
+            method: method.to_string(),
+            path: uri.path().to_owned(),
+            query,
+            headers: captured_headers,
+            body,
+        });
+        state
+            .responses
+            .pop_front()
+            .expect("broker test server response queue is exhausted")
+    };
     let mut response = Response::builder()
         .status(
             StatusCode::from_u16(queued.status)

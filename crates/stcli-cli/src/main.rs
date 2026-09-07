@@ -2122,6 +2122,7 @@ fn emit_engine_result(output: OutputFormat, command: &str, result: &EngineResult
         EngineResult::Attempt(data) => emit(output, command, data),
         EngineResult::Branch(data) => emit(output, command, data),
         EngineResult::Configuration(data) => emit(output, command, data),
+        EngineResult::ExtensionInteraction(data) => emit(output, command, data),
         EngineResult::EditedCandidate(data) => emit(output, command, data),
         EngineResult::PromptOrderUpdated {
             artifact,

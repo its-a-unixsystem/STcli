@@ -30,7 +30,11 @@ fn default_packages_materialize_offline_and_idempotently() {
     assert!(nemo.inspection_enabled);
     assert!(!memory.inspection_enabled);
     assert_eq!(nemo.manifest.version.to_string(), "1.0.0");
-    assert_eq!(memory.manifest.version.to_string(), "1.0.0");
+    assert_eq!(memory.manifest.version.to_string(), "1.1.0");
+    assert_eq!(
+        memory.manifest.settings_schema.as_deref(),
+        Some("settings.schema.json")
+    );
 
     let EngineInspection::Plugins(second) = engine
         .inspect(EngineQuery::Plugins { plugin_id: None })
@@ -105,14 +109,21 @@ async fn default_materialization_never_rewrites_session_plugin_pins() {
     let database = directory.path().join("stcli.sqlite3");
     let engine = StcliEngine::new(&database);
     let EngineInspection::Plugins(plugins) = engine
-        .inspect(EngineQuery::Plugins {
-            plugin_id: Some(NEMO_ID.to_owned()),
-        })
+        .inspect(EngineQuery::Plugins { plugin_id: None })
         .unwrap()
     else {
         panic!("unexpected inspection");
     };
-    let nemo = plugins.into_iter().next().unwrap();
+    let nemo = plugins
+        .iter()
+        .find(|plugin| plugin.manifest.id == NEMO_ID)
+        .unwrap()
+        .clone();
+    let memory = plugins
+        .iter()
+        .find(|plugin| plugin.manifest.id == MEMORY_ID)
+        .unwrap()
+        .clone();
     let mut store = Store::open(&database).unwrap();
     let character = store
         .import_artifact(fixtures::minimal_card().as_bytes())
@@ -136,6 +147,20 @@ async fn default_materialization_never_rewrites_session_plugin_pins() {
         )
         .await
         .unwrap();
+    engine
+        .execute(
+            EngineCommand::AdoptExtension {
+                session_id: created.session.session_id,
+                id: memory.manifest.id,
+                version: "1.0.0".to_owned(),
+                digest: memory.manifest.component_sha256,
+                settings: serde_json::json!({"memoryFrozen": true}),
+                egress: Vec::new(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap_err();
     let before = match engine
         .inspect(EngineQuery::Configuration {
             session_id: created.session.session_id,

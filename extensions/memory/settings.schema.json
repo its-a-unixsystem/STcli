@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "providerProfile": {
+      "type": "string",
+      "default": "",
+      "title": "Provider profile",
+      "description": "Select the provider profile used for summary generation, or use the Session provider.",
+      "x-stcli-control": "choice",
+      "x-stcli-choice-source": "provider-profiles"
+    },
+    "memoryFrozen": {
+      "type": "boolean",
+      "default": false,
+      "title": "Freeze automatic refresh",
+      "description": "Disable automatic summary refresh. Summarize now remains available.",
+      "x-stcli-control": "boolean"
+    },
+    "prompt": {
+      "type": "string",
+      "default": "Ignore previous instructions. Summarize the most important facts and events in the story so far. If a summary already exists in your memory, use that as a base and expand with new facts. Limit the summary to {{words}} words or less. Your response should include nothing but the summary.",
+      "title": "Summary prompt",
+      "description": "Prompt used to generate the summary. {{words}} expands to the summary word target.",
+      "x-stcli-control": "multiline-text"
+    },
+    "promptWords": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "default": 200,
+      "title": "Summary word target",
+      "description": "Maximum number of words requested in the generated summary.",
+      "x-stcli-control": "number"
+    },
+    "overrideResponseLength": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "default": 0,
+      "title": "Response token limit",
+      "description": "Token limit for summary generation. 0 inherits the Session setting.",
+      "x-stcli-control": "number"
+    },
+    "maxMessagesPerRequest": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "default": 0,
+      "title": "Messages per request",
+      "description": "Maximum dialogue entries included in one summary request. 0 removes the entry cap.",
+      "x-stcli-control": "number"
+    },
+    "promptInterval": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "default": 10,
+      "title": "Entry interval",
+      "description": "Refresh after this many new dialogue entries. 0 disables this trigger.",
+      "x-stcli-control": "number"
+    },
+    "promptForceWords": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "default": 0,
+      "title": "Word threshold",
+      "description": "Refresh after this many new words. 0 disables this trigger.",
+      "x-stcli-control": "number"
+    },
+    "template": {
+      "type": "string",
+      "default": "[Summary: {{summary}}]",
+      "title": "Summary template",
+      "description": "Template injected into the prompt. {{summary}} expands to the saved summary.",
+      "x-stcli-control": "text"
+    },
+    "position": {
+      "type": "integer",
+      "enum": [0, 1, 2],
+      "default": 0,
+      "title": "Prompt position",
+      "description": "Select where the saved summary is injected.",
+      "x-stcli-control": "choice",
+      "x-stcli-choice-labels": ["After character definitions", "In chat", "Before character definitions"]
+    },
+    "role": {
+      "type": "integer",
+      "enum": [0, 1, 2],
+      "default": 0,
+      "title": "Prompt role",
+      "description": "Select the role used for the injected summary.",
+      "x-stcli-control": "choice",
+      "x-stcli-choice-labels": ["System", "User", "Assistant"]
+    },
+    "depth": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "default": 2,
+      "title": "In-chat depth",
+      "description": "Insertion depth when Prompt position is In chat.",
+      "x-stcli-control": "number"
+    }
+  },
+  "x-stcli-interaction": {
+    "schema": "stcli.interaction/v1",
+    "id": "settings",
+    "component_sha256": "sha256:113a5e468b3636b8d0af66954a9e557fac347e864dab386429f5aabfc758d30a",
+    "groups": [
+      {
+        "label": "Generation",
+        "help": "Choose how summaries are generated.",
+        "fields": ["providerProfile", "memoryFrozen", "prompt", "promptWords", "overrideResponseLength", "maxMessagesPerRequest"]
+      },
+      {
+        "label": "Automatic refresh",
+        "help": "Control when the Extension refreshes its summary automatically.",
+        "fields": ["promptInterval", "promptForceWords"]
+      },
+      {
+        "label": "Prompt injection",
+        "help": "Control how the saved summary enters future prompts.",
+        "fields": ["template", "position", "role", "depth"]
+      }
+    ],
+    "actions": [
+      {
+        "id": "summarize",
+        "label": "Summarize now",
+        "help": "Refresh this Branch using saved settings; bypasses automatic-refresh freeze.",
+        "command": "summarize",
+        "requires_branch": true,
+        "requires_completed_attempt": true,
+        "capabilities": ["register-command", "write-own-state", "secondary-inference"]
+      }
+    ]
+  }
+}

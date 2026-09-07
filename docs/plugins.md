@@ -312,17 +312,22 @@ control-flow-safe completion.
 
 ### Bundled Summarize (`memory`) Extension
 
-STcli installs the `memory` package offline but does not enable or adopt it automatically. Enable it
-for future Sessions with `stcli extension enable memory --version 1.0.0 --digest <digest>`, or adopt
-the exact installed pin into one Session with `stcli extension adopt --session <session> memory
---version 1.0.0 --digest <digest> --settings '<json>'`. This opt-in prevents unsolicited provider
-calls.
+STcli installs the `memory` 1.1.0 package offline but does not enable or adopt it automatically.
+Enable it for future Sessions with `stcli extension enable memory --version 1.1.0 --digest
+<digest>`, or adopt the exact installed pin into one Session with `stcli extension adopt --session
+<session> memory --version 1.1.0 --digest <digest> --settings '<json>'`. Existing Sessions pinned to
+1.0.0 stay pinned until an explicit `stcli plugin upgrade` to the installed 1.1.0 digest. This opt-in
+prevents unsolicited provider calls.
 
-Settings live at `extension_settings.memory`: `memoryFrozen` (`false`), `source` (`"main"`),
-`prompt`, `template` (`"[Summary: {{summary}}]"`), `position` (`0`), `role` (`0`), `depth` (`2`),
-`promptWords` (`200`), `promptInterval` (`10`), `promptForceWords` (`0`),
-`overrideResponseLength` (`0`), `maxMessagesPerRequest` (`0`), and `providerProfile` (`""`). An
-empty profile uses the Session provider; a nonempty value selects that named provider profile.
+The 1.1.0 package declares a native interaction form. In Chat history, press `E` and open
+**Summarize** to edit the provider profile, automatic-refresh freeze, prompt and template,
+word/entry/token limits, injection position and role, and in-chat depth. `source` is not used by the
+supported implementation and is not offered. `checkpoints` is runtime state and is never an
+editable field. **Summarize now** invokes the existing Branch command using saved settings; dirty
+drafts must be saved or discarded first.
+
+The provider profile value `""` uses the Session provider; a nonempty value selects that named
+provider profile. Missing profiles remain visible as invalid values instead of being replaced.
 
 Automatic refresh runs when either enabled threshold is met and `memoryFrozen` is false. Interval
 or word threshold `0` disables only that trigger. The newest chat entry is always excluded, and the
@@ -340,8 +345,9 @@ Recorded Plugin effects, state mutations, and inference receipts provide offline
 JavaScript component or provider.
 
 Compatibility is limited to the pinned SillyTavern Main API raw non-blocking builder. Extras,
-WebLLM, Classic/default builders, World Info scanning, visual settings UI, and Restore Previous are
-not included.
+WebLLM, Classic/default builders, World Info scanning, upstream browser-based settings builders,
+and Restore Previous are not included. Native forms work only for packages that declare the
+bounded interaction contract described below.
 
 Any other `SillyTavern.X` member access returns a no-op function that warns once per property
 name. Writes to `SillyTavern` properties warn once and are ignored.
@@ -374,6 +380,35 @@ Every plugin has a `manifest.json` file. The [manifest schema](../schemas/plugin
 | `generate_interceptor` | Optional JavaScript global function name for an `st-bridge` Extension. It requires the `generate-interceptor` subscription. Prompt read-back is inherent to the bridge runtime. |
 
 The engine validates the component digest before it runs the component. When the file and the digest do not match, the engine rejects the plugin.
+
+### Declared interaction surfaces
+
+An `st-bridge` package can opt into a frontend-neutral settings form by putting an
+`x-stcli-interaction` annotation in its `settings_schema`. The annotation schema is
+`stcli.interaction/v1`. It identifies ordered groups of property names and actions. Each property
+requires `type`, `default`, `title`, `description`, and `x-stcli-control`. Supported property types
+are `boolean`, `integer`, `number`, and `string`; supported controls are `boolean`, `number`,
+`text`, `multiline-text`, and `choice`. Numeric fields may declare `minimum` and `maximum`. Static
+choices use a scalar `enum` with a matching `x-stcli-choice-labels` array. A string choice may use
+`x-stcli-choice-source: "provider-profiles"`. `$ref`, composition, arbitrary validation keywords,
+selectors, callbacks, JavaScript expressions, and network schema resolution are rejected.
+
+Actions bind only to a command already declared in the manifest and receive fixed null arguments.
+The annotation lists the required manifest capabilities and whether a Branch or completed Primary
+Attempt is required. The engine checks the current pin, grant, Branch ownership, action
+availability, and scripting support before dispatch. Unavailable operations carry an explanatory
+reason; a form can still be inspected when its Extension is disabled.
+
+The engine returns opaque surface, field, save, action, and revision hashes. Frontends submit only
+typed scalar values against those targets. They cannot submit a property path, complete Extension
+object, selector, or executable code. A stale revision is rejected before any handler or durable
+operation runs. Frontends keep drafts locally until Save.
+
+Save merges only accepted declared properties into the exact Extension pin and creates or selects
+an immutable Session Configuration Revision. It does not overwrite `extension.<id>.settings`.
+During later live execution, declared pinned values overlay persisted declared values while unknown
+members such as Summary Checkpoints remain intact. Normal `saveSettingsDebounced()` writes still
+produce recorded namespaced state effects and do not create Session Configuration Revisions.
 
 ### Import a SillyTavern Extension
 

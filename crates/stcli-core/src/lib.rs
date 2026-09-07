@@ -8,6 +8,7 @@ pub mod engine;
 pub mod fixture;
 pub mod identity;
 pub mod inference;
+pub mod interaction;
 pub mod limits;
 pub mod lore;
 pub mod macros;
@@ -78,6 +79,11 @@ pub use inference::{
     InferencePolicy, InferenceReceipt, InferenceRequest, InferenceResponse, InferenceStatus,
     InferenceTransport, InferenceTransportError, ProviderInferenceTransport,
     StubInferenceTransport, validate_inference_receipt, validate_persisted_inference_receipt,
+};
+pub use interaction::{
+    InteractionAction, InteractionChoice, InteractionConstraints, InteractionControl,
+    InteractionEdit, InteractionField, InteractionGroup, InteractionOutcome, InteractionResult,
+    InteractionSubmission, InteractionSurface, InteractionValue,
 };
 pub use lore::{
     ActivatedLore, LoreDecision, LoreDecisionOutcome, LoreEngine, LoreEntry, LoreError,

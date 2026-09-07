@@ -355,6 +355,19 @@ impl PluginHost {
         }
         input.plugin_id = installed.manifest.id.clone();
         input.settings = grant.settings.clone();
+        if installed.manifest.runtime == PluginRuntime::StBridge
+            && let Some(declaration) = crate::interaction::load_interaction_declaration(installed)?
+        {
+            let persisted = input.state.get("settings").unwrap_or(&Value::Null);
+            let effective =
+                crate::interaction::effective_settings(&declaration, persisted, &grant.settings)?;
+            let state = input.state.as_object_mut().ok_or_else(|| {
+                PluginError::InvalidManifest(
+                    "st-bridge state input must be an object for declared interactions".to_owned(),
+                )
+            })?;
+            state.insert("settings".to_owned(), effective);
+        }
         if installed.manifest.runtime.is_wasm() {
             input.state = Value::Null;
         }
@@ -928,11 +941,15 @@ impl PluginRegistry {
         version: &Version,
         digest: &ContentHash,
     ) -> Result<Option<InstalledPlugin>, PluginError> {
-        Ok(self.list()?.into_iter().find(|plugin| {
-            plugin.manifest.id == id
-                && &plugin.manifest.version == version
-                && &plugin.manifest.component_sha256 == digest
-        }))
+        let directory = self
+            .root
+            .join(id)
+            .join(version.to_string())
+            .join(digest.to_string().replace(':', "-"));
+        if !directory.is_dir() {
+            return Ok(None);
+        }
+        self.doctor(&directory).map(Some)
     }
 
     pub fn remove(&self, id: &str) -> Result<bool, PluginError> {
@@ -1067,6 +1084,7 @@ fn validate_manifest(manifest: &PluginManifest, directory: &Path) -> Result<(), 
         let path = safe_child(directory, schema)?;
         let source = fs::read(&path).map_err(|source| PluginError::Read { path, source })?;
         decode_unique_json(&source).map_err(PluginError::Artifact)?;
+        crate::interaction::load_declaration(manifest, directory)?;
     }
 
     // Validate generate_interceptor field

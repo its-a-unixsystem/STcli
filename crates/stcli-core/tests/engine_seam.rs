@@ -672,6 +672,556 @@ async fn create_branch_command_records_fork_and_validates_lineage() {
     ));
 }
 
+#[cfg(feature = "scripting")]
+#[tokio::test]
+async fn summarize_interaction_exposes_declared_settings_and_action() {
+    // Regression test for ticket 02: settings must be editable without exposing checkpoints.
+    use stcli_core::{DEFAULT_MEMORY_EXTENSION_ID, InteractionControl};
+
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let engine = StcliEngine::new(&database);
+    let EngineInspection::Plugins(plugins) = engine
+        .inspect(EngineQuery::Plugins {
+            plugin_id: Some(DEFAULT_MEMORY_EXTENSION_ID.to_owned()),
+        })
+        .unwrap()
+    else {
+        panic!("memory package inventory");
+    };
+    let memory = plugins.into_iter().next().unwrap();
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let created = store
+        .create_session(configuration(character.revision_hash), 0)
+        .unwrap();
+    drop(store);
+    engine
+        .execute(
+            EngineCommand::AdoptExtension {
+                session_id: created.session.session_id,
+                id: memory.manifest.id,
+                version: memory.manifest.version.to_string(),
+                digest: memory.manifest.component_sha256,
+                settings: json!({"memoryFrozen": true}),
+                egress: Vec::new(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    let EngineInspection::ExtensionInteractions(surfaces) = engine
+        .inspect(EngineQuery::ExtensionInteractions {
+            session_id: created.session.session_id,
+            branch_id: Some(created.branch.branch_id),
+        })
+        .unwrap()
+    else {
+        panic!("interaction surfaces");
+    };
+    let surface = surfaces.into_iter().next().unwrap();
+    assert_eq!(surface.extension_id, DEFAULT_MEMORY_EXTENSION_ID);
+    assert_eq!(surface.package_version, "1.1.0");
+    assert_eq!(surface.groups.len(), 3);
+    assert!(
+        surface
+            .groups
+            .iter()
+            .flat_map(|group| &group.fields)
+            .any(|field| {
+                field.label == "Freeze automatic refresh"
+                    && field.control == InteractionControl::Boolean
+            })
+    );
+    assert!(
+        surface
+            .groups
+            .iter()
+            .flat_map(|group| &group.fields)
+            .all(|field| { field.label != "checkpoints" })
+    );
+    assert_eq!(surface.actions[0].label, "Summarize now");
+    assert!(!surface.actions[0].enabled);
+}
+#[cfg(feature = "scripting")]
+#[tokio::test]
+async fn summarize_interaction_save_creates_revision_and_rejects_stale_submission() {
+    // Regression test for ticket 02: saved settings create a revision without replacing state.
+    use stcli_core::{
+        DEFAULT_MEMORY_EXTENSION_ID, InteractionEdit, InteractionOutcome, InteractionSubmission,
+        InteractionValue, VariableScope,
+    };
+
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let engine = StcliEngine::new(&database);
+    let EngineInspection::Plugins(plugins) = engine
+        .inspect(EngineQuery::Plugins {
+            plugin_id: Some(DEFAULT_MEMORY_EXTENSION_ID.to_owned()),
+        })
+        .unwrap()
+    else {
+        panic!("memory package inventory");
+    };
+    let memory = plugins.into_iter().next().unwrap();
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let created = store
+        .create_session(configuration(character.revision_hash), 0)
+        .unwrap();
+    let mut state = store.state_transaction(created.session.session_id).unwrap();
+    state.set(
+        VariableScope::Local,
+        "extension.memory.settings",
+        json!({"checkpoints": [{"sentinel": true}], "unknown": "kept"}),
+        "memory",
+        "test",
+    );
+    store
+        .commit_state_transaction(EntityId::new(), state)
+        .unwrap();
+    drop(store);
+    engine
+        .execute(
+            EngineCommand::AdoptExtension {
+                session_id: created.session.session_id,
+                id: memory.manifest.id,
+                version: memory.manifest.version.to_string(),
+                digest: memory.manifest.component_sha256,
+                settings: json!({"memoryFrozen": true}),
+                egress: Vec::new(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let before = match engine
+        .inspect(EngineQuery::Configuration {
+            session_id: created.session.session_id,
+        })
+        .unwrap()
+    {
+        EngineInspection::Configuration(record) => record,
+        _ => panic!("configuration"),
+    };
+    let surface = match engine
+        .inspect(EngineQuery::ExtensionInteractions {
+            session_id: created.session.session_id,
+            branch_id: Some(created.branch.branch_id),
+        })
+        .unwrap()
+    {
+        EngineInspection::ExtensionInteractions(mut surfaces) => surfaces.pop().unwrap(),
+        _ => panic!("surface"),
+    };
+    let prompt_words = surface
+        .groups
+        .iter()
+        .flat_map(|group| &group.fields)
+        .find(|field| field.label == "Summary word target")
+        .unwrap()
+        .target
+        .clone();
+    let command = EngineCommand::SubmitExtensionInteraction {
+        session_id: created.session.session_id,
+        branch_id: Some(created.branch.branch_id),
+        extension_id: DEFAULT_MEMORY_EXTENSION_ID.to_owned(),
+        surface_id: surface.id.clone(),
+        expected_revision: surface.revision.clone(),
+        submission: InteractionSubmission::Save {
+            target: surface.save.target.clone(),
+            edits: vec![InteractionEdit {
+                target: prompt_words,
+                value: InteractionValue::Number(123.into()),
+            }],
+        },
+    };
+    let EngineResult::ExtensionInteraction(saved) =
+        engine.execute(command.clone(), |_| {}).await.unwrap()
+    else {
+        panic!("interaction result");
+    };
+    let InteractionOutcome::Saved {
+        configuration_revision,
+    } = &saved.outcome
+    else {
+        panic!("saved outcome");
+    };
+    assert_ne!(configuration_revision, &before.revision_hash);
+    let current = match engine
+        .inspect(EngineQuery::Configuration {
+            session_id: created.session.session_id,
+        })
+        .unwrap()
+    {
+        EngineInspection::Configuration(record) => record,
+        _ => panic!("configuration"),
+    };
+    assert_eq!(
+        current.configuration.plugins[0].settings["promptWords"],
+        123
+    );
+    let EngineResult::ExtensionInteraction(stale) = engine.execute(command, |_| {}).await.unwrap()
+    else {
+        panic!("interaction result");
+    };
+    assert!(matches!(stale.outcome, InteractionOutcome::Rejected { .. }));
+    let state = Store::open(&database)
+        .unwrap()
+        .state_transaction(created.session.session_id)
+        .unwrap();
+    let settings = &state
+        .get(VariableScope::Local, "extension.memory.settings")
+        .unwrap()
+        .value;
+    assert_eq!(settings["checkpoints"][0]["sentinel"], true);
+    assert_eq!(settings["unknown"], "kept");
+}
+#[cfg(feature = "scripting")]
+#[tokio::test]
+async fn summarize_interaction_action_uses_saved_settings_and_appends_checkpoints() {
+    // Regression test for ticket 02: native edits must affect the real action without losing checkpoints.
+    use parking_lot::Mutex;
+    use stcli_core::{
+        Config, DEFAULT_MEMORY_EXTENSION_ID, EgressBroker, InferenceBroker, InferenceTransport,
+        InferenceTransportError, InteractionEdit, InteractionOutcome, InteractionSubmission,
+        InteractionValue, ProviderResult, ProviderSettings, VariableScope,
+    };
+    use stcli_testkit::MockProvider;
+    use std::{collections::BTreeMap, sync::Arc};
+
+    struct CaptureInference {
+        requests: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+    }
+    impl InferenceTransport for CaptureInference {
+        fn generate(
+            &self,
+            settings: &ProviderSettings,
+            request: &serde_json::Value,
+        ) -> Result<ProviderResult, InferenceTransportError> {
+            self.requests
+                .lock()
+                .push((settings.id.clone(), request.clone()));
+            Ok(ProviderResult {
+                text: format!("Summary {}", self.requests.lock().len()),
+                request_hash: stcli_core::provider_request_hash(request)
+                    .map_err(|error| InferenceTransportError(error.to_string()))?,
+                receipt: json!({"stub": true}),
+                events: Vec::new(),
+            })
+        }
+    }
+
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let primary = MockProvider::spawn(["Reply one", "Reply two", "Reply three"])
+        .await
+        .unwrap();
+    let bootstrap = StcliEngine::new(&database);
+    let EngineInspection::Plugins(plugins) = bootstrap
+        .inspect(EngineQuery::Plugins {
+            plugin_id: Some(DEFAULT_MEMORY_EXTENSION_ID.to_owned()),
+        })
+        .unwrap()
+    else {
+        panic!("plugins")
+    };
+    let memory = plugins.into_iter().next().unwrap();
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    drop(store);
+    let mut configuration = configuration(character.revision_hash);
+    configuration.provider = primary.provider_settings();
+    configuration.generation_settings = json!({"max_context": 4096, "max_tokens": 64});
+    let EngineResult::CreatedSession(created) = bootstrap
+        .execute(
+            EngineCommand::CreateSession {
+                configuration: Box::new(configuration),
+                greeting_index: 0,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("session")
+    };
+    bootstrap
+        .execute(
+            EngineCommand::AdoptExtension {
+                session_id: created.session.session_id,
+                id: memory.manifest.id,
+                version: memory.manifest.version.to_string(),
+                digest: memory.manifest.component_sha256,
+                settings: json!({"memoryFrozen": true}),
+                egress: Vec::new(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    let mut summary = primary.provider_settings();
+    summary.id = "summary-profile".to_owned();
+    Config::add_provider_profile(directory.path(), "primary", primary.provider_settings()).unwrap();
+    Config::add_provider_profile(directory.path(), "summary", summary.clone()).unwrap();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let broker = InferenceBroker::stub(
+        Config {
+            providers: BTreeMap::from([
+                (
+                    primary.provider_settings().id.clone(),
+                    primary.provider_settings(),
+                ),
+                ("summary".to_owned(), summary),
+            ]),
+            enabled_extensions: BTreeMap::new(),
+        },
+        Arc::new(CaptureInference {
+            requests: captured.clone(),
+        }),
+    );
+    let engine = StcliEngine::with_effect_brokers(&database, EgressBroker::live(), broker)
+        .with_config_directory(directory.path());
+    let EngineResult::CompletedTurn(first) = engine
+        .execute(
+            EngineCommand::Send {
+                session_id: created.session.session_id,
+                branch_id: created.branch.branch_id,
+                content: "First fact".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("turn")
+    };
+    engine
+        .execute(
+            EngineCommand::Send {
+                session_id: created.session.session_id,
+                branch_id: created.branch.branch_id,
+                content: "Second fact".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let surface = match engine
+        .inspect(EngineQuery::ExtensionInteractions {
+            session_id: created.session.session_id,
+            branch_id: Some(created.branch.branch_id),
+        })
+        .unwrap()
+    {
+        EngineInspection::ExtensionInteractions(mut surfaces) => surfaces.pop().unwrap(),
+        _ => panic!("surface"),
+    };
+    assert!(surface.actions[0].enabled);
+    let EngineResult::ExtensionInteraction(first_action) = engine
+        .execute(
+            EngineCommand::SubmitExtensionInteraction {
+                session_id: created.session.session_id,
+                branch_id: Some(created.branch.branch_id),
+                extension_id: DEFAULT_MEMORY_EXTENSION_ID.to_owned(),
+                surface_id: surface.id.clone(),
+                expected_revision: surface.revision.clone(),
+                submission: InteractionSubmission::Invoke {
+                    target: surface.actions[0].target.clone(),
+                },
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("action")
+    };
+    let InteractionOutcome::Invoked { result: command } = &first_action.outcome else {
+        panic!("invoked")
+    };
+    assert_eq!(command.receipt.inference.len(), 1);
+    assert_eq!(command.receipt.inference[0].text, "Summary 1");
+    let settings = Store::open(&database)
+        .unwrap()
+        .state_transaction(created.session.session_id)
+        .unwrap()
+        .get(VariableScope::Local, "extension.memory.settings")
+        .unwrap()
+        .value
+        .clone();
+    assert_eq!(settings["checkpoints"].as_array().unwrap().len(), 1);
+    assert!(settings.get("unknown").is_none());
+
+    let surface = first_action.surface;
+    let field = |label: &str| {
+        surface
+            .groups
+            .iter()
+            .flat_map(|group| &group.fields)
+            .find(|field| field.label == label)
+            .unwrap()
+            .target
+            .clone()
+    };
+    let before_save_attempt = match engine
+        .inspect(EngineQuery::Attempt {
+            attempt_id: first.attempt.attempt_id,
+        })
+        .unwrap()
+    {
+        EngineInspection::Attempt(attempt) => attempt,
+        _ => panic!(),
+    };
+    let EngineResult::ExtensionInteraction(saved) = engine
+        .execute(
+            EngineCommand::SubmitExtensionInteraction {
+                session_id: created.session.session_id,
+                branch_id: Some(created.branch.branch_id),
+                extension_id: DEFAULT_MEMORY_EXTENSION_ID.to_owned(),
+                surface_id: surface.id.clone(),
+                expected_revision: surface.revision.clone(),
+                submission: InteractionSubmission::Save {
+                    target: surface.save.target.clone(),
+                    edits: vec![
+                        InteractionEdit {
+                            target: field("Provider profile"),
+                            value: InteractionValue::Text("summary".to_owned()),
+                        },
+                        InteractionEdit {
+                            target: field("Summary word target"),
+                            value: InteractionValue::Number(123.into()),
+                        },
+                        InteractionEdit {
+                            target: field("Summary template"),
+                            value: InteractionValue::Text("Memory: {{summary}}".to_owned()),
+                        },
+                    ],
+                },
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("save")
+    };
+    let config_after_save = match &saved.outcome {
+        InteractionOutcome::Saved {
+            configuration_revision,
+        } => configuration_revision.clone(),
+        _ => panic!("saved"),
+    };
+    let unchanged_attempt = match engine
+        .inspect(EngineQuery::Attempt {
+            attempt_id: first.attempt.attempt_id,
+        })
+        .unwrap()
+    {
+        EngineInspection::Attempt(attempt) => attempt,
+        _ => panic!(),
+    };
+    assert_eq!(
+        unchanged_attempt.config_hash,
+        before_save_attempt.config_hash
+    );
+    engine
+        .execute(
+            EngineCommand::Send {
+                session_id: created.session.session_id,
+                branch_id: created.branch.branch_id,
+                content: "Third fact".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let surface = match engine
+        .inspect(EngineQuery::ExtensionInteractions {
+            session_id: created.session.session_id,
+            branch_id: Some(created.branch.branch_id),
+        })
+        .unwrap()
+    {
+        EngineInspection::ExtensionInteractions(mut surfaces) => surfaces.pop().unwrap(),
+        _ => panic!(),
+    };
+    engine
+        .execute(
+            EngineCommand::SubmitExtensionInteraction {
+                session_id: created.session.session_id,
+                branch_id: Some(created.branch.branch_id),
+                extension_id: DEFAULT_MEMORY_EXTENSION_ID.to_owned(),
+                surface_id: surface.id.clone(),
+                expected_revision: surface.revision.clone(),
+                submission: InteractionSubmission::Invoke {
+                    target: surface.actions[0].target.clone(),
+                },
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    {
+        let requests = captured.lock();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].0, "summary-profile");
+        assert!(
+            requests[1].1["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("123")
+        );
+    }
+    let settings = Store::open(&database)
+        .unwrap()
+        .state_transaction(created.session.session_id)
+        .unwrap()
+        .get(VariableScope::Local, "extension.memory.settings")
+        .unwrap()
+        .value
+        .clone();
+    assert!(settings.get("unknown").is_none());
+    assert_eq!(settings["checkpoints"].as_array().unwrap().len(), 2);
+    let current = match engine
+        .inspect(EngineQuery::Configuration {
+            session_id: created.session.session_id,
+        })
+        .unwrap()
+    {
+        EngineInspection::Configuration(record) => record.revision_hash,
+        _ => panic!(),
+    };
+    assert_eq!(current, config_after_save);
+    let EngineResult::DryRun(dry) = engine
+        .execute(
+            EngineCommand::DryRunSend {
+                session_id: created.session.session_id,
+                branch_id: created.branch.branch_id,
+                content: "Preview".to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("dry run")
+    };
+    assert!(
+        serde_json::to_string(&dry.provider_request["messages"])
+            .unwrap()
+            .contains("Memory: Summary 2")
+    );
+}
+
 async fn create_failed_turn(
     store: &mut Store,
     session_id: EntityId,

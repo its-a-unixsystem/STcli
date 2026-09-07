@@ -2049,7 +2049,7 @@ impl Store {
         })
     }
 
-    fn latest_completed_primary_attempt(
+    pub(crate) fn latest_completed_primary_attempt(
         &self,
         branch_id: EntityId,
     ) -> Result<Option<EntityId>, TurnError> {

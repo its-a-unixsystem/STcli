@@ -486,7 +486,7 @@ fn render_chat(frame: &mut Frame<'_>, app: &mut App) {
         "Enter send/respond  Shift+Enter newline  ↑/Esc/Tab history  Ctrl+C quit".to_owned()
     } else {
         let mut hints =
-            "Enter compose/respond  ↑/k ↓/j scroll  ←/→ select  x delete  b branch  B branches  s settings  p provider  P preset  c copy"
+            "Enter compose/respond  ↑/k ↓/j scroll  ←/→ select  x delete  b branch  B branches  E extensions  s settings  p provider  P preset  c copy"
                 .to_owned();
         if history.turns.last().is_some() {
             hints.push_str("  r regenerate");
@@ -786,7 +786,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
         Popup::Help => {
             frame.render_widget(Clear, area);
             frame.render_widget(
-                    Paragraph::new("Sessions\n  n  new session · ↑/↓ or j/k  navigate\n  /  filter · s  sort · Enter  open\n  b  toggle branch tree · c  duplicate · x  delete · r  rename\n  p  providers · P  presets · u  personas\n\nChat composer\n  Enter  send or answer an unanswered user message · Shift+Enter  newline\n  Escape or Tab  focus history\n\nChat history\n  ↑/↓ or j/k  scroll · Tab  focus next message · c  copy\n  ←/→  select Greeting or Candidate\n  x  delete candidate (on user message: delete turn)\n  r  regenerate · e  continue · Enter  compose or answer selected user message\n  b  branch at focused Turn · B  open Branch list · s  generation settings\n  p  providers · P  presets\n\nEvery action is available without a mouse. Escape closes this help.")
+                    Paragraph::new("Sessions\n  n  new session · ↑/↓ or j/k  navigate\n  /  filter · s  sort · Enter  open\n  b  toggle branch tree · c  duplicate · x  delete · r  rename\n  p  providers · P  presets · u  personas\n\nChat composer\n  Enter  send or answer an unanswered user message · Shift+Enter  newline\n  Escape or Tab  focus history\n\nChat history\n  ↑/↓ or j/k  scroll · Tab  focus next message · c  copy\n  ←/→  select Greeting or Candidate\n  x  delete candidate (on user message: delete turn)\n  r  regenerate · e  continue · Enter  compose or answer selected user message\n  b  branch at focused Turn · B  open Branch list · E  Extension interactions\n  s  generation settings · p  providers · P  presets\n\nInteraction forms\n  Tab/Shift+Tab navigate · Space/←/→ change · Ctrl+S save · Esc back\n\nEvery action is available without a mouse. Escape closes this help.")
                     .wrap(Wrap { trim: false })
                     .block(Block::default().borders(Borders::ALL).title(" Help "))
                     .style(Style::default().bg(app.theme.background).fg(app.theme.foreground)),
@@ -1812,6 +1812,149 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                 session_area,
             );
         }
+        Popup::ExtensionInteractions { surfaces, selected } => {
+            let labels = if surfaces.is_empty() {
+                vec!["No declared Extension interactions. Adopt a supported Extension package for this Session.".to_owned()]
+            } else {
+                surfaces
+                    .iter()
+                    .map(|surface| surface.label.clone())
+                    .collect()
+            };
+            render_list_popup(
+                frame,
+                app,
+                area,
+                " Extension interactions ",
+                labels,
+                *selected,
+                Some("↑/↓ navigate · Enter open · Esc close"),
+            );
+        }
+        Popup::InteractionForm(state) => {
+            let form_area = centered(frame.area(), 82, frame.area().height.saturating_sub(4));
+            let mut lines = vec![Line::from(state.surface.help.to_string())];
+            let mut field_index = 0usize;
+            for group in &state.surface.groups {
+                lines.push(Line::from(Span::styled(
+                    format!("{} — {}", group.label, group.help),
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                for field in &group.fields {
+                    let draft = &state.drafts[field_index];
+                    let marker = if state.focused == field_index {
+                        "›"
+                    } else {
+                        " "
+                    };
+                    let value = match &draft.value {
+                        crate::app::InteractionDraftValue::Boolean(value) => {
+                            if *value {
+                                "On".to_owned()
+                            } else {
+                                "Off".to_owned()
+                            }
+                        }
+                        crate::app::InteractionDraftValue::Number(value)
+                        | crate::app::InteractionDraftValue::Text(value) => display_safe(value),
+                        crate::app::InteractionDraftValue::Choice(value) => field
+                            .choices
+                            .iter()
+                            .find(|choice| choice.value == *value)
+                            .map(|choice| choice.label.clone())
+                            .unwrap_or_else(|| format!("{value:?}")),
+                    };
+                    let unavailable = field
+                        .unavailable_reason
+                        .as_deref()
+                        .map(|reason| format!(" · unavailable: {reason}"))
+                        .unwrap_or_default();
+                    lines.push(Line::from(format!(
+                        "{marker} {}: {value}{unavailable}",
+                        field.label
+                    )));
+                    if state.focused == field_index {
+                        lines.push(Line::from(Span::styled(
+                            format!("  {}{}", field.help, constraint_text(&field.constraints)),
+                            Style::default().fg(app.theme.muted),
+                        )));
+                    }
+                    if let Some(error) = draft.error.as_ref().or(field.error.as_ref()) {
+                        lines.push(Line::from(Span::styled(
+                            format!("  Error: {error}"),
+                            Style::default().fg(app.theme.error),
+                        )));
+                    }
+                    field_index += 1;
+                }
+            }
+            let save_marker = if state.focused == field_index {
+                "›"
+            } else {
+                " "
+            };
+            lines.push(Line::from(format!(
+                "{save_marker} [{}]",
+                state.surface.save.label
+            )));
+            for (index, action) in state.surface.actions.iter().enumerate() {
+                let marker = if state.focused == field_index + 1 + index {
+                    "›"
+                } else {
+                    " "
+                };
+                let reason = action
+                    .unavailable_reason
+                    .as_deref()
+                    .map(|reason| format!(" · {reason}"))
+                    .unwrap_or_default();
+                lines.push(Line::from(format!("{marker} [{}]{reason}", action.label)));
+            }
+            let cancel_marker = if state.focused == state.item_count().saturating_sub(1) {
+                "›"
+            } else {
+                " "
+            };
+            lines.push(Line::from(format!("{cancel_marker} [Cancel]")));
+            if let Some(notice) = &state.notice {
+                lines.push(Line::from(Span::styled(
+                    display_safe(notice),
+                    Style::default().fg(app.theme.error),
+                )));
+            }
+            if let Some(output) = &state.output {
+                lines.push(Line::from(Span::styled(
+                    "Action output",
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.extend(
+                    display_safe(output)
+                        .lines()
+                        .map(|line| Line::from(line.to_owned())),
+                );
+            }
+            frame.render_widget(Clear, form_area);
+            frame.render_widget(
+                Paragraph::new(Text::from(lines))
+                    .scroll((state.scroll as u16, 0))
+                    .wrap(Wrap { trim: false })
+                    .block(
+                        Block::default().borders(Borders::ALL).title(
+                            " Extension interaction · Tab navigate · Ctrl+S save · Esc back ",
+                        ),
+                    )
+                    .style(
+                        Style::default()
+                            .bg(app.theme.background)
+                            .fg(app.theme.foreground),
+                    ),
+                form_area,
+            );
+        }
     }
 }
 
@@ -2124,6 +2267,35 @@ fn truncate_display(text: &str, max: usize) -> String {
         let mut result: String = text.chars().take(max.saturating_sub(1)).collect();
         result.push('…');
         result
+    }
+}
+
+fn display_safe(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            '\n' | '\t' => character,
+            character if character.is_control() => '�',
+            character => character,
+        })
+        .collect()
+}
+
+fn constraint_text(constraints: &stcli_core::InteractionConstraints) -> String {
+    let mut parts = Vec::new();
+    if constraints.integer {
+        parts.push("whole number".to_owned());
+    }
+    if let Some(minimum) = &constraints.minimum {
+        parts.push(format!("min {minimum}"));
+    }
+    if let Some(maximum) = &constraints.maximum {
+        parts.push(format!("max {maximum}"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", parts.join(" · "))
     }
 }
 

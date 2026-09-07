@@ -13,10 +13,11 @@ use crate::{
     BranchProjection, CandidateProjection, CapsuleError, CapsuleKind, CompactionReport,
     CompatibilityWarning, CompletedTurn, Config, ConfigError, ContentHash, CreatedSession,
     DryRunResult, EcmaRegexWorker, EditedCandidate, EntityId, GlobalExtensionPin, ImportedCapsule,
-    InstalledPlugin, NativeExtensionImport, PluginCapability, PluginCommandResult, PluginEffect,
-    PluginError, PluginEvent, PluginGrant, PluginHost, PluginInput, PluginPin, PluginRegistry,
-    PromptDiff, PromptPlan, PromptSegmentInspection, ProviderEvent, RecoveryReport, ReplayReport,
-    SessionConfiguration, SessionConfigurationRecord, SessionError, SessionProjection,
+    InstalledPlugin, InteractionResult, InteractionSubmission, InteractionSurface,
+    NativeExtensionImport, PluginCapability, PluginCommandResult, PluginEffect, PluginError,
+    PluginEvent, PluginGrant, PluginHost, PluginInput, PluginPin, PluginRegistry, PromptDiff,
+    PromptPlan, PromptSegmentInspection, ProviderEvent, RecoveryReport, ReplayReport,
+    SessionConfiguration, SessionConfigurationRecord, SessionError, SessionProjection, StateError,
     StorageError, Store, StscriptError, StscriptLimits, StscriptResult, TokenizerError,
     TokenizerId, TurnCapsule, TurnError, TurnProjection, apply_display_scripts, diff_prompt_plans,
     extract_character_scripts, st_bridge_capability_tier, transform_preset_content,
@@ -28,6 +29,8 @@ const NEMO_PLUGIN_MANIFEST: &str = include_str!("../../../plugins/nemo-directive
 const NEMO_PLUGIN_SCRIPT: &str = include_str!("../../../plugins/nemo-directives/script.js");
 const MEMORY_EXTENSION_MANIFEST: &str = include_str!("../../../extensions/memory/manifest.json");
 const MEMORY_EXTENSION_SCRIPT: &str = include_str!("../../../extensions/memory/index.js");
+const MEMORY_EXTENSION_SETTINGS_SCHEMA: &str =
+    include_str!("../../../extensions/memory/settings.schema.json");
 
 #[derive(Clone, Copy)]
 struct DefaultPackage {
@@ -35,6 +38,7 @@ struct DefaultPackage {
     manifest: &'static str,
     component_name: &'static str,
     component: &'static str,
+    settings_schema: Option<&'static str>,
     artifact_inspector: bool,
 }
 
@@ -44,6 +48,7 @@ const DEFAULT_PACKAGES: [DefaultPackage; 2] = [
         manifest: NEMO_PLUGIN_MANIFEST,
         component_name: "script.js",
         component: NEMO_PLUGIN_SCRIPT,
+        settings_schema: None,
         artifact_inspector: true,
     },
     DefaultPackage {
@@ -51,6 +56,7 @@ const DEFAULT_PACKAGES: [DefaultPackage; 2] = [
         manifest: MEMORY_EXTENSION_MANIFEST,
         component_name: "index.js",
         component: MEMORY_EXTENSION_SCRIPT,
+        settings_schema: Some(MEMORY_EXTENSION_SETTINGS_SCHEMA),
         artifact_inspector: false,
     },
 ];
@@ -153,7 +159,12 @@ impl StcliEngine {
                 }
                 None => true,
             };
-            if registered && self.plugin_registry().contains(package.id) {
+            let installed = self.plugin_registry().find_pinned(
+                &manifest.id,
+                &manifest.version,
+                &manifest.component_sha256,
+            )?;
+            if registered && installed.is_some() {
                 continue;
             }
             let root = self
@@ -168,6 +179,12 @@ impl StcliEngine {
                 (root.join("manifest.json"), package.manifest),
                 (root.join(package.component_name), package.component),
             ] {
+                fs::write(&path, content).map_err(|source| PluginError::Write { path, source })?;
+            }
+            if let (Some(name), Some(content)) =
+                (manifest.settings_schema.as_deref(), package.settings_schema)
+            {
+                let path = root.join(name);
                 fs::write(&path, content).map_err(|source| PluginError::Write { path, source })?;
             }
             self.plugin_registry().install(&root)?;
@@ -197,6 +214,289 @@ impl StcliEngine {
                 version: version.to_owned(),
                 digest: digest.clone(),
             })
+    }
+    fn extension_interactions(
+        &self,
+        store: &Store,
+        session_id: EntityId,
+        branch_id: Option<EntityId>,
+    ) -> Result<Vec<InteractionSurface>, EngineError> {
+        if let Some(branch_id) = branch_id {
+            let branch = store
+                .branch(branch_id)?
+                .ok_or(SessionError::BranchNotFound(branch_id))?;
+            if branch.session_id != session_id {
+                return Err(EngineError::BranchSessionMismatch);
+            }
+        }
+        let session = store
+            .session(session_id)?
+            .ok_or(SessionError::SessionNotFound(session_id))?;
+        let configuration = store
+            .configuration(&session.current_config_hash)?
+            .ok_or_else(|| {
+                SessionError::ConfigurationNotFound(session.current_config_hash.clone())
+            })?;
+        let providers = Config::load(&self.config_directory)?
+            .providers
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let state = store.state_transaction(session_id)?;
+        let completed_attempt = branch_id
+            .map(|branch_id| store.latest_completed_primary_attempt(branch_id))
+            .transpose()?
+            .flatten()
+            .is_some();
+        let mut surfaces = Vec::new();
+        for pin in &configuration.configuration.plugins {
+            let installed = self.installed_plugin(&pin.id, &pin.version, &pin.component_hash)?;
+            if installed.manifest.runtime != crate::PluginRuntime::StBridge {
+                continue;
+            }
+            let Some(declaration) = crate::interaction::load_interaction_declaration(&installed)?
+            else {
+                continue;
+            };
+            let persisted = state
+                .get(
+                    crate::VariableScope::Local,
+                    &format!("extension.{}.settings", pin.id),
+                )
+                .map(|cell| &cell.value)
+                .unwrap_or(&serde_json::Value::Null);
+            surfaces.push(crate::interaction::build_surface(
+                crate::interaction::SurfaceBuild {
+                    session_id,
+                    branch_id,
+                    configuration_revision: &configuration.revision_hash,
+                    installed: &installed,
+                    declaration: &declaration,
+                    pinned_settings: &pin.settings,
+                    persisted_settings: persisted,
+                    enabled: pin.enabled,
+                    capabilities: &pin.capabilities,
+                    provider_profiles: &providers,
+                    completed_attempt,
+                },
+            )?);
+        }
+        Ok(surfaces)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn submit_extension_interaction(
+        &self,
+        store: &mut Store,
+        session_id: EntityId,
+        branch_id: Option<EntityId>,
+        extension_id: &str,
+        surface_id: &ContentHash,
+        expected_revision: &ContentHash,
+        submission: InteractionSubmission,
+    ) -> Result<InteractionResult, EngineError> {
+        if serde_json::to_vec(&submission)
+            .map_err(PluginError::Json)?
+            .len()
+            > crate::PluginLimits::default().input_bytes
+        {
+            return Err(PluginError::InputLimit.into());
+        }
+        let current = self
+            .extension_interactions(store, session_id, branch_id)?
+            .into_iter()
+            .find(|surface| surface.extension_id == extension_id)
+            .ok_or_else(|| {
+                EngineError::InteractionUnavailable(crate::interaction::bounded(
+                    "Extension interaction is no longer available",
+                ))
+            })?;
+        let reject = |reason: &str| InteractionResult {
+            surface: current.clone(),
+            outcome: crate::InteractionOutcome::Rejected {
+                reason: crate::interaction::bounded(reason),
+            },
+        };
+        if &current.id != surface_id {
+            return Ok(reject(
+                "Interaction surface does not match the current Session context",
+            ));
+        }
+        if &current.revision != expected_revision {
+            return Ok(reject(
+                "Interaction revision is stale; refresh before submitting",
+            ));
+        }
+
+        let session = store
+            .session(session_id)?
+            .ok_or(SessionError::SessionNotFound(session_id))?;
+        let configuration = store
+            .configuration(&session.current_config_hash)?
+            .ok_or_else(|| {
+                SessionError::ConfigurationNotFound(session.current_config_hash.clone())
+            })?;
+        let pin = configuration
+            .configuration
+            .plugins
+            .iter()
+            .find(|pin| pin.id == extension_id)
+            .ok_or_else(|| {
+                EngineError::InteractionUnavailable("Extension is not pinned".to_owned())
+            })?;
+        let installed = self.installed_plugin(&pin.id, &pin.version, &pin.component_hash)?;
+        let declaration = crate::interaction::load_interaction_declaration(&installed)?
+            .ok_or_else(|| {
+                EngineError::InteractionUnavailable(
+                    "Extension has no declared interaction".to_owned(),
+                )
+            })?;
+
+        match submission {
+            InteractionSubmission::Save { target, edits } => {
+                if !crate::interaction::is_save_target(&declaration, &current.id, &target)? {
+                    return Ok(reject("Save target does not belong to this interaction"));
+                }
+                if !current.save.enabled {
+                    return Ok(reject(
+                        current
+                            .save
+                            .unavailable_reason
+                            .as_deref()
+                            .unwrap_or("Save is unavailable"),
+                    ));
+                }
+                let mut seen = Vec::new();
+                let mut pending = Vec::with_capacity(edits.len());
+                for edit in edits {
+                    if seen.contains(&edit.target) {
+                        return Ok(reject("Submission contains a duplicate field target"));
+                    }
+                    seen.push(edit.target.clone());
+                    let Some(field) =
+                        crate::interaction::find_field(&declaration, &current.id, &edit.target)?
+                    else {
+                        return Ok(reject("Field target does not belong to this interaction"));
+                    };
+                    let surface_field = current
+                        .groups
+                        .iter()
+                        .flat_map(|group| &group.fields)
+                        .find(|candidate| candidate.target == edit.target)
+                        .expect("declared field is present on surface");
+                    if let Err(reason) = crate::interaction::validate_edit(
+                        field,
+                        &edit.value,
+                        &surface_field.choices,
+                    ) {
+                        let mut rejected = reject(&reason);
+                        if let Some(candidate) = rejected
+                            .surface
+                            .groups
+                            .iter_mut()
+                            .flat_map(|group| &mut group.fields)
+                            .find(|candidate| candidate.target == edit.target)
+                        {
+                            candidate.error = Some(reason);
+                        }
+                        return Ok(rejected);
+                    }
+                    pending.push((
+                        crate::interaction::field_property(field).to_owned(),
+                        edit.value.to_json(),
+                    ));
+                }
+                let mut next = configuration.configuration.clone();
+                let next_pin = next
+                    .plugins
+                    .iter_mut()
+                    .find(|pin| pin.id == extension_id)
+                    .expect("pin was resolved above");
+                let settings = match &mut next_pin.settings {
+                    serde_json::Value::Object(settings) => settings,
+                    serde_json::Value::Null => {
+                        next_pin.settings = serde_json::json!({});
+                        next_pin.settings.as_object_mut().expect("created object")
+                    }
+                    _ => {
+                        return Ok(reject(
+                            "Pinned Extension settings must be an object or null",
+                        ));
+                    }
+                };
+                let mut changed = false;
+                for (property, value) in pending {
+                    if settings.insert(property, value.clone()).as_ref() != Some(&value) {
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    return Ok(InteractionResult {
+                        surface: current,
+                        outcome: crate::InteractionOutcome::Saved {
+                            configuration_revision: configuration.revision_hash,
+                        },
+                    });
+                }
+                let record = store.update_session_configuration(session_id, next)?;
+                let surface = self
+                    .extension_interactions(store, session_id, branch_id)?
+                    .into_iter()
+                    .find(|surface| surface.extension_id == extension_id)
+                    .ok_or_else(|| {
+                        EngineError::InteractionUnavailable(
+                            "Extension interaction disappeared after Save".to_owned(),
+                        )
+                    })?;
+                Ok(InteractionResult {
+                    surface,
+                    outcome: crate::InteractionOutcome::Saved {
+                        configuration_revision: record.revision_hash,
+                    },
+                })
+            }
+            InteractionSubmission::Invoke { target } => {
+                let Some(action) =
+                    crate::interaction::find_action(&declaration, &current.id, &target)?
+                else {
+                    return Ok(reject("Action target does not belong to this interaction"));
+                };
+                let surface_action = current
+                    .actions
+                    .iter()
+                    .find(|candidate| candidate.target == target)
+                    .expect("declared action is present on surface");
+                if !surface_action.enabled {
+                    return Ok(reject(
+                        surface_action
+                            .unavailable_reason
+                            .as_deref()
+                            .unwrap_or("Action is unavailable"),
+                    ));
+                }
+                let result = store.invoke_plugin_command(
+                    session_id,
+                    branch_id,
+                    extension_id,
+                    crate::interaction::action_command(action),
+                    serde_json::Value::Null,
+                )?;
+                let surface = self
+                    .extension_interactions(store, session_id, branch_id)?
+                    .into_iter()
+                    .find(|surface| surface.extension_id == extension_id)
+                    .ok_or_else(|| {
+                        EngineError::InteractionUnavailable(
+                            "Extension interaction disappeared after action".to_owned(),
+                        )
+                    })?;
+                Ok(InteractionResult {
+                    surface,
+                    outcome: crate::InteractionOutcome::Invoked {
+                        result: Box::new(result),
+                    },
+                })
+            }
+        }
     }
 
     pub fn inspect(&self, query: EngineQuery) -> Result<EngineInspection, EngineError> {
@@ -289,6 +589,12 @@ impl StcliEngine {
             } => Ok(EngineInspection::BranchHistory(Box::new(branch_history(
                 &store, session_id, branch_id,
             )?))),
+            EngineQuery::ExtensionInteractions {
+                session_id,
+                branch_id,
+            } => Ok(EngineInspection::ExtensionInteractions(
+                self.extension_interactions(&store, session_id, branch_id)?,
+            )),
             EngineQuery::Configuration { session_id } => {
                 let session = store
                     .session(session_id)?
@@ -887,6 +1193,24 @@ impl StcliEngine {
             EngineCommand::HideTurn { turn_id } => {
                 Ok(EngineResult::Turn(store.hide_turn(turn_id)?))
             }
+            EngineCommand::SubmitExtensionInteraction {
+                session_id,
+                branch_id,
+                extension_id,
+                surface_id,
+                expected_revision,
+                submission,
+            } => Ok(EngineResult::ExtensionInteraction(Box::new(
+                self.submit_extension_interaction(
+                    &mut store,
+                    session_id,
+                    branch_id,
+                    &extension_id,
+                    &surface_id,
+                    &expected_revision,
+                    submission,
+                )?,
+            ))),
             EngineCommand::DeleteTurn { turn_id } => {
                 store.delete_turn(turn_id)?;
                 Ok(EngineResult::DeletedTurn(DeletionReceipt {
@@ -1086,6 +1410,10 @@ pub enum EngineQuery {
     Configuration {
         session_id: EntityId,
     },
+    ExtensionInteractions {
+        session_id: EntityId,
+        branch_id: Option<EntityId>,
+    },
     Artifacts {
         kind: Option<ArtifactKind>,
     },
@@ -1187,6 +1515,14 @@ pub enum EngineCommand {
         digest: ContentHash,
         settings: serde_json::Value,
         egress: Vec<crate::EgressAllowance>,
+    },
+    SubmitExtensionInteraction {
+        session_id: EntityId,
+        branch_id: Option<EntityId>,
+        extension_id: String,
+        surface_id: ContentHash,
+        expected_revision: ContentHash,
+        submission: InteractionSubmission,
     },
     RegisterArtifactInspector {
         id: String,
@@ -1383,6 +1719,7 @@ pub enum EngineResult {
     Attempt(Box<AttemptProjection>),
     Branch(BranchProjection),
     Configuration(Box<SessionConfigurationRecord>),
+    ExtensionInteraction(Box<InteractionResult>),
     PromptOrderUpdated {
         artifact: ArtifactRecord,
         configuration: Option<Box<SessionConfigurationRecord>>,
@@ -1407,6 +1744,7 @@ pub enum EngineInspection {
     Branches(Vec<BranchProjection>),
     BranchHistory(Box<BranchHistory>),
     Configuration(SessionConfigurationRecord),
+    ExtensionInteractions(Vec<InteractionSurface>),
     Turns(Vec<EngineTurn>),
     Artifacts(Vec<ArtifactRecord>),
     Artifact(ArtifactRecord),
@@ -1848,6 +2186,8 @@ pub enum EngineError {
     #[error(transparent)]
     Artifact(#[from] ArtifactError),
     #[error(transparent)]
+    State(#[from] StateError),
+    #[error(transparent)]
     Capsule(#[from] CapsuleError),
     #[error(transparent)]
     Tokenizer(#[from] TokenizerError),
@@ -1865,6 +2205,8 @@ pub enum EngineError {
         version: String,
         digest: ContentHash,
     },
+    #[error("Extension interaction is unavailable: {0}")]
+    InteractionUnavailable(String),
     #[error("grants exceed the Plugin manifest request")]
     PluginGrantExceeded,
     #[error("Plugin '{0}' is not pinned by the Session")]

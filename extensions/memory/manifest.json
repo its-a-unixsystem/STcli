@@ -1,7 +1,7 @@
 {
   "schema": "stcli.plugin-manifest/v1",
   "id": "memory",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "engine": ">=0.1.0, <0.2.0",
   "runtime": "st-bridge",
   "component": "index.js",
@@ -12,7 +12,7 @@
   "prompt_slots": [],
   "commands": ["summarize"],
   "macros": ["summary"],
-  "settings_schema": null,
+  "settings_schema": "settings.schema.json",
   "requested_capabilities": ["write-own-state", "register-command", "brokered-egress", "secondary-inference"],
   "before": [],
   "after": [],

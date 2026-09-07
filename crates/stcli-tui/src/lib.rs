@@ -17,8 +17,9 @@ use tokio::sync::mpsc;
 
 pub use app::{
     App, ChatFocus, ClonePresetState, Effect, GenerationSettingsState, ImportArtifactState,
-    ImportPersonasState, ModalTarget, PersonaEditorState, PersonasState, Popup, PresetOption,
-    PresetPickerState, PresetScriptSummary, PresetSummary, Screen,
+    ImportPersonasState, InteractionDraft, InteractionDraftValue, InteractionFormState,
+    ModalTarget, PersonaEditorState, PersonasState, Popup, PresetOption, PresetPickerState,
+    PresetScriptSummary, PresetSummary, Screen,
 };
 pub use config::{Config, ThemeChoice, TuiSettings};
 pub use theme::Theme;
