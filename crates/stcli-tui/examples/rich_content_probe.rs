@@ -10,7 +10,7 @@ use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use serde::{Deserialize, Serialize};
@@ -94,18 +94,6 @@ impl Fixture {
         match self {
             Self::Card => CARD_SOURCE,
             Self::Columns => COLUMNS_SOURCE,
-            Self::Literal => LITERAL_SOURCE,
-        }
-    }
-
-    fn alternative(self) -> &'static str {
-        match self {
-            Self::Card => {
-                "Harbor Watch\nNight signal report\nThe lighthouse keeper records a calm sea, a steady western wind, and three vessels safely inside the breakwater. Static HTML and CSS remain readable without scripts or remote resources."
-            }
-            Self::Columns => {
-                "Harbor Operations Board\nNorth Pier — cargo manifests, mooring lines, and navigation lamps.\nInner Harbor — ferries rotate through the sheltered basin.\nBreakwater — signal flags, wave height, and beacon power."
-            }
             Self::Literal => LITERAL_SOURCE,
         }
     }
@@ -891,7 +879,7 @@ fn draw(frame: &mut Frame<'_>, app: &App) -> Rect {
             pane,
         );
     } else if app.fixture == Fixture::Literal || app.image.is_none() {
-        let mut text = Text::from(filter_terminal_text(app.fixture.alternative()));
+        let mut text = stcli_tui::content::render(app.fixture.source(), stcli_tui::Theme::dark());
         if app.fixture != Fixture::Literal && !app.fallback_reason.is_empty() {
             text.lines.push(Line::default());
             text.lines.push(Line::styled(

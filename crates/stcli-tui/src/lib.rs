@@ -1,7 +1,7 @@
 mod app;
 mod clipboard;
 pub mod config;
-mod markdown;
+pub mod content;
 mod terminal;
 mod theme;
 mod ui;
@@ -21,6 +21,7 @@ pub use app::{
     PresetPickerState, PresetScriptSummary, PresetSummary, Screen,
 };
 pub use config::{Config, ThemeChoice, TuiSettings};
+pub use theme::Theme;
 pub use ui::render;
 
 pub fn run(paths: &AppPaths, direct_session: Option<EntityId>) -> Result<()> {

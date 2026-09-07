@@ -13,7 +13,7 @@ use crate::{
         App, ChatFocus, HitAction, HitTarget, Popup, Screen, SessionListEntry, selected_candidate,
         short_revision,
     },
-    markdown,
+    content,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -755,7 +755,7 @@ fn label_line(
 }
 
 fn append_markdown(lines: &mut Vec<Line<'static>>, source: &str, app: &App, index: usize) {
-    let mut text = markdown::render(source, app.theme);
+    let mut text = content::render(source, app.theme);
     if app.chat_focus == ChatFocus::History && app.focused_message == index {
         for line in &mut text.lines {
             for span in &mut line.spans {
@@ -767,7 +767,7 @@ fn append_markdown(lines: &mut Vec<Line<'static>>, source: &str, app: &App, inde
 }
 
 fn append_reasoning(lines: &mut Vec<Line<'static>>, source: &str, app: &App) {
-    let mut text = markdown::render(source, app.theme);
+    let mut text = content::render(source, app.theme);
     for line in &mut text.lines {
         for span in &mut line.spans {
             span.style = span
