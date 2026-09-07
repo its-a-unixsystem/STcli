@@ -1511,8 +1511,8 @@ impl App {
                 Popup::ImportPersonas(state) => self.popup = Some(Popup::Personas(state.manager)),
                 Popup::ExtensionInteractions { .. } => self.popup = None,
                 Popup::InteractionForm(state) => {
-                    let session_id = state.surface.session_id;
-                    let branch_id = state.surface.branch_id;
+                    let session_id = state.surface.identity.session_id;
+                    let branch_id = state.surface.identity.branch_id;
                     match self.engine.inspect(EngineQuery::ExtensionInteractions {
                         session_id,
                         branch_id,
@@ -2671,17 +2671,14 @@ impl App {
                 return None;
             }
             self.pending_interaction = Some(PendingInteraction {
-                session_id: state.surface.session_id,
-                branch_id: state.surface.branch_id,
-                surface_id: state.surface.id.clone(),
+                session_id: state.surface.identity.session_id,
+                branch_id: state.surface.identity.branch_id,
+                surface_id: state.surface.identity.surface_id.clone(),
                 kind: "action",
             });
             state.notice = Some("Running action…".to_owned());
             return Some(Effect::Execute(EngineCommand::SubmitExtensionInteraction {
-                session_id: state.surface.session_id,
-                branch_id: state.surface.branch_id,
-                extension_id: state.surface.extension_id.clone(),
-                surface_id: state.surface.id.clone(),
+                identity: state.surface.identity.clone(),
                 expected_revision: state.surface.revision.clone(),
                 submission: stcli_core::InteractionSubmission::Invoke {
                     target: action.target.clone(),
@@ -2689,8 +2686,8 @@ impl App {
             }));
         }
         if state.focused == cancel_index && key.code == KeyCode::Enter {
-            let session_id = state.surface.session_id;
-            let branch_id = state.surface.branch_id;
+            let session_id = state.surface.identity.session_id;
+            let branch_id = state.surface.identity.branch_id;
             if let Ok(EngineInspection::ExtensionInteractions(surfaces)) =
                 self.engine.inspect(EngineQuery::ExtensionInteractions {
                     session_id,
@@ -2828,17 +2825,14 @@ impl App {
             }
         }
         self.pending_interaction = Some(PendingInteraction {
-            session_id: state.surface.session_id,
-            branch_id: state.surface.branch_id,
-            surface_id: state.surface.id.clone(),
+            session_id: state.surface.identity.session_id,
+            branch_id: state.surface.identity.branch_id,
+            surface_id: state.surface.identity.surface_id.clone(),
             kind: "save",
         });
         state.notice = Some("Saving…".to_owned());
         Effect::Execute(EngineCommand::SubmitExtensionInteraction {
-            session_id: state.surface.session_id,
-            branch_id: state.surface.branch_id,
-            extension_id: state.surface.extension_id.clone(),
-            surface_id: state.surface.id.clone(),
+            identity: state.surface.identity.clone(),
             expected_revision: state.surface.revision.clone(),
             submission: stcli_core::InteractionSubmission::Save {
                 target: state.surface.save.target.clone(),
@@ -4633,9 +4627,9 @@ impl App {
             Ok(EngineResult::ExtensionInteraction(result)) => {
                 let pending = self.pending_interaction.take();
                 let same_context = pending.as_ref().is_some_and(|pending| {
-                    pending.session_id == result.surface.session_id
-                        && pending.branch_id == result.surface.branch_id
-                        && pending.surface_id == result.surface.id
+                    pending.session_id == result.surface.identity.session_id
+                        && pending.branch_id == result.surface.identity.branch_id
+                        && pending.surface_id == result.surface.identity.surface_id
                 });
                 if !same_context {
                     return false;
@@ -4645,7 +4639,8 @@ impl App {
                 }
                 let open_same_form = matches!(
                     &self.popup,
-                    Some(Popup::InteractionForm(state)) if state.surface.id == result.surface.id
+                    Some(Popup::InteractionForm(state))
+                        if state.surface.identity.surface_id == result.surface.identity.surface_id
                 );
                 match &result.outcome {
                     InteractionOutcome::Saved {

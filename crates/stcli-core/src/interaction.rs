@@ -63,6 +63,33 @@ pub struct InteractionEdit {
     pub value: InteractionValue,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InteractionIdentity {
+    pub session_id: EntityId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch_id: Option<EntityId>,
+    pub extension_id: String,
+    pub package_version: String,
+    pub component_sha256: ContentHash,
+    pub declaration_hash: ContentHash,
+    pub surface_id: ContentHash,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InteractionSupport {
+    Available,
+    PartiallyAvailable,
+    Unavailable,
+    Unverified,
+}
+
+impl InteractionSupport {
+    fn is_executable(self) -> bool {
+        matches!(self, Self::Available | Self::PartiallyAvailable)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "outcome", rename_all = "kebab-case")]
 pub enum InteractionOutcome {
@@ -131,6 +158,9 @@ pub struct InteractionAction {
     pub target: ContentHash,
     pub label: String,
     pub help: String,
+    pub support: InteractionSupport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support_reason: Option<String>,
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unavailable_reason: Option<String>,
@@ -138,15 +168,11 @@ pub struct InteractionAction {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct InteractionSurface {
-    pub session_id: EntityId,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub branch_id: Option<EntityId>,
-    pub extension_id: String,
-    pub package_version: String,
-    pub component_sha256: ContentHash,
-    pub declaration_hash: ContentHash,
-    pub id: ContentHash,
+    pub identity: InteractionIdentity,
     pub revision: ContentHash,
+    pub support: InteractionSupport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support_reason: Option<String>,
     pub label: String,
     pub help: String,
     pub groups: Vec<InteractionGroup>,
@@ -158,6 +184,8 @@ pub struct InteractionSurface {
 pub(crate) struct InteractionDeclaration {
     pub(crate) id: String,
     pub(crate) hash: ContentHash,
+    support: InteractionSupport,
+    support_reason: Option<String>,
     fields: BTreeMap<String, DeclaredField>,
     groups: Vec<DeclaredGroup>,
     actions: Vec<DeclaredAction>,
@@ -210,7 +238,9 @@ pub(crate) struct DeclaredAction {
     id: String,
     label: String,
     help: String,
-    command: String,
+    command: Option<String>,
+    support: InteractionSupport,
+    support_reason: Option<String>,
     requires_branch: bool,
     requires_completed_attempt: bool,
     capabilities: BTreeSet<PluginCapability>,
@@ -221,6 +251,8 @@ struct Annotation {
     schema: String,
     id: String,
     component_sha256: ContentHash,
+    support: InteractionSupport,
+    support_reason: Option<String>,
     groups: Vec<GroupSource>,
     actions: Vec<ActionSource>,
 }
@@ -237,7 +269,9 @@ struct ActionSource {
     id: String,
     label: String,
     help: String,
-    command: String,
+    command: Option<String>,
+    support: InteractionSupport,
+    support_reason: Option<String>,
     requires_branch: bool,
     requires_completed_attempt: bool,
     capabilities: BTreeSet<PluginCapability>,
@@ -303,6 +337,16 @@ pub(crate) fn load_declaration(
     if annotation.id.trim().is_empty() {
         return Err(invalid("interaction id must not be empty"));
     }
+    if annotation.support != InteractionSupport::Available
+        && annotation
+            .support_reason
+            .as_deref()
+            .is_none_or(str::is_empty)
+    {
+        return Err(invalid(
+            "non-available interaction support requires a concrete reason",
+        ));
+    }
 
     let mut fields = BTreeMap::new();
     let mut grouped = BTreeSet::new();
@@ -347,10 +391,31 @@ pub(crate) fn load_declaration(
             {
                 return Err(invalid("interaction actions require id, label, and help"));
             }
-            if !manifest.commands.contains(&action.command) {
+            if action.support.is_executable() {
+                let command = action.command.as_deref().ok_or_else(|| {
+                    invalid(format!(
+                        "executable interaction action '{}' requires a command",
+                        action.id
+                    ))
+                })?;
+                if !manifest.commands.iter().any(|declared| declared == command) {
+                    return Err(invalid(format!(
+                        "interaction action '{}' binds undeclared command '{command}'",
+                        action.id
+                    )));
+                }
+            } else if action.command.is_some() {
                 return Err(invalid(format!(
-                    "interaction action '{}' binds undeclared command '{}'",
-                    action.id, action.command
+                    "non-executable interaction action '{}' must not bind a command",
+                    action.id
+                )));
+            }
+            if action.support != InteractionSupport::Available
+                && action.support_reason.as_deref().is_none_or(str::is_empty)
+            {
+                return Err(invalid(format!(
+                    "non-available interaction action '{}' requires a concrete reason",
+                    action.id
                 )));
             }
             if !action
@@ -367,6 +432,8 @@ pub(crate) fn load_declaration(
                 label: action.label,
                 help: action.help,
                 command: action.command,
+                support: action.support,
+                support_reason: action.support_reason,
                 requires_branch: action.requires_branch,
                 requires_completed_attempt: action.requires_completed_attempt,
                 capabilities: action.capabilities,
@@ -378,6 +445,8 @@ pub(crate) fn load_declaration(
         "schema": INTERACTION_SCHEMA,
         "id": annotation.id,
         "component_sha256": manifest.component_sha256,
+        "support": annotation.support,
+        "support_reason": annotation.support_reason,
         "groups": groups,
         "fields": fields,
         "actions": actions,
@@ -386,6 +455,8 @@ pub(crate) fn load_declaration(
     Ok(Some(InteractionDeclaration {
         id: declaration_value["id"].as_str().unwrap().to_owned(),
         hash,
+        support: annotation.support,
+        support_reason: annotation.support_reason,
         fields,
         groups,
         actions,
@@ -777,17 +848,24 @@ pub(crate) fn build_surface(input: SurfaceBuild<'_>) -> Result<InteractionSurfac
         input.installed,
         input.declaration,
     )?;
+    let support_reason = (!input.declaration.support.is_executable())
+        .then(|| input.declaration.support_reason.clone())
+        .flatten();
     let disabled_reason = (!input.enabled).then(|| "Extension is disabled".to_owned());
-    let can_save = input.enabled
+    let can_save = input.declaration.support.is_executable()
+        && input.enabled
         && input
             .capabilities
             .contains(&PluginCapability::WriteOwnState);
-    let save_reason = disabled_reason.clone().or_else(|| {
-        (!input
-            .capabilities
-            .contains(&PluginCapability::WriteOwnState))
-        .then(|| "Extension does not grant write-own-state".to_owned())
-    });
+    let save_reason = support_reason
+        .clone()
+        .or_else(|| disabled_reason.clone())
+        .or_else(|| {
+            (!input
+                .capabilities
+                .contains(&PluginCapability::WriteOwnState))
+            .then(|| "Extension does not grant write-own-state".to_owned())
+        });
     let groups = input
         .declaration
         .groups
@@ -864,8 +942,11 @@ pub(crate) fn build_surface(input: SurfaceBuild<'_>) -> Result<InteractionSurfac
         .actions
         .iter()
         .map(|action| {
-            let reason = disabled_reason
-                .clone()
+            let reason = (!action.support.is_executable())
+                .then(|| action.support_reason.clone())
+                .flatten()
+                .or_else(|| support_reason.clone())
+                .or_else(|| disabled_reason.clone())
                 .or_else(|| {
                     (!action.capabilities.is_subset(input.capabilities))
                         .then(|| "Extension action capabilities are not granted".to_owned())
@@ -886,6 +967,8 @@ pub(crate) fn build_surface(input: SurfaceBuild<'_>) -> Result<InteractionSurfac
                 target: target_id(&id, "action", &action.id)?,
                 label: action.label.clone(),
                 help: action.help.clone(),
+                support: action.support,
+                support_reason: action.support_reason.clone(),
                 enabled: reason.is_none(),
                 unavailable_reason: reason,
             })
@@ -895,6 +978,8 @@ pub(crate) fn build_surface(input: SurfaceBuild<'_>) -> Result<InteractionSurfac
         target: target_id(&id, "save", &input.declaration.id)?,
         label: "Save".to_owned(),
         help: "Save edited values as a new Session Configuration Revision.".to_owned(),
+        support: input.declaration.support,
+        support_reason: input.declaration.support_reason.clone(),
         enabled: can_save,
         unavailable_reason: save_reason,
     };
@@ -910,14 +995,18 @@ pub(crate) fn build_surface(input: SurfaceBuild<'_>) -> Result<InteractionSurfac
         }),
     )?;
     Ok(InteractionSurface {
-        session_id: input.session_id,
-        branch_id: input.branch_id,
-        extension_id: input.installed.manifest.id.clone(),
-        package_version: input.installed.manifest.version.to_string(),
-        component_sha256: input.installed.manifest.component_sha256.clone(),
-        declaration_hash: input.declaration.hash.clone(),
-        id,
+        identity: InteractionIdentity {
+            session_id: input.session_id,
+            branch_id: input.branch_id,
+            extension_id: input.installed.manifest.id.clone(),
+            package_version: input.installed.manifest.version.to_string(),
+            component_sha256: input.installed.manifest.component_sha256.clone(),
+            declaration_hash: input.declaration.hash.clone(),
+            surface_id: id,
+        },
         revision,
+        support: input.declaration.support,
+        support_reason: input.declaration.support_reason.clone(),
         label: input
             .installed
             .manifest
@@ -1002,8 +1091,8 @@ pub(crate) fn field_property(field: &DeclaredField) -> &str {
     &field.property
 }
 
-pub(crate) fn action_command(action: &DeclaredAction) -> &str {
-    &action.command
+pub(crate) fn action_command(action: &DeclaredAction) -> Option<&str> {
+    action.command.as_deref()
 }
 
 fn invalid(message: impl Into<String>) -> PluginError {

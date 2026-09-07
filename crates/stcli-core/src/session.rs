@@ -812,7 +812,21 @@ impl Store {
         session_id: EntityId,
         configuration: SessionConfiguration,
     ) -> Result<SessionConfigurationRecord, SessionError> {
-        self.update_session_configuration_inner(session_id, configuration, None)
+        self.update_session_configuration_inner(session_id, configuration, None, None)
+    }
+
+    pub fn update_session_configuration_if_current(
+        &mut self,
+        session_id: EntityId,
+        expected_revision: &ContentHash,
+        configuration: SessionConfiguration,
+    ) -> Result<SessionConfigurationRecord, SessionError> {
+        self.update_session_configuration_inner(
+            session_id,
+            configuration,
+            None,
+            Some(expected_revision),
+        )
     }
 
     pub fn adopt_extension_configuration(
@@ -822,7 +836,12 @@ impl Store {
         pin: &PluginPin,
         warning: &CompatibilityWarning,
     ) -> Result<SessionConfigurationRecord, SessionError> {
-        self.update_session_configuration_inner(session_id, configuration, Some((pin, warning)))
+        self.update_session_configuration_inner(
+            session_id,
+            configuration,
+            Some((pin, warning)),
+            None,
+        )
     }
 
     fn update_session_configuration_inner(
@@ -830,6 +849,7 @@ impl Store {
         session_id: EntityId,
         configuration: SessionConfiguration,
         adoption: Option<(&PluginPin, &CompatibilityWarning)>,
+        expected_revision: Option<&ContentHash>,
     ) -> Result<SessionConfigurationRecord, SessionError> {
         self.session(session_id)?
             .ok_or(SessionError::SessionNotFound(session_id))?;
@@ -885,12 +905,28 @@ impl Store {
                 }),
             )?;
         }
-        transaction
-            .execute(
-                "UPDATE sessions SET current_config_hash = ?1 WHERE session_id = ?2",
-                params![revision_hash.to_string(), session_id.to_string()],
-            )
-            .map_err(StorageError::Sqlite)?;
+        let selected = if let Some(expected_revision) = expected_revision {
+            transaction
+                .execute(
+                    "UPDATE sessions SET current_config_hash = ?1 WHERE session_id = ?2 AND current_config_hash = ?3",
+                    params![
+                        revision_hash.to_string(),
+                        session_id.to_string(),
+                        expected_revision.to_string()
+                    ],
+                )
+                .map_err(StorageError::Sqlite)?
+        } else {
+            transaction
+                .execute(
+                    "UPDATE sessions SET current_config_hash = ?1 WHERE session_id = ?2",
+                    params![revision_hash.to_string(), session_id.to_string()],
+                )
+                .map_err(StorageError::Sqlite)?
+        };
+        if selected != 1 {
+            return Err(SessionError::ConfigurationConflict);
+        }
         transaction.commit().map_err(StorageError::Sqlite)?;
         Ok(SessionConfigurationRecord {
             revision_hash,
@@ -2949,6 +2985,8 @@ pub enum SessionError {
     },
     #[error("session configuration revision {0} was not found")]
     ConfigurationNotFound(ContentHash),
+    #[error("session configuration changed before the update could be selected")]
+    ConfigurationConflict,
     #[error("authoritative trace is missing or has invalid field '{0}'")]
     InvalidTrace(&'static str),
 }

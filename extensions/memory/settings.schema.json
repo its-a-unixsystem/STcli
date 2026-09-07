@@ -108,6 +108,8 @@
     "schema": "stcli.interaction/v1",
     "id": "settings",
     "component_sha256": "sha256:113a5e468b3636b8d0af66954a9e557fac347e864dab386429f5aabfc758d30a",
+    "support": "available",
+    "support_reason": "Verified against bundled memory 1.1.0 component and engine-seam tests.",
     "groups": [
       {
         "label": "Generation",
@@ -131,6 +133,8 @@
         "label": "Summarize now",
         "help": "Refresh this Branch using saved settings; bypasses automatic-refresh freeze.",
         "command": "summarize",
+        "support": "available",
+        "support_reason": "Verified through the declared summarize command and brokered engine path.",
         "requires_branch": true,
         "requires_completed_attempt": true,
         "capabilities": ["register-command", "write-own-state", "secondary-inference"]

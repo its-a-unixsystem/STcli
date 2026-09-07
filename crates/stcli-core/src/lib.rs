@@ -82,8 +82,9 @@ pub use inference::{
 };
 pub use interaction::{
     InteractionAction, InteractionChoice, InteractionConstraints, InteractionControl,
-    InteractionEdit, InteractionField, InteractionGroup, InteractionOutcome, InteractionResult,
-    InteractionSubmission, InteractionSurface, InteractionValue,
+    InteractionEdit, InteractionField, InteractionGroup, InteractionIdentity, InteractionOutcome,
+    InteractionResult, InteractionSubmission, InteractionSupport, InteractionSurface,
+    InteractionValue,
 };
 pub use lore::{
     ActivatedLore, LoreDecision, LoreDecisionOutcome, LoreEngine, LoreEntry, LoreError,

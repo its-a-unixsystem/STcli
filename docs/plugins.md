@@ -393,22 +393,43 @@ choices use a scalar `enum` with a matching `x-stcli-choice-labels` array. A str
 `x-stcli-choice-source: "provider-profiles"`. `$ref`, composition, arbitrary validation keywords,
 selectors, callbacks, JavaScript expressions, and network schema resolution are rejected.
 
-Actions bind only to a command already declared in the manifest and receive fixed null arguments.
-The annotation lists the required manifest capabilities and whether a Branch or completed Primary
-Attempt is required. The engine checks the current pin, grant, Branch ownership, action
-availability, and scripting support before dispatch. Unavailable operations carry an explanatory
-reason; a form can still be inspected when its Extension is disabled.
+Actions declare a workflow support state: `available`, `partially-available`, `unavailable`, or
+`unverified`. Every state except `available` requires a concrete reason. Only available and
+partially available actions may bind a command; unavailable and unverified actions have no handler
+binding, remain disabled, and therefore cannot report success through a browser no-op shim. An
+executable action binds only to a command already declared in the manifest and receives fixed null
+arguments. Its annotation lists required manifest capabilities and whether a Branch or completed
+Primary Attempt is required. The engine checks the current pin, grant, Branch ownership, action
+availability, and scripting support before dispatch. A surface also declares the support state and
+reason for its whole workflow.
 
-The engine returns opaque surface, field, save, action, and revision hashes. Frontends submit only
-typed scalar values against those targets. They cannot submit a property path, complete Extension
-object, selector, or executable code. A stale revision is rejected before any handler or durable
-operation runs. Frontends keep drafts locally until Save.
+The engine returns one `InteractionIdentity` with the Session, optional Branch, Extension ID,
+package version, component digest, declaration hash, and opaque surface ID. The component digest
+binds the adapter to the exact Extension bytes; the declaration hash binds its field and action
+mappings plus support claims. Changing either invalidates old identities instead of transferring
+stale mappings or compatibility claims to an updated Extension.
+
+Each full surface snapshot has a revision hash over that identity, the current Session
+Configuration Revision, values, choices, visibility, enabled state, field errors, actions, and
+support states. Frontends round-trip the complete identity, expected revision, typed submission,
+and opaque target. A mismatched identity, stale revision, cross-Session or cross-Branch context,
+disabled Extension, missing target, malformed value, or missing grant is rejected before state,
+inference, egress, or Turn Trace effects. Rejections return the current surface when the identified
+workflow still exists; if it no longer exists, the engine returns a bounded invalidation reason.
+Diagnostics are limited to contract metadata and never include credentials or Session content.
+Frontends keep drafts locally until Save.
 
 Save merges only accepted declared properties into the exact Extension pin and creates or selects
 an immutable Session Configuration Revision. It does not overwrite `extension.<id>.settings`.
 During later live execution, declared pinned values overlay persisted declared values while unknown
 members such as Summary Checkpoints remain intact. Normal `saveSettingsDebounced()` writes still
 produce recorded namespaced state effects and do not create Session Configuration Revisions.
+
+The bundled Summarize settings workflow and **Summarize now** action are `available`, verified
+against the content-addressed `memory` 1.1.0 package and engine-seam tests. No Stepped Thinking or
+Roadway adapter ships at this stage, so those workflows are `unverified` and expose no executable
+operation. Later adapters must name their exact component digest, declaration hash, per-workflow
+support state, and evidence; a controlled fixture is not evidence of complete upstream support.
 
 ### Import a SillyTavern Extension
 

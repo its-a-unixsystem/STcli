@@ -723,8 +723,8 @@ async fn summarize_interaction_exposes_declared_settings_and_action() {
         panic!("interaction surfaces");
     };
     let surface = surfaces.into_iter().next().unwrap();
-    assert_eq!(surface.extension_id, DEFAULT_MEMORY_EXTENSION_ID);
-    assert_eq!(surface.package_version, "1.1.0");
+    assert_eq!(surface.identity.extension_id, DEFAULT_MEMORY_EXTENSION_ID);
+    assert_eq!(surface.identity.package_version, "1.1.0");
     assert_eq!(surface.groups.len(), 3);
     assert!(
         surface
@@ -828,10 +828,7 @@ async fn summarize_interaction_save_creates_revision_and_rejects_stale_submissio
         .target
         .clone();
     let command = EngineCommand::SubmitExtensionInteraction {
-        session_id: created.session.session_id,
-        branch_id: Some(created.branch.branch_id),
-        extension_id: DEFAULT_MEMORY_EXTENSION_ID.to_owned(),
-        surface_id: surface.id.clone(),
+        identity: surface.identity.clone(),
         expected_revision: surface.revision.clone(),
         submission: InteractionSubmission::Save {
             target: surface.save.target.clone(),
@@ -866,11 +863,24 @@ async fn summarize_interaction_save_creates_revision_and_rejects_stale_submissio
         current.configuration.plugins[0].settings["promptWords"],
         123
     );
+    let trace_before_stale = Store::open(&database)
+        .unwrap()
+        .trace_events(Some(created.session.session_id))
+        .unwrap()
+        .len();
     let EngineResult::ExtensionInteraction(stale) = engine.execute(command, |_| {}).await.unwrap()
     else {
         panic!("interaction result");
     };
     assert!(matches!(stale.outcome, InteractionOutcome::Rejected { .. }));
+    assert_eq!(
+        Store::open(&database)
+            .unwrap()
+            .trace_events(Some(created.session.session_id))
+            .unwrap()
+            .len(),
+        trace_before_stale
+    );
     let state = Store::open(&database)
         .unwrap()
         .state_transaction(created.session.session_id)
@@ -881,6 +891,294 @@ async fn summarize_interaction_save_creates_revision_and_rejects_stale_submissio
         .value;
     assert_eq!(settings["checkpoints"][0]["sentinel"], true);
     assert_eq!(settings["unknown"], "kept");
+}
+
+#[cfg(feature = "scripting")]
+#[tokio::test]
+async fn extension_interactions_reject_invalid_context_and_authority_before_effects() {
+    // Regression test for ticket 03: invalid interaction identities and values must have no effects.
+    use std::collections::BTreeSet;
+
+    use stcli_core::{
+        DEFAULT_MEMORY_EXTENSION_ID, InteractionEdit, InteractionOutcome, InteractionSubmission,
+        InteractionValue,
+    };
+
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let engine = StcliEngine::new(&database);
+    let EngineInspection::Plugins(plugins) = engine
+        .inspect(EngineQuery::Plugins {
+            plugin_id: Some(DEFAULT_MEMORY_EXTENSION_ID.to_owned()),
+        })
+        .unwrap()
+    else {
+        panic!("memory package inventory");
+    };
+    let memory = plugins.into_iter().next().unwrap();
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let first = store
+        .create_session(configuration(character.revision_hash.clone()), 0)
+        .unwrap();
+    let second = store
+        .create_session(configuration(character.revision_hash), 0)
+        .unwrap();
+    drop(store);
+    for session_id in [first.session.session_id, second.session.session_id] {
+        engine
+            .execute(
+                EngineCommand::AdoptExtension {
+                    session_id,
+                    id: memory.manifest.id.clone(),
+                    version: memory.manifest.version.to_string(),
+                    digest: memory.manifest.component_sha256.clone(),
+                    settings: json!({"memoryFrozen": true}),
+                    egress: Vec::new(),
+                },
+                |_| {},
+            )
+            .await
+            .unwrap();
+    }
+    let current_surface = |session_id, branch_id| match engine
+        .inspect(EngineQuery::ExtensionInteractions {
+            session_id,
+            branch_id: Some(branch_id),
+        })
+        .unwrap()
+    {
+        EngineInspection::ExtensionInteractions(mut surfaces) => surfaces.pop().unwrap(),
+        _ => panic!("surface"),
+    };
+    let surface = current_surface(first.session.session_id, first.branch.branch_id);
+    assert_eq!(surface.identity.session_id, first.session.session_id);
+    assert_eq!(surface.identity.branch_id, Some(first.branch.branch_id));
+    assert_eq!(surface.identity.extension_id, DEFAULT_MEMORY_EXTENSION_ID);
+    assert_eq!(
+        surface.identity.component_sha256,
+        memory.manifest.component_sha256
+    );
+    assert_eq!(surface.support, stcli_core::InteractionSupport::Available);
+
+    let trace_len = |session_id| {
+        Store::open(&database)
+            .unwrap()
+            .trace_events(Some(session_id))
+            .unwrap()
+            .len()
+    };
+    let before_second = trace_len(second.session.session_id);
+    let mut cross_session = surface.identity.clone();
+    cross_session.session_id = second.session.session_id;
+    cross_session.branch_id = Some(second.branch.branch_id);
+    let EngineResult::ExtensionInteraction(rejected) = engine
+        .execute(
+            EngineCommand::SubmitExtensionInteraction {
+                identity: cross_session,
+                expected_revision: surface.revision.clone(),
+                submission: InteractionSubmission::Save {
+                    target: surface.save.target.clone(),
+                    edits: Vec::new(),
+                },
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("interaction result");
+    };
+    assert!(matches!(
+        rejected.outcome,
+        InteractionOutcome::Rejected { .. }
+    ));
+    assert_eq!(trace_len(second.session.session_id), before_second);
+
+    let EngineResult::Branch(branch) = engine
+        .execute(
+            EngineCommand::CreateBranch {
+                session_id: first.session.session_id,
+                source_branch_id: Some(first.branch.branch_id),
+                at_turn_id: None,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("branch");
+    };
+    let before_first = trace_len(first.session.session_id);
+    let mut cross_branch = surface.identity.clone();
+    cross_branch.branch_id = Some(branch.branch_id);
+    let EngineResult::ExtensionInteraction(rejected) = engine
+        .execute(
+            EngineCommand::SubmitExtensionInteraction {
+                identity: cross_branch,
+                expected_revision: surface.revision.clone(),
+                submission: InteractionSubmission::Save {
+                    target: surface.save.target.clone(),
+                    edits: Vec::new(),
+                },
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("interaction result");
+    };
+    assert!(matches!(
+        rejected.outcome,
+        InteractionOutcome::Rejected { .. }
+    ));
+    assert_eq!(trace_len(first.session.session_id), before_first);
+
+    let prompt_words = surface
+        .groups
+        .iter()
+        .flat_map(|group| &group.fields)
+        .find(|field| field.label == "Summary word target")
+        .unwrap()
+        .target
+        .clone();
+    let EngineResult::ExtensionInteraction(malformed) = engine
+        .execute(
+            EngineCommand::SubmitExtensionInteraction {
+                identity: surface.identity.clone(),
+                expected_revision: surface.revision.clone(),
+                submission: InteractionSubmission::Save {
+                    target: surface.save.target.clone(),
+                    edits: vec![InteractionEdit {
+                        target: prompt_words,
+                        value: InteractionValue::Text("not-a-number".to_owned()),
+                    }],
+                },
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("interaction result");
+    };
+    assert!(matches!(
+        malformed.outcome,
+        InteractionOutcome::Rejected { .. }
+    ));
+    assert!(
+        malformed
+            .surface
+            .groups
+            .iter()
+            .flat_map(|group| &group.fields)
+            .any(|field| field.error.is_some())
+    );
+    assert_eq!(trace_len(first.session.session_id), before_first);
+
+    let EngineResult::ExtensionInteraction(missing) = engine
+        .execute(
+            EngineCommand::SubmitExtensionInteraction {
+                identity: surface.identity.clone(),
+                expected_revision: surface.revision.clone(),
+                submission: InteractionSubmission::Save {
+                    target: surface.actions[0].target.clone(),
+                    edits: Vec::new(),
+                },
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("interaction result");
+    };
+    assert!(matches!(
+        missing.outcome,
+        InteractionOutcome::Rejected { .. }
+    ));
+    assert_eq!(trace_len(first.session.session_id), before_first);
+
+    engine
+        .execute(
+            EngineCommand::AdoptPlugin {
+                session_id: first.session.session_id,
+                id: memory.manifest.id.clone(),
+                version: memory.manifest.version.to_string(),
+                digest: memory.manifest.component_sha256.clone(),
+                capabilities: BTreeSet::new(),
+                settings: json!({"memoryFrozen": true}),
+                egress: Vec::new(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let unauthorized = current_surface(first.session.session_id, first.branch.branch_id);
+    assert!(!unauthorized.save.enabled);
+    let before_unauthorized = trace_len(first.session.session_id);
+    let EngineResult::ExtensionInteraction(rejected) = engine
+        .execute(
+            EngineCommand::SubmitExtensionInteraction {
+                identity: unauthorized.identity.clone(),
+                expected_revision: unauthorized.revision.clone(),
+                submission: InteractionSubmission::Save {
+                    target: unauthorized.save.target.clone(),
+                    edits: Vec::new(),
+                },
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("interaction result");
+    };
+    assert!(matches!(
+        rejected.outcome,
+        InteractionOutcome::Rejected { .. }
+    ));
+    assert_eq!(trace_len(first.session.session_id), before_unauthorized);
+
+    engine
+        .execute(
+            EngineCommand::SetExtensionEnabled {
+                session_id: first.session.session_id,
+                id: DEFAULT_MEMORY_EXTENSION_ID.to_owned(),
+                enabled: false,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let disabled = current_surface(first.session.session_id, first.branch.branch_id);
+    assert!(!disabled.save.enabled);
+    let before_disabled = trace_len(first.session.session_id);
+    let EngineResult::ExtensionInteraction(rejected) = engine
+        .execute(
+            EngineCommand::SubmitExtensionInteraction {
+                identity: disabled.identity.clone(),
+                expected_revision: disabled.revision.clone(),
+                submission: InteractionSubmission::Save {
+                    target: disabled.save.target.clone(),
+                    edits: Vec::new(),
+                },
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("interaction result");
+    };
+    assert!(matches!(
+        rejected.outcome,
+        InteractionOutcome::Rejected { .. }
+    ));
+    assert_eq!(trace_len(first.session.session_id), before_disabled);
 }
 #[cfg(feature = "scripting")]
 #[tokio::test]
@@ -1029,10 +1327,7 @@ async fn summarize_interaction_action_uses_saved_settings_and_appends_checkpoint
     let EngineResult::ExtensionInteraction(first_action) = engine
         .execute(
             EngineCommand::SubmitExtensionInteraction {
-                session_id: created.session.session_id,
-                branch_id: Some(created.branch.branch_id),
-                extension_id: DEFAULT_MEMORY_EXTENSION_ID.to_owned(),
-                surface_id: surface.id.clone(),
+                identity: surface.identity.clone(),
                 expected_revision: surface.revision.clone(),
                 submission: InteractionSubmission::Invoke {
                     target: surface.actions[0].target.clone(),
@@ -1084,10 +1379,7 @@ async fn summarize_interaction_action_uses_saved_settings_and_appends_checkpoint
     let EngineResult::ExtensionInteraction(saved) = engine
         .execute(
             EngineCommand::SubmitExtensionInteraction {
-                session_id: created.session.session_id,
-                branch_id: Some(created.branch.branch_id),
-                extension_id: DEFAULT_MEMORY_EXTENSION_ID.to_owned(),
-                surface_id: surface.id.clone(),
+                identity: surface.identity.clone(),
                 expected_revision: surface.revision.clone(),
                 submission: InteractionSubmission::Save {
                     target: surface.save.target.clone(),
@@ -1157,10 +1449,7 @@ async fn summarize_interaction_action_uses_saved_settings_and_appends_checkpoint
     engine
         .execute(
             EngineCommand::SubmitExtensionInteraction {
-                session_id: created.session.session_id,
-                branch_id: Some(created.branch.branch_id),
-                extension_id: DEFAULT_MEMORY_EXTENSION_ID.to_owned(),
-                surface_id: surface.id.clone(),
+                identity: surface.identity.clone(),
                 expected_revision: surface.revision.clone(),
                 submission: InteractionSubmission::Invoke {
                     target: surface.actions[0].target.clone(),

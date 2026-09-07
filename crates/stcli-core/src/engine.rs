@@ -283,14 +283,10 @@ impl StcliEngine {
         }
         Ok(surfaces)
     }
-    #[allow(clippy::too_many_arguments)]
     fn submit_extension_interaction(
         &self,
         store: &mut Store,
-        session_id: EntityId,
-        branch_id: Option<EntityId>,
-        extension_id: &str,
-        surface_id: &ContentHash,
+        identity: &crate::InteractionIdentity,
         expected_revision: &ContentHash,
         submission: InteractionSubmission,
     ) -> Result<InteractionResult, EngineError> {
@@ -302,9 +298,9 @@ impl StcliEngine {
             return Err(PluginError::InputLimit.into());
         }
         let current = self
-            .extension_interactions(store, session_id, branch_id)?
+            .extension_interactions(store, identity.session_id, identity.branch_id)?
             .into_iter()
-            .find(|surface| surface.extension_id == extension_id)
+            .find(|surface| surface.identity.extension_id == identity.extension_id)
             .ok_or_else(|| {
                 EngineError::InteractionUnavailable(crate::interaction::bounded(
                     "Extension interaction is no longer available",
@@ -316,9 +312,9 @@ impl StcliEngine {
                 reason: crate::interaction::bounded(reason),
             },
         };
-        if &current.id != surface_id {
+        if &current.identity != identity {
             return Ok(reject(
-                "Interaction surface does not match the current Session context",
+                "Interaction identity does not match the current Session, Branch, Extension, package, or adapter",
             ));
         }
         if &current.revision != expected_revision {
@@ -328,8 +324,8 @@ impl StcliEngine {
         }
 
         let session = store
-            .session(session_id)?
-            .ok_or(SessionError::SessionNotFound(session_id))?;
+            .session(identity.session_id)?
+            .ok_or(SessionError::SessionNotFound(identity.session_id))?;
         let configuration = store
             .configuration(&session.current_config_hash)?
             .ok_or_else(|| {
@@ -339,7 +335,7 @@ impl StcliEngine {
             .configuration
             .plugins
             .iter()
-            .find(|pin| pin.id == extension_id)
+            .find(|pin| pin.id == identity.extension_id)
             .ok_or_else(|| {
                 EngineError::InteractionUnavailable("Extension is not pinned".to_owned())
             })?;
@@ -353,7 +349,11 @@ impl StcliEngine {
 
         match submission {
             InteractionSubmission::Save { target, edits } => {
-                if !crate::interaction::is_save_target(&declaration, &current.id, &target)? {
+                if !crate::interaction::is_save_target(
+                    &declaration,
+                    &current.identity.surface_id,
+                    &target,
+                )? {
                     return Ok(reject("Save target does not belong to this interaction"));
                 }
                 if !current.save.enabled {
@@ -372,8 +372,11 @@ impl StcliEngine {
                         return Ok(reject("Submission contains a duplicate field target"));
                     }
                     seen.push(edit.target.clone());
-                    let Some(field) =
-                        crate::interaction::find_field(&declaration, &current.id, &edit.target)?
+                    let Some(field) = crate::interaction::find_field(
+                        &declaration,
+                        &current.identity.surface_id,
+                        &edit.target,
+                    )?
                     else {
                         return Ok(reject("Field target does not belong to this interaction"));
                     };
@@ -409,7 +412,7 @@ impl StcliEngine {
                 let next_pin = next
                     .plugins
                     .iter_mut()
-                    .find(|pin| pin.id == extension_id)
+                    .find(|pin| pin.id == identity.extension_id)
                     .expect("pin was resolved above");
                 let settings = match &mut next_pin.settings {
                     serde_json::Value::Object(settings) => settings,
@@ -437,11 +440,36 @@ impl StcliEngine {
                         },
                     });
                 }
-                let record = store.update_session_configuration(session_id, next)?;
+                let record = match store.update_session_configuration_if_current(
+                    identity.session_id,
+                    &configuration.revision_hash,
+                    next,
+                ) {
+                    Ok(record) => record,
+                    Err(SessionError::ConfigurationConflict) => {
+                        let current = self
+                            .extension_interactions(store, identity.session_id, identity.branch_id)?
+                            .into_iter()
+                            .find(|surface| surface.identity.extension_id == identity.extension_id)
+                            .ok_or_else(|| {
+                                EngineError::InteractionUnavailable(
+                                    "Extension interaction disappeared during Save".to_owned(),
+                                )
+                            })?;
+                        return Ok(InteractionResult {
+                            surface: current,
+                            outcome: crate::InteractionOutcome::Rejected {
+                                reason: "Interaction revision changed during Save; refresh before submitting"
+                                    .to_owned(),
+                            },
+                        });
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 let surface = self
-                    .extension_interactions(store, session_id, branch_id)?
+                    .extension_interactions(store, identity.session_id, identity.branch_id)?
                     .into_iter()
-                    .find(|surface| surface.extension_id == extension_id)
+                    .find(|surface| surface.identity.extension_id == identity.extension_id)
                     .ok_or_else(|| {
                         EngineError::InteractionUnavailable(
                             "Extension interaction disappeared after Save".to_owned(),
@@ -455,8 +483,11 @@ impl StcliEngine {
                 })
             }
             InteractionSubmission::Invoke { target } => {
-                let Some(action) =
-                    crate::interaction::find_action(&declaration, &current.id, &target)?
+                let Some(action) = crate::interaction::find_action(
+                    &declaration,
+                    &current.identity.surface_id,
+                    &target,
+                )?
                 else {
                     return Ok(reject("Action target does not belong to this interaction"));
                 };
@@ -473,17 +504,19 @@ impl StcliEngine {
                             .unwrap_or("Action is unavailable"),
                     ));
                 }
+                let command = crate::interaction::action_command(action)
+                    .expect("enabled actions have a validated command binding");
                 let result = store.invoke_plugin_command(
-                    session_id,
-                    branch_id,
-                    extension_id,
-                    crate::interaction::action_command(action),
+                    identity.session_id,
+                    identity.branch_id,
+                    &identity.extension_id,
+                    command,
                     serde_json::Value::Null,
                 )?;
                 let surface = self
-                    .extension_interactions(store, session_id, branch_id)?
+                    .extension_interactions(store, identity.session_id, identity.branch_id)?
                     .into_iter()
-                    .find(|surface| surface.extension_id == extension_id)
+                    .find(|surface| surface.identity.extension_id == identity.extension_id)
                     .ok_or_else(|| {
                         EngineError::InteractionUnavailable(
                             "Extension interaction disappeared after action".to_owned(),
@@ -1194,19 +1227,13 @@ impl StcliEngine {
                 Ok(EngineResult::Turn(store.hide_turn(turn_id)?))
             }
             EngineCommand::SubmitExtensionInteraction {
-                session_id,
-                branch_id,
-                extension_id,
-                surface_id,
+                identity,
                 expected_revision,
                 submission,
             } => Ok(EngineResult::ExtensionInteraction(Box::new(
                 self.submit_extension_interaction(
                     &mut store,
-                    session_id,
-                    branch_id,
-                    &extension_id,
-                    &surface_id,
+                    &identity,
                     &expected_revision,
                     submission,
                 )?,
@@ -1517,10 +1544,7 @@ pub enum EngineCommand {
         egress: Vec<crate::EgressAllowance>,
     },
     SubmitExtensionInteraction {
-        session_id: EntityId,
-        branch_id: Option<EntityId>,
-        extension_id: String,
-        surface_id: ContentHash,
+        identity: crate::InteractionIdentity,
         expected_revision: ContentHash,
         submission: InteractionSubmission,
     },
