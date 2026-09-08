@@ -55,7 +55,7 @@
 
     <svg viewBox="0 0 900 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="nested-dm-title nested-dm-desc">
       <title id="nested-dm-title">STcli session containment</title>
-      <desc id="nested-dm-desc">Nested diagram showing Session containing Branches containing Turns, with each Turn owning Generation Attempts and Candidates.</desc>
+      <desc id="nested-dm-desc">Sessions contain Branches and Turns. Primary Attempts belong to Turns. Background Attempts belong to a Session and Branch without owning a Turn or Candidate.</desc>
       <defs>
         <pattern id="dots-nested" width="22" height="22" patternUnits="userSpaceOnUse">
           <circle cx="1" cy="1" r="0.9" fill="rgba(45,49,66,0.10)"/>
@@ -80,11 +80,11 @@
       <text x="104" y="124" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">BRANCH · opens with one Greeting Selection</text>
 
       <rect x="136" y="192" width="280" height="16" fill="#f5f5f5"/>
-      <text x="144" y="204" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em" font-weight="600">TURN · owns Attempts and Candidates</text>
+      <text x="144" y="204" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em" font-weight="600">TURN · Primary Attempts + Candidates</text>
 
       <!-- Content inside Turn ring -->
       <!-- Generation Attempt -->
-      <text x="180" y="248" fill="#2d3142" font-size="13" font-weight="600" font-family="'Geist', sans-serif">Generation Attempt</text>
+      <text x="180" y="248" fill="#2d3142" font-size="13" font-weight="600" font-family="'Geist', sans-serif">Primary Attempt</text>
       <text x="320" y="248" fill="#4f5d75" font-size="10" font-family="'Geist Mono', monospace">[0..*]</text>
 
       <!-- Candidate -->
@@ -107,6 +107,7 @@
       <circle cx="360" cy="248" r="2" fill="#2d3142"/>
 
       <!-- Annotation 2: derivation -->
+      <text x="40" y="512" fill="#4f5d75" font-size="12" font-family="'Geist', sans-serif">Background Attempts belong to Session + Branch, never a Turn or Candidate.</text>
       <text x="40" y="540" fill="#4f5d75" font-size="14" font-style="italic" font-family="'Instrument Serif', serif">Turn Trace is authoritative · Projection and Capsule are derived from it</text>
     </svg>
   </div>

@@ -354,9 +354,12 @@ The global selection applies only to Sessions created afterward. Existing Sessio
 explicitly with `extension enable my-extension --session <session-id>`, or disable an adopted
 Extension with `extension disable my-extension --session <session-id>`; each Session change is a
 new immutable Session Configuration Revision.
+
+In TUI Chat history, press `E` to open adopted Extensions with declared native controls. The bundled Summarize Extension exposes configuration and **Summarize now**. These controls do not reproduce arbitrary browser interfaces. See [Extension interactions](tui.md#use-extension-interactions) for navigation and [workflow support evidence](plugins.md#declared-interaction-surfaces) for exact limits.
+
 ## Install and adopt a plugin
 
-Plugins are pure, capability-limited Wasm modules. They contribute declarative behavior to the engine without direct access to engine state. For the plugin design and the capability model, see [`ARCHITECTURE.md`](../ARCHITECTURE.md#plugin-system) and [ADR 0003](adr/0003-pure-wasm-plugins.md).
+Plugins are capability-limited Wasm or QuickJS Script components. They return declarative effects without direct access to engine state. See [Writing plugins](plugins.md#choose-a-runtime) for runtime capabilities and [the architecture](../ARCHITECTURE.md#plugin-system) for the host boundary.
 
 Validate and install a local Component Model package that contains `manifest.json` and `component.wasm`:
 
@@ -382,7 +385,7 @@ cargo run --quiet --bin stcli -- --output json plugin adopt \
 
 Use `plugin inspect`, `plugin upgrade`, `plugin enable`, and `plugin disable` for lifecycle management. An upgrade keeps the session's grants and settings. It pins the explicit replacement version and digest in a new Session Configuration Revision. Invoke a registered command with `plugin invoke`. Its declarative effects and namespaced state changes enter the authoritative trace. `plugin remove` refuses a plugin that any stored Session Configuration Revision references.
 
-Plugins receive canonical JSON input and return declarative effects through [`wit/plugin.wit`](../wit/plugin.wit). The host links no WASI or other imports. A plugin gets no network, filesystem, provider, secret, subprocess, or native-library access. [`schemas/plugin-manifest.schema.json`](../schemas/plugin-manifest.schema.json) defines the public manifest format.
+Wasm Plugins receive canonical JSON input and return declarative effects through [`wit/plugin.wit`](../wit/plugin.wit). The host links no WASI or other imports. Plugins receive no raw network, filesystem, secret, subprocess, or native-library access. Wasm live effects require host brokers and explicit grants; Script Plugins remain offline. [`schemas/plugin-manifest.schema.json`](../schemas/plugin-manifest.schema.json) defines the public manifest format.
 
 STcli also runs plugins written in JavaScript through a sandboxed QuickJS runtime. To write a Wasm plugin or a script plugin, see [Writing plugins](plugins.md).
 
@@ -422,12 +425,12 @@ Streaming provider events use the `stcli.cli-event/v1` JSONL schema. All schemas
 
 ## Security and privacy
 
-- The engine sends network requests only to the HTTPS provider you configure.
-- Refer to API keys and secret-valued headers through environment variables.
+- Provider requests use configured HTTPS endpoints. Brokered Extension egress requires an explicit domain allow-list and grants; it is denied by default.
+- Refer to API keys through environment variables or platform Credential References. Secret-valued headers use environment variable references.
 - Resolved secrets do not enter SQLite, the Turn Trace, receipts, or CLI output.
 - Provider error bodies and streamed data pass through request-local secret redaction before storage or display.
 - The engine rejects URL userinfo.
 - On Unix, the engine creates its directories with mode `0700` and the SQLite database with mode `0600`.
 - ECMAScript lore regex runs in a subprocess with input limits and a timeout.
 
-CAUTION: Do not put secrets directly in `--generation-settings` or literal configuration fields. Use environment variable references instead.
+CAUTION: Do not put secrets directly in `--generation-settings` or literal configuration fields. Use environment variable references or the [Credential Store](configuration.md#provider-credentials).

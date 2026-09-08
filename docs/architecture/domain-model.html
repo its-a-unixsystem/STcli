@@ -86,9 +86,9 @@
     <p class="eyebrow">UML class · Domain Model</p>
     <h1>STcli domain model</h1>
 
-    <svg viewBox="0 0 1000 800" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="dm-title dm-desc">
+    <svg viewBox="0 0 1000 832" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="dm-title dm-desc">
       <title id="dm-title">STcli domain model · UML class diagram</title>
-      <desc id="dm-desc">Class diagram showing Session composed of Branches and Session Configuration Revisions, each Branch composed of Turns, each Turn composed of Generation Attempts and Candidates, and each Generation Attempt associated with the Session Configuration Revision it pins.</desc>
+      <desc id="dm-desc">Sessions contain Branches, configuration revisions, and Attempts. This view shows Primary Attempts owned by Turns. Background Attempts instead link to Session and Branch, with no Turn or Candidate. Every Attempt pins a configuration revision.</desc>
       <defs>
         <marker id="dm-triangle" markerWidth="16" markerHeight="12" refX="15" refY="6" orient="auto" markerUnits="userSpaceOnUse">
           <polygon points="0 0, 16 6, 0 12" fill="#f5f5f5" stroke="#2d3142" stroke-width="1"/>
@@ -187,7 +187,7 @@
       <!-- Class: GenerationAttempt -->
       <rect x="620" y="360" width="336" height="100" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
       <line x1="620" y1="400" x2="956" y2="400" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
-      <text x="788" y="384" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">GenerationAttempt</text>
+      <text x="788" y="384" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Primary Attempt</text>
       <text x="636" y="420" fill="#2d3142" font-size="9" font-family="'Geist Mono', monospace">+ id: ULID</text>
       <text x="636" y="440" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">+ pins: SessionConfigurationRevision</text>
 
@@ -220,6 +220,7 @@
 
       <line x1="800" y1="772" x2="828" y2="772" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#dm-open)"/>
       <text x="836" y="776" fill="#4f5d75" font-size="8.5" font-family="'Geist', sans-serif">Dependency · uses</text>
+      <text x="80" y="804" fill="#4f5d75" font-size="12" font-family="'Geist', sans-serif">Background Attempts: Session + Branch ownership; no Turn or Candidate.</text>
     </svg>
 
     <div class="derivation">

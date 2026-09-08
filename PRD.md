@@ -533,7 +533,7 @@ Schema fixtures cover CLI JSON, JSONL events, profile manifests, Portable and Th
 
 ### Architecture
 
-![STcli engine architecture: a debug CLI and post-MVP TUI call a Command/Event seam into the SessionEngine, whose Turn Transaction atomically orchestrates the PromptCompiler, LoreEngine, StateStore, Wasm PluginHost, and an OpenAI-compatible Provider, backed by shared Codec and Tokenizer registries and a SQLite WAL store.](docs/diagrams/architecture.png)
+![STcli engine architecture: the implemented CLI and TUI use the shared engine seam. Turn orchestration coordinates prompt, lore, state, Wasm and QuickJS runtimes, and provider requests with recorded SQLite outcomes.](docs/diagrams/architecture.png)
 
 <!-- Editable source: docs/diagrams/architecture.html — re-export the PNG with headless Chromium after edits. -->
 
@@ -721,6 +721,24 @@ Private directories and files use restrictive permissions where supported. There
 ## 5. Risks & Roadmap
 
 ### Roadmap
+
+These versions group roadmap work; they do not imply that every earlier milestone is complete.
+Current implementation status:
+
+| Milestone | Implemented | Remaining |
+|---|---|---|
+| v0.2 | Interactive TUI, keyboard/mouse navigation, themes, native Extension forms, and styled Markdown/HTML text | External Wasm codecs and official macOS CI/binaries |
+| v0.3 | PNG/APNG/WebP cards, CCv3, CHARX, and content-addressed assets | Broader multimedia presentation belongs to v1.x |
+| v0.4 | Flat Text Completion, instruct/context templates, and story strings | Live-provider validation remains unverified |
+| v0.5 | Not implemented | Group Roleplay |
+| v0.6 | Bounded STscript parser/evaluator, pipes, closures, variables, and recorded outcomes | Wider slash-command coverage and browser-dependent commands |
+| v0.7 | Brokered HTTPS, Secondary Inference, and linked Background Attempts with independent cancellation | Retrieval/vector lore and trusted filesystem integrations |
+| v1.0 | Digest-pinned headless Extension bridge, lifecycle, settings, prompt mutation, and declared native interactions | Broader upstream Extension compatibility; fixture demonstrations are not upstream adapters |
+| v1.x | No general browser frontend or daemon | Broader ecosystem work listed below |
+
+Graphical terminal rendering is retired under [ADR 0012](docs/adr/0012-rich-content-renderer-experiment.md).
+[ADR 0013](docs/adr/0013-styled-text-html-fallback.md) selects bounded styled terminal text instead.
+See the [parity matrix](docs/sillytavern-parity.md) for feature-level limits and [Extension evidence](docs/plugins.md#workflow-support-evidence) for supported workflows.
 
 #### v0.2: Rich TUI and External JSON Codecs
 

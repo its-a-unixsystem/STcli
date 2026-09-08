@@ -14,13 +14,15 @@ The compatibility target is the bounded `sillytavern-1.18-core` profile, pinned 
 
 ## System context
 
-![System context: a Roleplayer and a Plugin Author drive STcli through its CLI; STcli imports SillyTavern content the user exported as artifact revisions, and sends generation requests to an external OpenAI-compatible provider over HTTPS.](docs/diagrams/system-context.png)
+![System context: Roleplayers use the CLI or TUI, authors install Wasm or JavaScript components, and STcli imports content and sends configured HTTPS provider requests.](docs/diagrams/system-context.png)
 
 <!-- Editable source: docs/diagrams/system-context.html — re-export the PNG with headless Chromium after edits. -->
 
+This context view shows the content and generation loop. Granted Extension HTTPS egress also crosses a host broker with an explicit domain allow-list.
+
 ## Container diagram
 
-![Container diagram: the Roleplayer runs stcli-cli, which calls the stcli-core engine library; the core reads and writes a bundled SQLite WAL database, evaluates lore regex in an isolated regex-worker subprocess, and streams generation requests to an external provider, while the CLI drives a deterministic provider-test fixture server during integration testing.](docs/diagrams/container-diagram.png)
+![Container diagram: the stcli binary exposes CLI commands and stcli-tui through the Core seam. Core owns SQLite, isolated regex evaluation, and provider calls; provider-test supplies deterministic HTTPS fixtures.](docs/diagrams/container-diagram.png)
 
 <!-- Editable source: docs/diagrams/container-diagram.html — re-export the PNG with headless Chromium after edits. -->
 
@@ -29,6 +31,8 @@ The compatibility target is the bounded `sillytavern-1.18-core` profile, pinned 
 ![Component diagram: the Turn Orchestrator coordinates each attempt — driving the prompt pipeline (Lore Engine, Macro Engine, Prompt Manager, State Store, backed by the Tokenizer registry and a subprocess Regex Sandbox), streaming through the Provider Client, and appending to the persistence layer where the Session Manager, Artifact Codecs, and Capsule System all read and write the Storage Layer. Identity and Compatibility Profile are shared modules with no runtime edge.](docs/diagrams/component-diagram.png)
 
 <!-- Editable source: docs/diagrams/component-diagram.html — re-export the PNG with headless Chromium after edits. -->
+
+This component view focuses on prompt construction and persistence. The [Plugin system](#plugin-system) and [Candidate presentation boundary](#candidate-presentation-and-extension-interactions) describe the runtime and frontend components separately.
 
 ## Workspace layout
 
@@ -110,7 +114,7 @@ All modules live in `crates/stcli-core/src/`. The public API is re-exported from
 
 ## Data model
 
-### SQLite schema (v10)
+### SQLite schema (v12)
 
 The database lives at `$STCLI_HOME/data/stcli.sqlite3` (or XDG equivalent) and runs in WAL mode with foreign keys enabled.
 
@@ -153,6 +157,8 @@ This is the central data flow. Understanding it is essential for working on the 
 
 <!-- Editable source: docs/diagrams/turn-lifecycle.html — re-export the PNG with headless Chromium after edits. -->
 
+This diagram shows the primary Chat Completion send path. Extension callbacks can contribute during preparation and after completion; brokered Secondary Inference creates separate Background Attempts. Background Attempts have no Turn or Candidate and cancel independently.
+
 **Dry Run** executes the top half only (through "Build canonical provider request") — no trace events, no provider call, no state commit. This is safe for preview and debugging.
 
 **Crash recovery**: On startup, `recover_interrupted_attempts` finds any attempts stuck in `running` and marks them `incomplete` with a trace event.
@@ -165,7 +171,7 @@ Both Dry Run and live Generation Attempts go through a unified preparation path 
 2. **Order profile & slot mapping**: Selects Chat Completion order profile `100001` over `100000`, suppresses disabled native markers, and ensures live user input is included via `chatHistory` or `userInput` exactly once.
 3. **Sequential macro dataflow & in-chat injections**: Prompts are rendered in preset order so variable mutations (`setvar`) in early prompts are observable in subsequent prompts. In-chat prompts are spliced relative to dynamic history depth, and empty-rendered prompts preserve side effects without sending empty messages.
 4. **Assembly behaviors**: Consecutive system messages are squashed when `squash_system_messages` is active, `use_sysprompt` gates the main prompt, and trailing assistant/continuation prefills are appended.
-5. **Safety diagnostics**: Embedded regex scripts and third-party prompt directives (e.g. NemoPresetExt comments) are indexed without execution and emit non-blocking [`CompatibilityWarning`](crates/stcli-core/src/turn.rs) records.
+5. **Safety diagnostics**: Ungranted embedded regex scripts produce non-blocking [`CompatibilityWarning`](crates/stcli-core/src/turn.rs) records. Community directive evaluation belongs to Plugins, not Core. The default `org.stcli.nemo-directives` Artifact inspector evaluates the supported NemoPresetExt subset; see [default Plugin lifecycle](plugins/README.md#default-plugin-lifecycle).
 
 6. **Output formatting**: The provider client formats the assembled prompt for the target endpoint. Chat Completion sends role-tagged messages. Text Completion joins the segments into one flat string with instruct sequences and a story block (`text_completion.rs`). The provider profile `format_mode` field selects the path.
 
@@ -175,7 +181,7 @@ See [`docs/presets.md`](docs/presets.md) for full details on preset semantics an
 
 ## Plugin system
 
-Plugins are capability-limited Wasm modules that contribute declarative behavior to the engine without directly mutating engine state. Plugins must be pure so that sessions remain deterministically replayable offline.
+Plugins are capability-limited Wasm or QuickJS Script components that return declarative effects without directly mutating engine state. The host records accepted effects for offline Replay. The separate `st-bridge` runtime runs headless SillyTavern Extensions through sanctioned mutation and brokered-effect surfaces.
 
 ### Plugin packaging
 
@@ -196,7 +202,7 @@ The `runtime` manifest field selects the runtime. A `wasm` plugin runs in Wasmti
 
 ### Capability model
 
-Plugins are **sandboxed by design**. MVP capabilities are strictly limited to:
+Plugins are **sandboxed by design**. The original MVP capability boundary is shown below; raw network access remains forbidden:
 
 | Allowed | Forbidden |
 |---|---|
@@ -210,16 +216,18 @@ Plugins are **sandboxed by design**. MVP capabilities are strictly limited to:
 | | Arbitrary segment mutation |
 | | Post-commit state mutation |
 
+The implemented post-MVP host also supports read-only Artifact inspection, Brokered HTTPS Egress, and Secondary Inference. Wasm components request live operations through declared effects; Script Plugins remain offline. The `st-bridge` exposes grant-controlled host APIs. These operations do not grant raw sockets or direct provider access. See the [runtime matrix](docs/plugins.md#choose-a-runtime) and [ADR 0010](docs/adr/0010-brokered-egress-and-secondary-inference.md).
+
 Plugins return **declarative, serializable effects** and receive no mutable engine references. This means the engine can record exactly what a plugin did and replay it without re-executing the Wasm component.
 
 ### Plugin lifecycle in a Session
 
 1. **Install**: `stcli plugin install <directory>` validates the manifest, verifies the component hash, and stores it locally.
-2. **Pin**: A Session Configuration Revision pins exact component digests and capability grants via `ExtensionPin { id, version, component_hash }`. Installing an update never changes existing sessions.
-3. **Adopt**: `stcli plugin adopt --session <id> <id>@<digest>` explicitly creates a new configuration revision with the updated plugin.
-4. **Execute**: During a turn, plugins are ordered topologically by declared dependencies, with `before`/`after` ordering within slots and plugin ID as tiebreaker. Cycles fail before an attempt starts.
+2. **Pin**: A Session Configuration Revision pins the exact Plugin ID, version, component digest, and capability grants. Installing an update never changes existing Sessions.
+3. **Adopt**: `stcli plugin adopt --session <session-id> <plugin-id> --version <version> --digest <digest> --capability <capability>` creates a new configuration revision. Repeat `--capability` for each required grant.
+4. **Execute**: Dependencies determine topological order. Loading order and Plugin ID break ties; prompt slots also honor `before`/`after` constraints. Cycles fail before an Attempt starts.
 5. **Replay**: Recorded effects are replayed without component execution — the Wasm binary is not loaded during replay.
-6. **Disable/Remove**: Plugins can be disabled or removed without affecting past sessions.
+6. **Disable/Remove**: Disabling appends a Session Configuration Revision. Removal refuses packages referenced by any stored Session Configuration Revision.
 
 ### Plugin data flow
 

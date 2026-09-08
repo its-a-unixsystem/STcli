@@ -55,7 +55,7 @@
 
     <svg viewBox="0 0 1040 660" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="cnt-title cnt-desc">
       <title id="cnt-title">Container Diagram — STcli Workspace</title>
-      <desc id="cnt-desc">A Roleplayer runs the stcli-cli binary, which calls the stcli-core engine library. The core reads and writes a bundled SQLite WAL database, evaluates lore regex in an isolated regex-worker subprocess, and streams generation requests to an external OpenAI-compatible provider. The CLI drives a deterministic provider-test fixture server during integration testing.</desc>
+      <desc id="cnt-desc">The stcli binary exposes CLI commands and the stcli-tui interactive frontend through the same Core engine seam. Core owns SQLite, isolated regex evaluation, and provider calls. Host brokers enforce grants for Extension egress and Secondary Inference. The provider-test server supports deterministic integration tests.</desc>
       <defs>
         <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
         <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
@@ -115,7 +115,7 @@
       <rect x="168" y="256" width="34" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.45)" stroke-width="0.8"/>
       <text x="185" y="265" fill="#2d3142" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">BIN</text>
       <text x="240" y="290" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">stcli-cli</text>
-      <text x="240" y="304" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">clap · json/jsonl</text>
+      <text x="240" y="304" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">CLI + stcli-tui</text>
 
       <!-- stcli-core (FOCAL) -->
       <rect x="128" y="392" width="224" height="88" rx="6" fill="#f5f5f5"/>

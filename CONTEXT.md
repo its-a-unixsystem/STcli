@@ -139,11 +139,11 @@ Explicit authorization for the exact digest of transformation scripts embedded i
 _Avoid_: Plugin grant, trusted preset, implicit authorization
 
 **Plugin**:
-A capability-limited, sandboxed Wasm module that contributes declarative behavior to the engine without directly mutating engine state. Sessions pin exact component digests.
+A capability-limited, sandboxed Wasm or QuickJS Script component that contributes declarative behavior without directly mutating engine state. Sessions pin exact component digests.
 _Avoid_: Extension, add-on, native extension
 
 **Extension**:
-A SillyTavern JavaScript extension run headless by STcli through a compatibility bridge. It observes a read-only view of session state and influences a turn only through sanctioned surfaces. Distinct from a Plugin. Out of scope for the MVP; targeted by the v1.0 compatibility bridge.
+A SillyTavern JavaScript extension run headless by STcli through the implemented `st-bridge` compatibility runtime. It reads a frozen Session snapshot and acts through sanctioned prompt, state, command, and brokered-effect surfaces. Distinct from a Plugin. Supported workflows can expose declared native interactions; arbitrary browser UI remains unsupported.
 _Avoid_: Plugin, add-on, native extension, Runtime Extension
 
 **Logical Deletion**:

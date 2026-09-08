@@ -55,7 +55,7 @@
 
     <svg viewBox="0 0 1040 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="plugin-lifecycle-title plugin-lifecycle-desc">
       <title id="plugin-lifecycle-title">Plugin Lifecycle: From Bundle to Recorded Effects</title>
-      <desc id="plugin-lifecycle-desc">An author writes a plugin bundle, then validates it with plugin doctor, installs it to the local store, and adopts it into a session with a pinned version, digest, and capabilities. On each turn the engine runs the plugin in a sandbox as a pure function, validates the returned effects against the grant, applies the allowed effects to state and the prompt, and records them in the SQLite Turn Trace. Replay reads the recorded effects and does not run the plugin again.</desc>
+      <desc id="plugin-lifecycle-desc">An author validates, installs, and adopts a digest-pinned Plugin with explicit grants. The sandbox returns declarative effects. The host validates effects, brokers granted live operations, and records outcomes in the Turn Trace. Replay reads those outcomes without executing the component.</desc>
       <defs>
         <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
         <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
@@ -103,7 +103,7 @@
       <!-- ============ SANDBOX BOUNDARY (around run) ============ -->
       <rect x="800" y="380" width="196" height="96" rx="8" fill="rgba(235,108,54,0.05)" stroke="rgba(235,108,54,0.50)" stroke-width="1" stroke-dasharray="5,4"/>
       <rect x="812" y="374" width="184" height="12" rx="2" fill="#f5f5f5"/>
-      <text x="820" y="383" fill="#b0562a" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.10em">SANDBOX · NO NET / FS / SECRETS</text>
+      <text x="820" y="383" fill="#b0562a" font-size="7" font-family="'Geist Mono', monospace" letter-spacing="0.10em">NO RAW I/O / SECRETS</text>
 
       <!-- ============ ROW 1 NODES ============ -->
       <!-- write bundle (input) -->
@@ -145,7 +145,7 @@
       <rect x="824" y="400" width="52" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.60)" stroke-width="0.8"/>
       <text x="850" y="409" fill="#eb6c36" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">RUNTIME</text>
       <text x="898" y="434" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">run</text>
-      <text x="898" y="450" fill="#b0562a" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">pure function</text>
+      <text x="898" y="450" fill="#b0562a" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">sandboxed component</text>
 
       <!-- validate effects -->
       <rect x="560" y="392" width="180" height="72" rx="6" fill="#ffffff"/>

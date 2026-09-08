@@ -44,13 +44,13 @@ A plugin can do these things when its manifest requests them and the session gra
 - Write to its own state namespace.
 - Abort a turn before the provider request (Wasm only).
 
-Plugin code never receives raw socket, filesystem, provider, or secret access. Wasm and Script components remain declarative and offline. An `st-bridge` Extension may request Brokered HTTPS Egress or Secondary Inference through the host-controlled boundaries defined by [ADR 0006](adr/0006-layered-plugins-and-brokered-effects.md) and [ADR 0010](adr/0010-brokered-egress-and-secondary-inference.md); the host enforces grants, injects secrets out of band, and records receipts.
+Plugin code never receives raw socket, filesystem, provider, or secret access. Script Plugins remain offline. Wasm Plugins can request brokered operations through declarative effects. An `st-bridge` Extension can request Brokered HTTPS Egress or Secondary Inference through host APIs. The host enforces grants, injects secrets out of band, and records receipts under [ADR 0006](adr/0006-layered-plugins-and-brokered-effects.md) and [ADR 0010](adr/0010-brokered-egress-and-secondary-inference.md).
 
 ## How a plugin runs
 
-During a turn, the engine calls each subscribed plugin one time for each event the plugin subscribes to. The call is a pure function: the engine passes canonical JSON in, and the plugin returns canonical JSON out.
+For each subscribed lifecycle event, the engine passes canonical JSON to the Plugin and receives declarative effects. The host controls any granted live effects. An `st-bridge` Extension instead uses a persistent QuickJS context and supported SillyTavern callbacks, with recorded outcomes for Replay.
 
-![Plugin lifecycle: an author writes a bundle, validates it with plugin doctor, installs it to the local store, and adopts it into a session with a pinned version, digest, and capabilities. On each turn the engine runs the plugin in a sandbox as a pure function, validates the returned effects against the grant, applies the allowed effects to state and the prompt, and records them in the SQLite Turn Trace. Replay reads the recorded effects and does not run the plugin again.](diagrams/plugin-lifecycle.png)
+![Plugin lifecycle: validate and install a package, adopt its exact digest with grants, execute its sandboxed component, validate effects, and record accepted outcomes. The host brokers granted live effects. Replay reads recorded outcomes without executing the component.](diagrams/plugin-lifecycle.png)
 
 <!-- Editable source: docs/diagrams/plugin-lifecycle.html — re-export the PNG with headless Chromium after edits. -->
 
@@ -143,7 +143,7 @@ pinned lifecycle fixture. Its primary Turn and both Secondary Inference APIs sha
 provider-agnostic environment variables, require no Extension egress, and assert only structural
 completion plus secret exclusion. It does not launch Chromium or Electron, render a graphical pane
 or HTML/CSS, or make a visual compatibility claim. See the
-[live-provider smoke operator policy](testing.md#live-provider-smoke-test-opt-in).
+[live-provider smoke operator policy](testing.md#j-live-provider-smoke-test-opt-in).
 
 ### Extension slash commands
 
@@ -490,6 +490,8 @@ The bundled Summarize settings workflow and **Summarize now** action remain sepa
 verified against the content-addressed `memory` 1.1.0 package and engine-seam tests. Roadway's
 controlled content-choice workflow is separately `partially-available`; the upstream runtime remains
 `unverified` and unsupported.
+
+#### Workflow support evidence
 
 | Reference workflow | Support | Tested identity | Executable evidence | Demonstrated | Not demonstrated |
 |---|---|---|---|---|---|

@@ -1,6 +1,6 @@
 # Configuration
 
-Provider profiles are stored in `config/config.toml` under the STcli home directory.
+With `STCLI_HOME` set, provider profiles live in `$STCLI_HOME/config/config.toml`. Otherwise, Unix uses `$XDG_CONFIG_HOME/stcli/config.toml` (default `~/.config/stcli/config.toml`), and Windows uses `%APPDATA%\STcli\config.toml`.
 
 ## Provider credentials
 

@@ -10,13 +10,13 @@
 
 A roleplay engine written in Rust that runs your [SillyTavern](https://github.com/SillyTavern/SillyTavern) content — character cards, lorebooks, and Chat Completion presets — locally from the terminal.
 
-[**SillyTavern Compatibility**: `[█████████████░░░░░░░]` **67%**](docs/sillytavern-parity.md)
+[**SillyTavern compatibility coverage**](docs/sillytavern-parity.md#compatibility-progress)
 
 STcli is not a SillyTavern rewrite or fork. It is an independent engine that understands SillyTavern's content formats and prompt behavior, so you can bring your existing cards and presets without starting over. The project is unofficial and unaffiliated with the SillyTavern team.
 
 ## Why STcli
 
-- **Your content, your machine.** Import the character cards, lorebooks, and presets you already have. The only network call is to the model provider you choose — no telemetry, no cloud account.
+- **Your content, your machine.** Import your existing character cards, lorebooks, and presets. Provider calls use your configured endpoints. Extension HTTPS requests require an explicit domain grant. No telemetry or cloud account.
 - **Branch freely.** Retries, edits, and greeting changes each create a new branch. The original stays intact, so you can explore without losing anything.
 - **See what the model sees.** Inspect prompt order, lore activation, macro expansion, token counts, and pruning for every turn. Export a turn as a self-contained capsule and replay it offline.
 - **Explicit compatibility.** Every SillyTavern feature is classified — supported, preserved, fallback, or unsupported — in the [parity matrix](docs/sillytavern-parity.md). No silent behavior differences.
@@ -29,6 +29,7 @@ STcli is not a SillyTavern rewrite or fork. It is an independent engine that und
 - Rust 1.89+ (pinned in `rust-toolchain.toml`)
 - Linux x86-64 or Windows x86-64
 - An OpenAI-compatible Chat Completions endpoint (HTTPS only)
+- On Linux, D-Bus development headers and `pkg-config` for Credential Store support (Debian/Ubuntu: `sudo apt-get install libdbus-1-dev pkg-config`)
 
 ### Build
 
@@ -90,6 +91,8 @@ stcli tui <session-id>   # jump straight into a session
 
 The TUI gives you a session browser, a chat view with streaming generation, branch and greeting navigation, candidate cycling (swipes), and provider/preset switching — all keyboard-driven with mouse support.
 
+Candidate content uses bounded Markdown and HTML conversion to styled terminal text, without a browser or graphical renderer. In Chat history, press `E` for native controls from Extensions that declare supported workflows. See the [TUI guide](docs/tui.md) for controls and rendering limits.
+
 Configure providers and theme in `config.toml` (e.g. `~/.config/stcli/config.toml` on Linux):
 
 ```toml
@@ -105,12 +108,12 @@ model = "model-name"
 stream = true
 ```
 
-Provider credentials must reference environment variables — literal secrets are rejected. Set `STCLI_HOME` to keep all config and data under one directory.
+Provider credentials reference environment variables or the platform Credential Store through `credential_key`; literal secrets are rejected. See [Configuration](docs/configuration.md) for credential management. Set `STCLI_HOME` to keep all configuration and data under one directory.
 
 ## Privacy
 
-- Network traffic goes only to the HTTPS provider you configure.
-- API keys are referenced by environment variable name; resolved secrets never touch the database, logs, or CLI output.
+- Provider traffic uses configured HTTPS endpoints. Granted Extensions can also request brokered HTTPS access to explicitly allowed domains; egress is denied by default.
+- API keys use environment variable references or Credential References; resolved secrets never enter the database, logs, or CLI output.
 - On Unix, directories are created with mode `0700` and the database with `0600`.
 - No telemetry. No hosted account. No sync.
 
@@ -133,7 +136,7 @@ Run the compatibility test suite:
 cargo run --quiet --bin stcli -- --output json compat verify
 ```
 
-Group chat, STscript, UI extensions, and vector lore are outside the current profile. See the [parity matrix](docs/sillytavern-parity.md) for the full breakdown and the [preset reference](docs/presets.md) for field-level details.
+Group chat and vector lore remain outside the current implementation. STscript and the headless SillyTavern Extension bridge support bounded subsets, not arbitrary browser workflows. See the [parity matrix](docs/sillytavern-parity.md), [Extension support evidence](docs/plugins.md#declared-interaction-surfaces), and [preset reference](docs/presets.md).
 
 ## Documentation
 
@@ -141,6 +144,8 @@ Group chat, STscript, UI extensions, and vector lore are outside the current pro
 |---|---|---|
 | [Usage guide](docs/guide.md) | Users | Import, sessions, generation, editing, capsules, plugins |
 | [CLI reference](docs/cli.md) | Users | Every command, subcommand, and flag |
+| [TUI guide](docs/tui.md) | Users | Keyboard controls, Extension forms, and styled Candidate presentation |
+| [Configuration](docs/configuration.md) | Users | Provider credentials and platform Credential Store references |
 | [Preset reference](docs/presets.md) | Users | Chat Completion preset semantics and field classification |
 | [Text Completion](docs/text-completion.md) | Users | Flat-prompt provider profiles, instruct templates, story strings |
 | [Examples](examples/README.md) | Users | Sample character, lorebook, and preset files |
@@ -161,17 +166,18 @@ Group chat, STscript, UI extensions, and vector lore are outside the current pro
 | **v0.4** ✅ | Text Completion | Instruct/context templates, story strings, flat-prompt mode |
 | **v0.5** | Group roleplay | Multiple characters, reply-order strategies, group lore and variables |
 | **v0.6** ✅ | STscript | Parser, commands, pipes, closures, scoped variables |
-| **v0.7** | Retrieval & live plugins | Embedding/vector lore, plugin HTTP/filesystem capabilities |
-| **v1.0** | JS compatibility bridge | Sandboxed subset of SillyTavern's extension APIs |
+| **v0.7** | Retrieval & live plugins | Brokered HTTPS, Secondary Inference, and Background Attempts implemented; retrieval/vector lore and trusted filesystem integrations remain pending |
+| **v1.0** | JS compatibility bridge | Headless subset implemented, with digest-pinned adoption, brokered effects, and declared native interactions; broader upstream compatibility remains partial |
 | **v1.x** | Broader ecosystem | Browser frontend, tool calling, multimedia, local daemon |
 
 ## Development
 
 ```bash
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo run --quiet --bin stcli -- --output json compat verify
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo run --quiet --locked --bin stcli -- --output json compat verify
+cargo deny --all-features --locked check advisories bans licenses
 git diff --check
 ```
 

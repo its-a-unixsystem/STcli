@@ -19,6 +19,9 @@ This document defines how STcli is tested: the layers, where a new test belongs,
 | 0005 | Deletion is tombstones; compaction is reference-safe | Compaction tests in `turn_transactions.rs`, migration fixtures reproducing the 20a7fa1 ancestry shape |
 | 0009 | Extensions are imported and digest-pinned per Session; live JavaScript effects are recorded and Replay does not execute the Extension | `st_bridge.rs`: `imports_native_extension_and_adopts_fixed_bridge_grant`, `mid_session_extension_adoption_is_nonretroactive_and_resets_transient_state`, and `real_extension_complete_session_workflow_replays_offline` |
 | 0010 | Egress and Secondary Inference cross brokered, receipt-producing boundaries and replay offline | `st_bridge.rs`: `allowed_fetch_records_receipt_and_replays_offline`, `real_extension_egress_uses_local_tls_wire_path`, `secondary_inference_replay_uses_recorded_text_with_zero_calls`, and `real_extension_complete_session_workflow_replays_offline` |
+| 0013 | Candidate presentation suppresses Concealed Content and terminal controls without changing source | `stcli-tui/src/content.rs`: `renders_mixed_candidate_content_as_styled_text` and `suppresses_concealed_content_and_neutralizes_terminal_controls` |
+
+Native Extension controls are covered by `crates/stcli-tui/tests/extension_interactions.rs` and the interaction cases in `crates/stcli-core/tests/engine_seam.rs`. The [workflow evidence table](plugins.md#workflow-support-evidence) distinguishes supported Summarize behavior from controlled Stepped Thinking and Roadway fixtures. ADR 0012 is retired; graphical renderer probes are historical evidence, not current test targets.
 
 ## 2. The five layers
 
@@ -39,7 +42,7 @@ Where a new test goes, in decision order (mirrors ARCHITECTURE.md "where to add 
 
 ## 3. Workstreams
 
-Priority order. Effort estimates assume the testkit (B) exists for everything after it.
+The workstreams below retain the original test-expansion plan. Their effort estimates and gap inventories describe that planning baseline, not a current coverage audit. The repository already contains the shared testkit, protocol suites, coverage ratchet, migration fixtures, provider-failure tests, and property tests. Section I records the current CI setup; the named source files are authoritative for implemented coverage.
 
 ### A. Oracle files in-repo and strict verification
 
@@ -221,8 +224,8 @@ smoke is deliberately separate in `.github/workflows/live-smoke.yml`: it runs on
 weekly schedule or `workflow_dispatch`, is named `Live provider smoke (informational)`, and is not a
 dependency of `quality`.
 
-- **Caching**: `Swatinem/rust-cache@v2` in every job, keyed on `Cargo.lock` and the toolchain. The biggest wall-clock win — wasmtime and bundled-SQLite currently rebuild from scratch on every run.
-- **`cargo-deny`** in `lint`: an AGPL project on top of the wasmtime/axum/reqwest trees has real license- and advisory-drift risk, and the cost is one `deny.toml`. No separate `cargo-audit` (a subset of deny).
+- **Caching**: `actions/cache@v4` stores the Cargo registry, Git cache, and build output, keyed by job, platform, toolchain, and `Cargo.lock`.
+- **Dependency policy**: The separate `dependencies` job runs `cargo-deny` with `--all-features --locked` for advisories, bans, and licenses. It is required by `quality`.
 - **Coverage is informational**: collect and display, never gate. On a codebase whose strongest checks are hash comparisons, a percentage threshold produces noise and gaming, not quality. Use the report to find under-tested modules (`capsule.rs` and `lore.rs` are the current standouts).
 - **No nextest**: per-test process isolation would *mask* the env-var mutation problem that workstream B fixes properly, and `cargo test` parallelism is adequate at this scale. Revisit if suite wall time exceeds ~5 minutes post-caching.
 - **Windows is a pre-v1.0 release gate**, not a current job. When it lands: `windows-latest`, same commands, non-required until green for a week. Expected breakage points: the bundled-SQLite build, subprocess regex-worker paths, and path/permission semantics per the PRD risk table.
@@ -276,7 +279,7 @@ The v0.2 TUI and v1.x daemon/browser frontends bind to exactly the surface §C p
 
 - **No `insta` / snapshot library.** Canonical hashing plus checked-in goldens are snapshots with better provenance and no review-tool dependency. Snapshotting free-text output would freeze incidental formatting.
 - **No `assert_cmd`, `predicates`, `wiremock`, or `rstest`.** Each is replaced by ≤30 lines in the testkit, the shipped mock provider, or a plain table respectively.
-- **No `criterion` or benchmarks** until a latency SLO exists (the daemon era).
+- **Benchmarks are separate from correctness tests.** Criterion benchmarks live in `crates/stcli-core/benches/engine.rs`; run them with `cargo bench -p stcli-core --bench engine`. They are not a required CI latency gate.
 - **No per-subcommand flag matrix.** The loop suite covers semantics; the protocol suite covers shapes; clap parsing errors are cheap to spot.
 - **No coverage threshold.**
 - **No mocking of SQLite or wasmtime.** Tempdir plus real dependencies are fast enough, and the ADR invariants only mean anything against the real store.
@@ -305,7 +308,7 @@ The v0.2 TUI and v1.x daemon/browser frontends bind to exactly the surface §C p
 | **P4** | E (ratchet lands first; corpus fills incrementally) | Largest effort, de-risked by the ratchet |
 | **P5** | H (proptest) + J (live smoke) + coverage job + plugin-wasm job + cron wiring; Windows as a pre-v1.0 gate | Hardening, no urgency |
 
-Net new test dependencies across the whole strategy: **`proptest`**. New CI tooling: `Swatinem/rust-cache`, `cargo-deny`, `cargo-llvm-cov`, and the wasm target for the rebuild job.
+The original strategy added `proptest`; benchmark targets also use Criterion. Current CI uses `actions/cache`, `cargo-deny`, `cargo-llvm-cov`, and a separate Wasm reproducibility workflow.
 
 ## 8. Conventions appendix
 

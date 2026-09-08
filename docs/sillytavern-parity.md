@@ -20,7 +20,7 @@ A feature is in Part 2, not Part 1, when SillyTavern has no equivalent. A comman
 
 ## Compatibility progress
 
-`[██████████████░░░░░░]` **68%** (45 / 66 SillyTavern features fully implemented)
+**68%** (51 / 75 tracked SillyTavern features fully implemented)
 
 The percentage counts fully implemented features (✅) against all tracked SillyTavern features. Partial features (⚠️), planned gaps (❌), and by-design exclusions (🛑) are not counted as implemented. STcli-only features (Part 2) are excluded from the total.
 
@@ -66,7 +66,7 @@ The percentage counts fully implemented features (✅) against all tracked Silly
 | **Prompt itemization** | ✅ | Inspect raw and rendered content per segment with `stcli prompt inspect <attempt> --segment <slot_or_index>`. Shows correlated macro, regex, and state metadata. |
 | **Generation prompt diffing (`diffPrevPrompt`)** | ✅ | Segment, line, word, and token-delta diffing between attempts or predecessor turns. Use `stcli prompt diff` or `stcli prompt inspect --diff-prev`. |
 | **Flat text completion prompts** | ⚠️ | Story strings, instruct templates, and separators in [`crates/stcli-core/src/text_completion.rs`](../crates/stcli-core/src/text_completion.rs). Selected per provider profile (`format_mode: text-completion`). Not yet tested against a live provider. See [`docs/text-completion.md`](text-completion.md). Planned for **v0.4**. |
-| **Extension directive comments** | ⚠️ | Directives such as `NemoPresetExt` comments are kept intact as text, with a warning. |
+| **Extension directive comments** | ⚠️ | Core preserves community directives as text. The default `org.stcli.nemo-directives` Plugin evaluates supported NemoPresetExt exclusivity and warning directives for the TUI; this is not full upstream Extension compatibility. |
 
 ## 3. World Info / lorebooks
 
@@ -147,7 +147,7 @@ SillyTavern ships these bundled extensions. Each row is one of them.
 | **Expressions** | ❌ | Emotion classification and character sprites planned for **v0.3 / v1.x**. |
 | **Image Captioning** | ❌ | Multimodal captioning adapter planned for **v1.x**. |
 | **Gallery** | ❌ | Media gallery viewer planned for **v1.x**. |
-| **Summarize (Memory)** | ✅ | Bundled, opt-in `memory` Extension implements the pinned Main API raw non-blocking builder. It records linked background Attempts, validates Branch-safe checkpoints, injects `{{summary}}`, and replays offline. Extras, WebLLM, Classic/default builders, World Info scanning, visual settings, and Restore Previous are excluded. |
+| **Summarize (Memory)** | ✅ | Bundled, opt-in `memory` 1.1.0 implements the pinned Main API raw non-blocking builder. It records linked background Attempts, validates Branch-safe checkpoints, injects `{{summary}}`, and replays offline. Native TUI controls expose configuration and **Summarize now**. Extras, WebLLM, Classic/default builders, World Info scanning, the upstream browser UI, and Restore Previous are excluded. See [the supported workflow](plugins.md#declared-interaction-surfaces). |
 | **Quick Reply** | ❌ | Shortcut action palette in the TUI planned for **v0.2**. |
 | **Image Generation** | ❌ | Stable Diffusion, FLUX, and DALL-E integration planned for **v1.x**. |
 | **Chat Translation** | ❌ | Provider-backed message translation planned for the roadmap. |
@@ -159,7 +159,7 @@ SillyTavern ships these bundled extensions. Each row is one of them.
 
 | Feature | Status | Remarks & Implementation Seam |
 | :--- | :---: | :--- |
-| **SillyTavern JS UI extensions** | ⚠️ | Headless Extensions run through the sandboxed `st-bridge`. Browser compatibility stubs map `console.*` to runtime logs; make `toastr.*` warn and return `undefined`; make global and `SillyTavern.callPopup` warn and resolve to `null`; provide chainable no-op `$`/`jQuery` with brokered `$.ajax`; and provide `window`/`document` no-ops whose queries return `null` or empty arrays and whose created elements are chainable. Stub diagnostics warn once per Extension runtime and API and never enter the roleplay stream. Visual rendering remains unsupported. |
+| **SillyTavern JS UI extensions** | ⚠️ | Headless Extensions run through sandboxed `st-bridge` QuickJS contexts. Browser APIs remain bounded, warned stubs; `$.ajax` uses the broker. Packages with declared interaction surfaces expose native TUI forms and actions. Summarize has a supported workflow; Stepped Thinking and Roadway demonstrate controlled fixtures, not full upstream compatibility. Arbitrary browser UI and graphical terminal rendering remain unsupported. See [workflow support evidence](plugins.md#declared-interaction-surfaces). |
 | **Extension settings and `localStorage`** | ✅ | The `st-bridge` maps `extension_settings[id]` to `local:extension.<id>.settings` and `localStorage[key]` to `local:extension.<id>.ls.<key>`. `saveSettingsDebounced()` writes through synchronously. Values persist across turns and disable/re-enable, and each Extension can access only its own namespace. |
 | **Server plugins** | 🛑 | An MVP non-goal. Trusted sidecars planned for **v1.x**. |
 | **External Wasm codecs** | ❌ | An extensible artifact-parsing interface planned for **v0.2**. |
@@ -183,4 +183,4 @@ These are STcli features. SillyTavern has no equivalent, or STcli does the job i
 | **Grant-gated regex scripts** | A regex script runs only after you approve its SHA-256 digest (`--grant-script`). SillyTavern runs card regex with no such gate. This is STcli's take on the Regex extension. |
 | **Sandboxed plugins (Wasm + QuickJS)** | Plugins run in isolation with brokered effects ([ADR 0003](adr/0003-pure-wasm-plugins.md), [ADR 0006](adr/0006-layered-plugins-and-brokered-effects.md)). SillyTavern third-party extensions run as unsandboxed browser JavaScript. See [`docs/plugins.md`](plugins.md). |
 | **Prompt itemization with diff** | Inspect raw and rendered content per segment, and diff segments across attempts. This goes past SillyTavern's prompt itemizer. See section 2. |
-| **Local-first, no telemetry** | The only network call is to the model provider you choose. There is no cloud account and no analytics. |
+| **Local-first, no telemetry** | Provider calls use configured HTTPS endpoints. Extension egress requires explicit grants and domain allow-lists. There is no cloud account or analytics. |
