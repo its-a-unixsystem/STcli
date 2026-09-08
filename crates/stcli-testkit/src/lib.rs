@@ -56,6 +56,86 @@ pub mod fixtures {
     }
 }
 
+pub fn write_stepped_thinking_interaction_fixture(directory: &Path) -> PathBuf {
+    let package = directory.join("stepped-thinking-fixture");
+    std::fs::create_dir_all(&package).unwrap();
+    let component = b"globalThis.__stcliSteppedThinkingFixture = true;";
+    let digest = stcli_core::plugin_digest(component);
+    std::fs::write(package.join("index.js"), component).unwrap();
+    std::fs::write(
+        package.join("manifest.json"),
+        serde_json::to_vec_pretty(&json!({
+            "schema": "stcli.plugin-manifest/v1",
+            "id": "org.stcli.stepped-thinking-fixture",
+            "version": "3.2.3-fixture.1",
+            "engine": ">=0.1.0, <0.2.0",
+            "runtime": "st-bridge",
+            "component": "index.js",
+            "component_sha256": digest,
+            "dependencies": [],
+            "license": "LicenseRef-TestFixture",
+            "subscriptions": [],
+            "prompt_slots": [],
+            "commands": [],
+            "macros": [],
+            "settings_schema": "settings.schema.json",
+            "requested_capabilities": ["write-own-state"],
+            "before": [],
+            "after": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        package.join("settings.schema.json"),
+        serde_json::to_vec_pretty(&json!({
+            "type": "object",
+            "properties": {
+                "prompts": {
+                    "type": "array",
+                    "default": [
+                        {"id": "plan", "prompt": "Plan", "enabled": true},
+                        {"id": "check", "prompt": "Check", "enabled": false}
+                    ],
+                    "title": "Thinking prompts",
+                    "description": "Ordered prompts used by the controlled fixture.",
+                    "x-stcli-control": "ordered-list",
+                    "items": {
+                        "type": "object",
+                        "required": ["id", "prompt", "enabled"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "prompt": {"type": "string", "title": "Prompt", "x-stcli-control": "multiline-text"},
+                            "enabled": {"type": "boolean", "title": "Enabled", "x-stcli-control": "boolean"}
+                        }
+                    },
+                    "x-stcli-item-id": "id"
+                },
+                "character": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Character",
+                    "description": "Character used by the controlled fixture.",
+                    "x-stcli-control": "resource-selector",
+                    "x-stcli-resource": "characters"
+                }
+            },
+            "x-stcli-interaction": {
+                "schema": "stcli.interaction/v1",
+                "id": "stepped-thinking-settings",
+                "component_sha256": digest,
+                "support": "partially-available",
+                "support_reason": "Controlled fixture demonstrates settings controls only; the upstream runtime is not ported.",
+                "groups": [{"label": "Stepped Thinking", "help": "Controlled fixture controls.", "fields": ["prompts", "character"]}],
+                "actions": []
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    package
+}
+
 pub fn configuration(character_revision: ContentHash) -> SessionConfiguration {
     SessionConfiguration {
         compatibility_profile: "sillytavern-1.18-core".to_owned(),

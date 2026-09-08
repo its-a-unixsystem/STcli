@@ -242,6 +242,31 @@ impl StcliEngine {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
+        let characters = store
+            .artifacts()?
+            .into_iter()
+            .filter(|record| {
+                matches!(
+                    record.kind,
+                    crate::ArtifactKind::CharacterCardV1
+                        | crate::ArtifactKind::CharacterCardV2
+                        | crate::ArtifactKind::CharacterCardV3
+                )
+            })
+            .map(|record| {
+                let decoded = store.decoded_artifact(&record.revision_hash)?;
+                let label = decoded
+                    .semantic
+                    .get("data")
+                    .and_then(|data| data.get("name"))
+                    .or_else(|| decoded.semantic.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|name| !name.trim().is_empty())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| record.revision_hash.to_string());
+                Ok((record.revision_hash, label))
+            })
+            .collect::<Result<Vec<_>, crate::ArtifactError>>()?;
         let state = store.state_transaction(session_id)?;
         let completed_attempt = branch_id
             .map(|branch_id| store.latest_completed_primary_attempt(branch_id))
@@ -277,6 +302,7 @@ impl StcliEngine {
                     enabled: pin.enabled,
                     capabilities: &pin.capabilities,
                     provider_profiles: &providers,
+                    characters: &characters,
                     completed_attempt,
                 },
             )?);

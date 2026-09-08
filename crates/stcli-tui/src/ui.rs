@@ -1865,6 +1865,9 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                             .find(|choice| choice.value == *value)
                             .map(|choice| choice.label.clone())
                             .unwrap_or_else(|| format!("{value:?}")),
+                        crate::app::InteractionDraftValue::OrderedList(items) => {
+                            format!("{} items", items.len())
+                        }
                     };
                     let unavailable = field
                         .unavailable_reason
@@ -1875,6 +1878,66 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                         "{marker} {}: {value}{unavailable}",
                         field.label
                     )));
+                    if field.control == stcli_core::InteractionControl::ResourceSelector
+                        && state.focused == field_index
+                    {
+                        lines.push(Line::from(format!(
+                            "  Search: {} · ←/→ select",
+                            state.resource_filter.as_deref().unwrap_or_default()
+                        )));
+                    }
+                    if let crate::app::InteractionDraftValue::OrderedList(items) = &draft.value {
+                        let schema = field.list.as_ref().expect("ordered-list field schema");
+                        for (item_index, item) in items.iter().enumerate() {
+                            let marker =
+                                if state.focused == field_index && state.list_item == item_index {
+                                    "  ›"
+                                } else {
+                                    "   "
+                                };
+                            let values = schema
+                                .fields
+                                .iter()
+                                .enumerate()
+                                .map(|(list_field_index, list_field)| {
+                                    let value = item
+                                        .values
+                                        .get(&list_field.property)
+                                        .map(|value| match value {
+                                            stcli_core::InteractionValue::Boolean(value) => {
+                                                if *value {
+                                                    "On".to_owned()
+                                                } else {
+                                                    "Off".to_owned()
+                                                }
+                                            }
+                                            stcli_core::InteractionValue::Text(value) => {
+                                                display_safe(value)
+                                            }
+                                            value => format!("{value:?}"),
+                                        })
+                                        .unwrap_or_default();
+                                    let selected = if state.focused == field_index
+                                        && state.list_item == item_index
+                                        && state.list_field == list_field_index
+                                    {
+                                        "*"
+                                    } else {
+                                        ""
+                                    };
+                                    format!("{}{}: {}", selected, list_field.label, value)
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" · ");
+                            lines.push(Line::from(format!("{marker} {values}")));
+                        }
+                        if state.focused == field_index {
+                            lines.push(Line::from(Span::styled(
+                                "  Ins add · Ctrl+D remove · Ctrl+↑/↓ reorder · ←/→ field · Space toggle",
+                                Style::default().fg(app.theme.muted),
+                            )));
+                        }
+                    }
                     if state.focused == field_index {
                         lines.push(Line::from(Span::styled(
                             format!("  {}{}", field.help, constraint_text(&field.constraints)),

@@ -24,6 +24,13 @@ pub enum InteractionValue {
     Boolean(bool),
     Number(Number),
     Text(String),
+    OrderedList(Vec<InteractionListItem>),
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct InteractionListItem {
+    pub id: String,
+    pub values: BTreeMap<String, InteractionValue>,
 }
 
 impl InteractionValue {
@@ -32,6 +39,11 @@ impl InteractionValue {
             Value::Bool(value) => Some(Self::Boolean(*value)),
             Value::Number(value) => Some(Self::Number(value.clone())),
             Value::String(value) => Some(Self::Text(value.clone())),
+            Value::Array(items) => items
+                .iter()
+                .map(InteractionListItem::from_json)
+                .collect::<Option<Vec<_>>>()
+                .map(Self::OrderedList),
             _ => None,
         }
     }
@@ -41,7 +53,34 @@ impl InteractionValue {
             Self::Boolean(value) => Value::Bool(*value),
             Self::Number(value) => Value::Number(value.clone()),
             Self::Text(value) => Value::String(value.clone()),
+            Self::OrderedList(items) => {
+                Value::Array(items.iter().map(InteractionListItem::to_json).collect())
+            }
         }
+    }
+}
+
+impl InteractionListItem {
+    fn from_json(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        let id = object.get("id")?.as_str()?.to_owned();
+        let values = object
+            .iter()
+            .filter(|(key, _)| key.as_str() != "id")
+            .map(|(key, value)| Some((key.clone(), InteractionValue::from_json(value)?)))
+            .collect::<Option<BTreeMap<_, _>>>()?;
+        Some(Self { id, values })
+    }
+
+    fn to_json(&self) -> Value {
+        let mut object = Map::new();
+        object.insert("id".to_owned(), Value::String(self.id.clone()));
+        object.extend(
+            self.values
+                .iter()
+                .map(|(key, value)| (key.clone(), value.to_json())),
+        );
+        Value::Object(object)
     }
 }
 
@@ -112,12 +151,15 @@ pub enum InteractionControl {
     Text,
     MultilineText,
     Choice,
+    OrderedList,
+    ResourceSelector,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct InteractionChoice {
     pub value: InteractionValue,
     pub label: String,
+    pub available: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -143,7 +185,21 @@ pub struct InteractionField {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unavailable_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub list: Option<InteractionList>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct InteractionList {
+    pub fields: Vec<InteractionListField>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct InteractionListField {
+    pub property: String,
+    pub label: String,
+    pub control: InteractionControl,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -203,17 +259,18 @@ pub(crate) struct DeclaredField {
     maximum: Option<Number>,
     choices: Vec<DeclaredChoice>,
     choice_source: Option<ChoiceSource>,
+    list: Option<DeclaredList>,
+    resource: Option<ResourceKind>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
 enum FieldKind {
     Boolean,
     Integer,
     Number,
     String,
+    Array,
 }
-
 #[derive(Clone, Debug, Serialize)]
 struct DeclaredChoice {
     value: InteractionValue,
@@ -223,6 +280,27 @@ struct DeclaredChoice {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum ChoiceSource {
+    ProviderProfiles,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DeclaredList {
+    item_id: String,
+    fields: Vec<DeclaredListField>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DeclaredListField {
+    property: String,
+    label: String,
+    control: InteractionControl,
+    kind: FieldKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ResourceKind {
+    Characters,
     ProviderProfiles,
 }
 
@@ -487,9 +565,12 @@ fn parse_field(property: &str, source: &Value) -> Result<DeclaredField, PluginEr
         "default",
         "title",
         "description",
+        "items",
         "x-stcli-control",
         "x-stcli-choice-labels",
         "x-stcli-choice-source",
+        "x-stcli-item-id",
+        "x-stcli-resource",
     ]);
     if let Some(keyword) = object.keys().find(|key| !allowed.contains(key.as_str())) {
         return Err(invalid(format!(
@@ -501,6 +582,7 @@ fn parse_field(property: &str, source: &Value) -> Result<DeclaredField, PluginEr
         "integer" => FieldKind::Integer,
         "number" => FieldKind::Number,
         "string" => FieldKind::String,
+        "array" => FieldKind::Array,
         other => {
             return Err(invalid(format!(
                 "interaction field '{property}' has unsupported type '{other}'"
@@ -513,6 +595,8 @@ fn parse_field(property: &str, source: &Value) -> Result<DeclaredField, PluginEr
         "text" => InteractionControl::Text,
         "multiline-text" => InteractionControl::MultilineText,
         "choice" => InteractionControl::Choice,
+        "ordered-list" => InteractionControl::OrderedList,
+        "resource-selector" => InteractionControl::ResourceSelector,
         other => {
             return Err(invalid(format!(
                 "interaction field '{property}' has unsupported control '{other}'"
@@ -528,8 +612,11 @@ fn parse_field(property: &str, source: &Value) -> Result<DeclaredField, PluginEr
             )
             | (
                 FieldKind::String,
-                InteractionControl::Text | InteractionControl::MultilineText
+                InteractionControl::Text
+                    | InteractionControl::MultilineText
+                    | InteractionControl::ResourceSelector
             )
+            | (FieldKind::Array, InteractionControl::OrderedList)
             | (_, InteractionControl::Choice)
     );
     if !compatible {
@@ -543,13 +630,15 @@ fn parse_field(property: &str, source: &Value) -> Result<DeclaredField, PluginEr
     validate_kind(property, kind, default_json)?;
     let default = InteractionValue::from_json(default_json).ok_or_else(|| {
         invalid(format!(
-            "interaction field '{property}' default must be scalar"
+            "interaction field '{property}' default does not match its control"
         ))
     })?;
     let minimum = optional_number(object, "minimum", property)?;
     let maximum = optional_number(object, "maximum", property)?;
-    if matches!(kind, FieldKind::Boolean | FieldKind::String)
-        && (minimum.is_some() || maximum.is_some())
+    if matches!(
+        kind,
+        FieldKind::Boolean | FieldKind::String | FieldKind::Array
+    ) && (minimum.is_some() || maximum.is_some())
     {
         return Err(invalid(format!(
             "interaction field '{property}' has numeric constraints on a non-number"
@@ -649,6 +738,35 @@ fn parse_field(property: &str, source: &Value) -> Result<DeclaredField, PluginEr
             "interaction field '{property}' default is not a declared choice"
         )));
     }
+    let list = (control == InteractionControl::OrderedList)
+        .then(|| parse_list(property, object))
+        .transpose()?;
+    let resource = match object.get("x-stcli-resource").and_then(Value::as_str) {
+        Some("characters") if control == InteractionControl::ResourceSelector => {
+            Some(ResourceKind::Characters)
+        }
+        Some("provider-profiles") if control == InteractionControl::ResourceSelector => {
+            Some(ResourceKind::ProviderProfiles)
+        }
+        Some(other) => {
+            return Err(invalid(format!(
+                "interaction field '{property}' has unsupported resource source '{other}'"
+            )));
+        }
+        None if control == InteractionControl::ResourceSelector => {
+            return Err(invalid(format!(
+                "interaction field '{property}' resource selector requires a source"
+            )));
+        }
+        None => None,
+    };
+    if control != InteractionControl::OrderedList
+        && (object.contains_key("items") || object.contains_key("x-stcli-item-id"))
+    {
+        return Err(invalid(format!(
+            "interaction field '{property}' has list metadata for a non-list control"
+        )));
+    }
 
     Ok(DeclaredField {
         property: property.to_owned(),
@@ -661,7 +779,96 @@ fn parse_field(property: &str, source: &Value) -> Result<DeclaredField, PluginEr
         maximum,
         choices,
         choice_source,
+        list,
+        resource,
     })
+}
+
+fn parse_list(property: &str, object: &Map<String, Value>) -> Result<DeclaredList, PluginError> {
+    let item_id = required_string(object, "x-stcli-item-id", property)?.to_owned();
+    let items = object
+        .get("items")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            invalid(format!(
+                "interaction field '{property}' requires object items"
+            ))
+        })?;
+    let required = items
+        .get("required")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            invalid(format!(
+                "interaction field '{property}' requires item fields"
+            ))
+        })?;
+    let properties = items
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            invalid(format!(
+                "interaction field '{property}' requires item properties"
+            ))
+        })?;
+    if !required
+        .iter()
+        .any(|value| value.as_str() == Some(&item_id))
+    {
+        return Err(invalid(format!(
+            "interaction field '{property}' item id must be required"
+        )));
+    }
+    let id_field = properties
+        .get(&item_id)
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid(format!("interaction field '{property}' item id is missing")))?;
+    if id_field.get("type").and_then(Value::as_str) != Some("string") {
+        return Err(invalid(format!(
+            "interaction field '{property}' item id must be a string"
+        )));
+    }
+    let mut fields = Vec::new();
+    for name in required
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|name| *name != item_id)
+    {
+        let source = properties
+            .get(name)
+            .and_then(Value::as_object)
+            .ok_or_else(|| invalid(format!("interaction list field '{name}' is missing")))?;
+        let kind = match required_string(source, "type", name)? {
+            "boolean" => FieldKind::Boolean,
+            "string" => FieldKind::String,
+            other => {
+                return Err(invalid(format!(
+                    "interaction list field '{name}' has unsupported type '{other}'"
+                )));
+            }
+        };
+        let control = match required_string(source, "x-stcli-control", name)? {
+            "boolean" if kind == FieldKind::Boolean => InteractionControl::Boolean,
+            "text" if kind == FieldKind::String => InteractionControl::Text,
+            "multiline-text" if kind == FieldKind::String => InteractionControl::MultilineText,
+            _ => {
+                return Err(invalid(format!(
+                    "interaction list field '{name}' has incompatible control"
+                )));
+            }
+        };
+        fields.push(DeclaredListField {
+            property: name.to_owned(),
+            label: required_string(source, "title", name)?.to_owned(),
+            control,
+            kind,
+        });
+    }
+    if fields.is_empty() {
+        return Err(invalid(format!(
+            "interaction field '{property}' ordered list requires editable fields"
+        )));
+    }
+    Ok(DeclaredList { item_id, fields })
 }
 
 fn required_string<'a>(
@@ -703,6 +910,7 @@ fn validate_kind(property: &str, kind: FieldKind, value: &Value) -> Result<(), P
         FieldKind::Integer => value.as_i64().is_some() || value.as_u64().is_some(),
         FieldKind::Number => value.is_number(),
         FieldKind::String => value.is_string(),
+        FieldKind::Array => value.is_array(),
     };
     if valid {
         Ok(())
@@ -830,6 +1038,7 @@ pub(crate) struct SurfaceBuild<'a> {
     pub enabled: bool,
     pub capabilities: &'a BTreeSet<PluginCapability>,
     pub provider_profiles: &'a [String],
+    pub characters: &'a [(ContentHash, String)],
     pub completed_attempt: bool,
 }
 
@@ -883,32 +1092,56 @@ pub(crate) fn build_surface(input: SurfaceBuild<'_>) -> Result<InteractionSurfac
                         .map(|choice| InteractionChoice {
                             value: choice.value.clone(),
                             label: choice.label.clone(),
+                            available: true,
                         })
                         .collect::<Vec<_>>();
                     if field.choice_source == Some(ChoiceSource::ProviderProfiles) {
                         choices.push(InteractionChoice {
                             value: InteractionValue::Text(String::new()),
                             label: "Use Session provider".to_owned(),
+                            available: true,
                         });
                         choices.extend(input.provider_profiles.iter().map(|name| {
                             InteractionChoice {
                                 value: InteractionValue::Text(name.clone()),
                                 label: name.clone(),
+                                available: true,
+                            }
+                        }));
+                    }
+                    if field.resource == Some(ResourceKind::Characters) {
+                        choices.extend(input.characters.iter().map(|(reference, label)| {
+                            InteractionChoice {
+                                value: InteractionValue::Text(reference.to_string()),
+                                label: label.clone(),
+                                available: true,
+                            }
+                        }));
+                    } else if field.resource == Some(ResourceKind::ProviderProfiles) {
+                        choices.extend(input.provider_profiles.iter().map(|name| {
+                            InteractionChoice {
+                                value: InteractionValue::Text(name.clone()),
+                                label: name.clone(),
+                                available: true,
                             }
                         }));
                     }
                     let mut error = validate_field_value(field, value_json, &choices).err();
-                    if field.choice_source == Some(ChoiceSource::ProviderProfiles)
-                        && let Some(InteractionValue::Text(current)) =
-                            InteractionValue::from_json(value_json)
+                    if matches!(
+                        field.control,
+                        InteractionControl::Choice | InteractionControl::ResourceSelector
+                    ) && let Some(InteractionValue::Text(current)) =
+                        InteractionValue::from_json(value_json)
+                        && !current.is_empty()
                         && !choices
                             .iter()
                             .any(|choice| choice.value == InteractionValue::Text(current.clone()))
                     {
-                        error = Some("Provider profile is not configured".to_owned());
+                        error = Some("Selected resource is not available".to_owned());
                         choices.push(InteractionChoice {
                             value: InteractionValue::Text(current.clone()),
                             label: format!("{current} (unavailable)"),
+                            available: false,
                         });
                     }
                     Ok(InteractionField {
@@ -926,6 +1159,17 @@ pub(crate) fn build_surface(input: SurfaceBuild<'_>) -> Result<InteractionSurfac
                         visible: true,
                         enabled: can_save,
                         unavailable_reason: save_reason.clone(),
+                        list: field.list.as_ref().map(|list| InteractionList {
+                            fields: list
+                                .fields
+                                .iter()
+                                .map(|field| InteractionListField {
+                                    property: field.property.clone(),
+                                    label: field.label.clone(),
+                                    control: field.control,
+                                })
+                                .collect(),
+                        }),
                         error,
                     })
                 })
@@ -1035,11 +1279,60 @@ fn validate_field_value(
         field.maximum.as_ref(),
     )
     .map_err(|error| bounded(error.to_string()))?;
-    if field.control == InteractionControl::Choice {
+    if matches!(
+        field.control,
+        InteractionControl::Choice | InteractionControl::ResourceSelector
+    ) {
         let value =
             InteractionValue::from_json(value).ok_or_else(|| "Value must be scalar".to_owned())?;
-        if !choices.iter().any(|choice| choice.value == value) {
+        if !choices
+            .iter()
+            .any(|choice| choice.value == value && choice.available)
+        {
             return Err("Value is not an available choice".to_owned());
+        }
+    }
+    if field.control == InteractionControl::OrderedList {
+        validate_ordered_list(field, value)?;
+    }
+    Ok(())
+}
+
+fn validate_ordered_list(field: &DeclaredField, value: &Value) -> Result<(), String> {
+    let declaration = field.list.as_ref().expect("ordered-list declaration");
+    let items = value
+        .as_array()
+        .ok_or_else(|| "Ordered list value must be an array".to_owned())?;
+    let mut ids = BTreeSet::new();
+    for item in items {
+        let object = item
+            .as_object()
+            .ok_or_else(|| "Ordered list items must be objects".to_owned())?;
+        let id = object
+            .get(&declaration.item_id)
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| "Ordered list item identity is missing".to_owned())?;
+        if !ids.insert(id) {
+            return Err("Ordered list item identities must be unique".to_owned());
+        }
+        if object.len() != declaration.fields.len() + 1
+            || object.keys().any(|key| {
+                key != &declaration.item_id
+                    && !declaration
+                        .fields
+                        .iter()
+                        .any(|field| &field.property == key)
+            })
+        {
+            return Err("Ordered list item fields do not match the declaration".to_owned());
+        }
+        for declared in &declaration.fields {
+            let value = object
+                .get(&declared.property)
+                .ok_or_else(|| format!("Ordered list item is missing '{}'", declared.label))?;
+            validate_kind(&declared.property, declared.kind, value)
+                .map_err(|error| bounded(error.to_string()))?;
         }
     }
     Ok(())

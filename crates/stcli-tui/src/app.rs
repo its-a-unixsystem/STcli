@@ -776,6 +776,7 @@ pub enum InteractionDraftValue {
     Number(String),
     Text(String),
     Choice(InteractionValue),
+    OrderedList(Vec<stcli_core::InteractionListItem>),
 }
 
 #[derive(Clone, Debug)]
@@ -796,6 +797,9 @@ pub struct InteractionFormState {
     pub notice: Option<String>,
     pub output: Option<String>,
     pub stale: bool,
+    pub list_item: usize,
+    pub list_field: usize,
+    pub resource_filter: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -821,21 +825,32 @@ impl InteractionFormState {
                     (InteractionControl::Number, Some(InteractionValue::Number(value))) => {
                         InteractionDraftValue::Number(value.to_string())
                     }
-                    (InteractionControl::Choice, Some(value)) => {
-                        InteractionDraftValue::Choice(value.clone())
-                    }
+                    (
+                        InteractionControl::Choice | InteractionControl::ResourceSelector,
+                        Some(value),
+                    ) => InteractionDraftValue::Choice(value.clone()),
+                    (
+                        InteractionControl::OrderedList,
+                        Some(InteractionValue::OrderedList(items)),
+                    ) => InteractionDraftValue::OrderedList(items.clone()),
                     (_, Some(InteractionValue::Text(value))) => {
                         InteractionDraftValue::Text(value.clone())
                     }
                     (InteractionControl::Boolean, _) => InteractionDraftValue::Boolean(false),
                     (InteractionControl::Number, _) => InteractionDraftValue::Number(String::new()),
-                    (InteractionControl::Choice, _) => InteractionDraftValue::Choice(
-                        field
-                            .choices
-                            .first()
-                            .map(|choice| choice.value.clone())
-                            .unwrap_or_else(|| InteractionValue::Text(String::new())),
-                    ),
+                    (InteractionControl::Choice | InteractionControl::ResourceSelector, _) => {
+                        InteractionDraftValue::Choice(
+                            field
+                                .choices
+                                .iter()
+                                .find(|choice| choice.available)
+                                .map(|choice| choice.value.clone())
+                                .unwrap_or_else(|| InteractionValue::Text(String::new())),
+                        )
+                    }
+                    (InteractionControl::OrderedList, _) => {
+                        InteractionDraftValue::OrderedList(Vec::new())
+                    }
                     _ => InteractionDraftValue::Text(String::new()),
                 },
                 error: field.error.clone(),
@@ -850,6 +865,9 @@ impl InteractionFormState {
             notice: None,
             output: None,
             stale: false,
+            list_item: 0,
+            list_field: 0,
+            resource_filter: None,
         }
     }
 
@@ -864,6 +882,9 @@ impl InteractionFormState {
             InteractionDraftValue::Boolean(value) => Ok(Some(InteractionValue::Boolean(*value))),
             InteractionDraftValue::Text(value) => Ok(Some(InteractionValue::Text(value.clone()))),
             InteractionDraftValue::Choice(value) => Ok(Some(value.clone())),
+            InteractionDraftValue::OrderedList(items) => {
+                Ok(Some(InteractionValue::OrderedList(items.clone())))
+            }
             InteractionDraftValue::Number(value) => {
                 let parsed = value
                     .trim()
@@ -2654,6 +2675,139 @@ impl App {
             }
             _ => {}
         }
+        if state.focused < field_count {
+            let field = state.field(state.focused).cloned()?;
+            if field.control == InteractionControl::OrderedList {
+                let draft = &mut state.drafts[state.focused];
+                draft.error = None;
+                let InteractionDraftValue::OrderedList(items) = &mut draft.value else {
+                    return None;
+                };
+                let schema = field.list.as_ref().expect("ordered-list field schema");
+                state.list_item = state.list_item.min(items.len().saturating_sub(1));
+                state.list_field = state.list_field.min(schema.fields.len().saturating_sub(1));
+                match key.code {
+                    KeyCode::Insert => {
+                        let next = (1..)
+                            .map(|number| format!("item-{number}"))
+                            .find(|id| items.iter().all(|item| item.id != *id))
+                            .expect("unbounded item identity sequence");
+                        let values = schema
+                            .fields
+                            .iter()
+                            .map(|field| {
+                                let value = match field.control {
+                                    InteractionControl::Boolean => InteractionValue::Boolean(false),
+                                    _ => InteractionValue::Text(String::new()),
+                                };
+                                (field.property.clone(), value)
+                            })
+                            .collect();
+                        items.push(stcli_core::InteractionListItem { id: next, values });
+                        state.list_item = items.len() - 1;
+                    }
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if !items.is_empty() {
+                            items.remove(state.list_item);
+                            state.list_item = state.list_item.min(items.len().saturating_sub(1));
+                        }
+                    }
+                    KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if state.list_item > 0 {
+                            items.swap(state.list_item, state.list_item - 1);
+                            state.list_item -= 1;
+                        }
+                    }
+                    KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if state.list_item + 1 < items.len() {
+                            items.swap(state.list_item, state.list_item + 1);
+                            state.list_item += 1;
+                        }
+                    }
+                    KeyCode::Up => state.list_item = state.list_item.saturating_sub(1),
+                    KeyCode::Down => {
+                        state.list_item = (state.list_item + 1).min(items.len().saturating_sub(1));
+                    }
+                    KeyCode::Left => state.list_field = state.list_field.saturating_sub(1),
+                    KeyCode::Right => {
+                        state.list_field =
+                            (state.list_field + 1).min(schema.fields.len().saturating_sub(1));
+                    }
+                    KeyCode::Char(' ') => {
+                        if let Some((item, list_field)) = items
+                            .get_mut(state.list_item)
+                            .zip(schema.fields.get(state.list_field))
+                            && list_field.control == InteractionControl::Boolean
+                            && let Some(InteractionValue::Boolean(value)) =
+                                item.values.get_mut(&list_field.property)
+                        {
+                            *value = !*value;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if let Some((item, list_field)) = items
+                            .get_mut(state.list_item)
+                            .zip(schema.fields.get(state.list_field))
+                            && let Some(InteractionValue::Text(value)) =
+                                item.values.get_mut(&list_field.property)
+                        {
+                            value.pop();
+                        }
+                    }
+                    KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if let Some((item, list_field)) = items
+                            .get_mut(state.list_item)
+                            .zip(schema.fields.get(state.list_field))
+                            && let Some(InteractionValue::Text(value)) =
+                                item.values.get_mut(&list_field.property)
+                        {
+                            value.push(character);
+                        }
+                    }
+                    _ => {}
+                }
+                return None;
+            }
+            if field.control == InteractionControl::ResourceSelector {
+                let filter = state.resource_filter.get_or_insert_with(String::new);
+                match key.code {
+                    KeyCode::Backspace => {
+                        filter.pop();
+                    }
+                    KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        filter.push(character);
+                    }
+                    KeyCode::Left | KeyCode::Right => {
+                        let choices = field
+                            .choices
+                            .iter()
+                            .filter(|choice| {
+                                choice.available
+                                    && choice.label.to_lowercase().contains(&filter.to_lowercase())
+                            })
+                            .collect::<Vec<_>>();
+                        if !choices.is_empty() {
+                            let draft = &mut state.drafts[state.focused];
+                            let InteractionDraftValue::Choice(value) = &mut draft.value else {
+                                return None;
+                            };
+                            let current = choices
+                                .iter()
+                                .position(|choice| choice.value == *value)
+                                .unwrap_or(0);
+                            let next = if key.code == KeyCode::Left {
+                                current.saturating_sub(1)
+                            } else {
+                                (current + 1).min(choices.len() - 1)
+                            };
+                            *value = choices[next].value.clone();
+                        }
+                    }
+                    _ => {}
+                }
+                return None;
+            }
+        }
         if state.focused == field_count {
             return (key.code == KeyCode::Enter).then(|| self.submit_interaction_save(state));
         }
@@ -2764,6 +2918,7 @@ impl App {
                 }
                 state.cursor_position = cursor;
             }
+            InteractionDraftValue::OrderedList(_) => {}
         }
         None
     }

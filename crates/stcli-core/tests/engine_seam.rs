@@ -4,7 +4,7 @@ use stcli_core::{
     EngineCommand, EngineError, EngineInspection, EngineQuery, EngineResult, EntityId,
     SessionError, StcliEngine, Store,
 };
-use stcli_testkit::{configuration, fixtures};
+use stcli_testkit::{configuration, fixtures, write_stepped_thinking_interaction_fixture};
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -1552,4 +1552,142 @@ fn complete_with_candidate(
         .unwrap();
     store.rebuild_session_projections().unwrap();
     candidate_id
+}
+
+#[tokio::test]
+async fn ordered_list_and_resource_selector_save_atomically_and_reject_stale_reorder() {
+    // Regression test for ticket 04: ordered edits and permitted resource references are atomic.
+    use stcli_core::{
+        InteractionControl, InteractionEdit, InteractionListItem, InteractionOutcome,
+        InteractionSubmission, InteractionValue,
+    };
+
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let engine = StcliEngine::new(&database);
+    let package = write_stepped_thinking_interaction_fixture(directory.path());
+    let EngineResult::InstalledPlugin(installed) = engine
+        .execute(EngineCommand::InstallPlugin { directory: package }, |_| {})
+        .await
+        .unwrap()
+    else {
+        panic!("installed fixture")
+    };
+    let mut store = Store::open(&database).unwrap();
+    let alice = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let bob_source = fixtures::minimal_card().replace("Alice", "Bob");
+    let bob = store.import_artifact(bob_source.as_bytes()).unwrap();
+    let mut config = configuration(alice.revision_hash.clone());
+    config.plugins.push(stcli_core::PluginPin {
+        id: installed.manifest.id,
+        version: installed.manifest.version.to_string(),
+        component_hash: installed.manifest.component_sha256,
+        capabilities: [stcli_core::PluginCapability::WriteOwnState]
+            .into_iter()
+            .collect(),
+        settings: json!({}),
+        egress_allow_list: Vec::new(),
+        enabled: true,
+    });
+    let created = store.create_session(config, 0).unwrap();
+    drop(store);
+
+    let surface = match engine
+        .inspect(EngineQuery::ExtensionInteractions {
+            session_id: created.session.session_id,
+            branch_id: Some(created.branch.branch_id),
+        })
+        .unwrap()
+    {
+        EngineInspection::ExtensionInteractions(mut surfaces) => surfaces.pop().unwrap(),
+        _ => panic!("interaction surface"),
+    };
+    let prompts = surface.groups[0]
+        .fields
+        .iter()
+        .find(|field| field.control == InteractionControl::OrderedList)
+        .unwrap();
+    let character = surface.groups[0]
+        .fields
+        .iter()
+        .find(|field| field.control == InteractionControl::ResourceSelector)
+        .unwrap();
+    assert!(character.choices.iter().any(|choice| choice.value
+        == InteractionValue::Text(alice.revision_hash.to_string())
+        && choice.label == "Alice"
+        && choice.available));
+    assert!(character.choices.iter().any(|choice| choice.value
+        == InteractionValue::Text(bob.revision_hash.to_string())
+        && choice.label == "Bob"
+        && choice.available));
+
+    let InteractionValue::OrderedList(mut reordered) = prompts.value.clone().unwrap() else {
+        panic!("ordered list")
+    };
+    reordered.swap(0, 1);
+    reordered.push(InteractionListItem {
+        id: "polish".to_owned(),
+        values: [
+            (
+                "prompt".to_owned(),
+                InteractionValue::Text("Polish the answer".to_owned()),
+            ),
+            ("enabled".to_owned(), InteractionValue::Boolean(true)),
+        ]
+        .into_iter()
+        .collect(),
+    });
+    let command = EngineCommand::SubmitExtensionInteraction {
+        identity: surface.identity.clone(),
+        expected_revision: surface.revision.clone(),
+        submission: InteractionSubmission::Save {
+            target: surface.save.target.clone(),
+            edits: vec![
+                InteractionEdit {
+                    target: prompts.target.clone(),
+                    value: InteractionValue::OrderedList(reordered.clone()),
+                },
+                InteractionEdit {
+                    target: character.target.clone(),
+                    value: InteractionValue::Text(bob.revision_hash.to_string()),
+                },
+            ],
+        },
+    };
+    let EngineResult::ExtensionInteraction(saved) =
+        engine.execute(command.clone(), |_| {}).await.unwrap()
+    else {
+        panic!("save")
+    };
+    assert!(matches!(saved.outcome, InteractionOutcome::Saved { .. }));
+    let stored = match engine
+        .inspect(EngineQuery::Configuration {
+            session_id: created.session.session_id,
+        })
+        .unwrap()
+    {
+        EngineInspection::Configuration(record) => record.configuration.plugins[0].settings.clone(),
+        _ => panic!("configuration"),
+    };
+    assert_eq!(stored["prompts"][0]["id"], "check");
+    assert_eq!(stored["prompts"][2]["prompt"], "Polish the answer");
+    assert_eq!(stored["character"], bob.revision_hash.to_string());
+
+    let EngineResult::ExtensionInteraction(stale) = engine.execute(command, |_| {}).await.unwrap()
+    else {
+        panic!("stale result")
+    };
+    assert!(matches!(stale.outcome, InteractionOutcome::Rejected { .. }));
+    let unchanged = match engine
+        .inspect(EngineQuery::Configuration {
+            session_id: created.session.session_id,
+        })
+        .unwrap()
+    {
+        EngineInspection::Configuration(record) => record.configuration.plugins[0].settings.clone(),
+        _ => panic!("configuration"),
+    };
+    assert_eq!(unchanged, stored);
 }

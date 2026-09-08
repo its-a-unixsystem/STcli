@@ -385,13 +385,24 @@ The engine validates the component digest before it runs the component. When the
 
 An `st-bridge` package can opt into a frontend-neutral settings form by putting an
 `x-stcli-interaction` annotation in its `settings_schema`. The annotation schema is
-`stcli.interaction/v1`. It identifies ordered groups of property names and actions. Each property
-requires `type`, `default`, `title`, `description`, and `x-stcli-control`. Supported property types
-are `boolean`, `integer`, `number`, and `string`; supported controls are `boolean`, `number`,
-`text`, `multiline-text`, and `choice`. Numeric fields may declare `minimum` and `maximum`. Static
-choices use a scalar `enum` with a matching `x-stcli-choice-labels` array. A string choice may use
-`x-stcli-choice-source: "provider-profiles"`. `$ref`, composition, arbitrary validation keywords,
-selectors, callbacks, JavaScript expressions, and network schema resolution are rejected.
+`stcli.interaction/v1`. It identifies ordered groups of property names and actions. Scalar
+properties require `type`, `default`, `title`, `description`, and `x-stcli-control`. Supported
+scalar types are `boolean`, `integer`, `number`, and `string`; supported controls are `boolean`,
+`number`, `text`, `multiline-text`, and `choice`. Numeric fields may declare `minimum` and
+`maximum`. Static choices use a scalar `enum` with a matching `x-stcli-choice-labels` array. A
+string choice may use `x-stcli-choice-source: "provider-profiles"`.
+
+An `ordered-list` control uses an array of objects with a required string identity named by
+`x-stcli-item-id`. Its required editable members can use boolean, text, and multiline-text
+controls. The TUI supports add (`Insert`), remove (`Ctrl+D`), reorder (`Ctrl+Up`/`Ctrl+Down`),
+item navigation, text editing, and enable toggles. A `resource-selector` uses a stable string
+reference plus `x-stcli-resource: "characters"` or `"provider-profiles"`; its choices expose only
+the stable reference, display label, and availability state. Character choices are imported
+Artifact Revision hashes. Provider choices are profile names, never profile configuration or
+credential values. Typing filters the selector and Left/Right chooses an available result.
+
+`$ref`, composition, arbitrary validation keywords, callbacks, JavaScript expressions, and
+network schema resolution are rejected.
 
 Actions declare a workflow support state: `available`, `partially-available`, `unavailable`, or
 `unverified`. Every state except `available` requires a concrete reason. Only available and
@@ -426,10 +437,21 @@ members such as Summary Checkpoints remain intact. Normal `saveSettingsDebounced
 produce recorded namespaced state effects and do not create Session Configuration Revisions.
 
 The bundled Summarize settings workflow and **Summarize now** action are `available`, verified
-against the content-addressed `memory` 1.1.0 package and engine-seam tests. No Stepped Thinking or
-Roadway adapter ships at this stage, so those workflows are `unverified` and expose no executable
-operation. Later adapters must name their exact component digest, declaration hash, per-workflow
-support state, and evidence; a controlled fixture is not evidence of complete upstream support.
+against the content-addressed `memory` 1.1.0 package and engine-seam tests. The ordered-prompt and
+character-selection controls are demonstrated against the controlled
+`org.stcli.stepped-thinking-fixture` `3.2.3-fixture.1` test package in `engine_seam` and
+`extension_interactions`; this is a contract fixture, not a real adapter and not evidence that
+Stepped Thinking 3.2.3 runs under STcli. Its fixture workflow supports prompt add, edit, enable,
+remove, keyboard reorder, and permitted character selection. Stepped Thinking runtime generation
+and every Roadway workflow remain `unverified`, with no shipped executable adapter or operation.
+Later adapters must name their exact component digest, declaration hash, per-workflow support
+state, and evidence; a controlled fixture is not evidence of complete upstream support.
+
+| Reference workflow | Identity and evidence | Demonstrated | Unsupported |
+|---|---|---|---|
+| Summarize | Real bundled `memory` 1.1.0 package; engine and TUI interaction tests | Configuration read/edit and **Summarize now** | Extras, WebLLM, Classic/default builders, World Info scanning, visual settings, Restore Previous |
+| Stepped Thinking | Controlled `org.stcli.stepped-thinking-fixture` `3.2.3-fixture.1`; `engine_seam` and `extension_interactions` | Ordered prompt add/edit/enable/remove/reorder and character selection | Upstream adapter, thinking generation pipeline, and complete runtime compatibility |
+| Roadway | No adapter or fixture in ticket 04 | Nothing | All Roadway workflows |
 
 ### Import a SillyTavern Extension
 

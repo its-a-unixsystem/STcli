@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend};
 use stcli_core::{EngineInspection, EngineQuery, InteractionValue, StcliEngine, Store};
-use stcli_testkit::{configuration, fixtures};
+use stcli_testkit::{configuration, fixtures, write_stepped_thinking_interaction_fixture};
 use stcli_tui::{App, Config, Effect, InteractionDraftValue, Popup, render as render_ui};
 use tempfile::tempdir;
 
@@ -211,4 +211,106 @@ async fn extension_interaction_drafts_cancel_and_save_through_typed_targets() {
         configuration.configuration.plugins[0].settings["prompt"],
         "First line\nSecond line"
     );
+}
+
+#[tokio::test]
+async fn generic_form_edits_reorders_and_selects_resources_by_keyboard() {
+    // Regression test for ticket 04: the generic TUI owns ordered-list and selector keyboard UX.
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let engine = StcliEngine::new(&database);
+    let package = write_stepped_thinking_interaction_fixture(directory.path());
+    let stcli_core::EngineResult::InstalledPlugin(installed) = engine
+        .execute(
+            stcli_core::EngineCommand::InstallPlugin { directory: package },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("installed fixture")
+    };
+    let mut store = Store::open(&database).unwrap();
+    let alice = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let bob = store
+        .import_artifact(fixtures::minimal_card().replace("Alice", "Bob").as_bytes())
+        .unwrap();
+    let mut config = configuration(alice.revision_hash);
+    config.plugins.push(stcli_core::PluginPin {
+        id: installed.manifest.id,
+        version: installed.manifest.version.to_string(),
+        component_hash: installed.manifest.component_sha256,
+        capabilities: [stcli_core::PluginCapability::WriteOwnState]
+            .into_iter()
+            .collect(),
+        settings: serde_json::json!({}),
+        egress_allow_list: Vec::new(),
+        enabled: true,
+    });
+    let created = store.create_session(config, 0).unwrap();
+    drop(store);
+    let mut app = App::load(
+        StcliEngine::new(&database),
+        Config::default(),
+        Some(created.session.session_id),
+    )
+    .unwrap();
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('E'));
+    press(&mut app, KeyCode::Enter);
+
+    press_ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Insert);
+    for character in "Polish".chars() {
+        press(&mut app, KeyCode::Char(character));
+    }
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Char(' '));
+    let Some(Popup::InteractionForm(state)) = &mut app.popup else {
+        panic!("form")
+    };
+    state.focused = 1;
+    for character in "Bob".chars() {
+        press(&mut app, KeyCode::Char(character));
+    }
+    press(&mut app, KeyCode::Right);
+    let visible = render(&mut app);
+    assert!(visible.contains("Polish"));
+    assert!(visible.contains("Search: Bob"));
+    let effect = press_ctrl(&mut app, 's');
+    let Effect::Execute(command) = effect else {
+        panic!("save command")
+    };
+    let result = app.engine.execute(command, |_| {}).await.unwrap();
+    assert!(app.finish_command(Ok(result)));
+    let configuration = match app
+        .engine
+        .inspect(EngineQuery::Configuration {
+            session_id: created.session.session_id,
+        })
+        .unwrap()
+    {
+        EngineInspection::Configuration(record) => record.configuration.plugins[0].settings.clone(),
+        _ => panic!("configuration"),
+    };
+    assert_eq!(configuration["prompts"][0]["prompt"], "Check");
+    assert_eq!(configuration["prompts"][1]["prompt"], "Polish");
+    assert_eq!(configuration["prompts"][1]["enabled"], true);
+    assert_eq!(configuration["character"], bob.revision_hash.to_string());
+
+    press(&mut app, KeyCode::Insert);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('E'));
+    press(&mut app, KeyCode::Enter);
+    let Some(Popup::InteractionForm(state)) = &app.popup else {
+        panic!("reopened form")
+    };
+    let InteractionDraftValue::OrderedList(items) = &state.drafts[0].value else {
+        panic!("ordered list")
+    };
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].id, "check");
 }
