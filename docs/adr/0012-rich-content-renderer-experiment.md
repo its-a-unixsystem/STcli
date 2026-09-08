@@ -6,6 +6,8 @@ Decided. The bounded ticket-01 experiment approves the tested Linux configuratio
 
 The macOS WebKit helper experiment is functionally viable under its clarified constraints. Its measured footprint is accepted, it may be started directly from the terminal, and its renderer-level network policy is documented below. This does not yet select a production macOS backend; text fallback remains the current default.
 
+The "readable/text fallback" named throughout this ADR is the styled-text HTML converter specified in ADR 0013, not plain text. ADR 0013 governs how Candidate content renders on terminals without the graphical renderer.
+
 ## Context
 
 The TUI needs a safe path from untrusted static HTML/CSS to terminal graphics. ADR 0008 keeps presentation in the frontend; ADRs 0009 and 0010 keep Extension execution in QuickJS and retain broker and Replay authority. This experiment used no engine, Session, database, Plugin, or Extension integration.

@@ -78,6 +78,10 @@ _Avoid_: Swipe, rendered response, attempt, greeting
 A rebuildable presentation of a Candidate produced by pinned transformation rules without changing the Candidate content.
 _Avoid_: Candidate, provider response, rewritten candidate
 
+**Concealed Content**:
+HTML source a conformant renderer would not visually present, such as script and style bodies, comments, `hidden`/`aria-hidden` elements, `display:none`/`visibility:hidden`, and text whose foreground equals its background. The styled-text fallback suppresses it rather than extracting its text.
+_Avoid_: Hidden State, hidden text, invisible content
+
 **Selection**:
 The candidate currently active for a turn on a branch.
 _Avoid_: Latest response, current swipe
