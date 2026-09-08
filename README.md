@@ -161,13 +161,13 @@ Group chat and vector lore remain outside the current implementation. STscript a
 
 | Version | Theme | Highlights |
 |---|---|---|
-| **v0.2** ✅ | Terminal UI & codecs | Rich chat interface, themes, keyboard/mouse (shipped); external artifact codecs and macOS support (pending) |
+| **v0.2** ⚠️ | Terminal UI & codecs | Rich chat interface, themes, keyboard/mouse (shipped); external artifact codecs and macOS support (pending) |
 | **v0.3** ✅ | Character containers | PNG/APNG/WebP card import, CHARX archives, asset store |
 | **v0.4** ✅ | Text Completion | Instruct/context templates, story strings, flat-prompt mode |
 | **v0.5** | Group roleplay | Multiple characters, reply-order strategies, group lore and variables |
 | **v0.6** ✅ | STscript | Parser, commands, pipes, closures, scoped variables |
-| **v0.7** ✅ | Retrieval & live plugins | Brokered HTTPS, Secondary Inference, Background Attempts implemented; retrieval/vector lore and trusted filesystem integrations pending |
-| **v1.0** ✅ | JS compatibility bridge | Headless subset with digest-pinned adoption, brokered effects, declared native interactions; broader upstream compatibility partial |
+| **v0.7** ⚠️ | Retrieval & live plugins | Brokered HTTPS, Secondary Inference, Background Attempts implemented; retrieval/vector lore and trusted filesystem integrations pending |
+| **v1.0** ⚠️ | JS compatibility bridge | Headless subset with digest-pinned adoption, brokered effects, declared native interactions; broader upstream compatibility partial |
 | **v1.x** | Broader ecosystem | Browser frontend, tool calling, multimedia, local daemon |
 
 ## Development
