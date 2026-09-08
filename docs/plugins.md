@@ -436,22 +436,40 @@ During later live execution, declared pinned values overlay persisted declared v
 members such as Summary Checkpoints remain intact. Normal `saveSettingsDebounced()` writes still
 produce recorded namespaced state effects and do not create Session Configuration Revisions.
 
-The bundled Summarize settings workflow and **Summarize now** action are `available`, verified
-against the content-addressed `memory` 1.1.0 package and engine-seam tests. The ordered-prompt and
-character-selection controls are demonstrated against the controlled
-`org.stcli.stepped-thinking-fixture` `3.2.3-fixture.1` test package in `engine_seam` and
-`extension_interactions`; this is a contract fixture, not a real adapter and not evidence that
-Stepped Thinking 3.2.3 runs under STcli. Its fixture workflow supports prompt add, edit, enable,
-remove, keyboard reorder, and permitted character selection. Stepped Thinking runtime generation
-and every Roadway workflow remain `unverified`, with no shipped executable adapter or operation.
-Later adapters must name their exact component digest, declaration hash, per-workflow support
-state, and evidence; a controlled fixture is not evidence of complete upstream support.
+#### Stepped Thinking control demonstration
+
+Ticket 04 demonstrates the interaction contract with the controlled
+`org.stcli.stepped-thinking-fixture` package at version `3.2.3-fixture.1`. This package is a test
+fixture, not an adapter for the upstream Stepped Thinking Extension.
+
+The demonstrated `ordered-list` control lets TUI users manage thinking-prompt entries entirely by
+keyboard: `Insert` adds an entry, `Ctrl+D` removes one, `Ctrl+Up` and `Ctrl+Down` change the visible
+and stored order, Left and Right select an editable member, Space changes the enabled state, and
+normal text input edits the prompt. Draft changes remain local until Save. The submitted order and
+enabled states are stored in the next Session Configuration Revision, while a stale reorder is
+rejected without partially applying any entry changes.
+
+The demonstrated `resource-selector` searches permitted character resources by display label and
+stores the selected character's Artifact Revision hash. The same contract can expose permitted
+provider profiles by profile name. Selector snapshots contain only stable references, labels, and
+availability state; they never contain provider configuration or credential values. A refreshed
+surface replaces the complete choice snapshot when resource availability changes.
+
+This demonstration covers only native configuration interaction. STcli does not ship an upstream
+Stepped Thinking adapter, execute its thinking-generation or reasoning pipeline, or claim complete
+Stepped Thinking 3.2.3 compatibility. Those runtime workflows remain `unverified` and unsupported.
+The bundled Summarize settings workflow and **Summarize now** action remain separately `available`,
+verified against the content-addressed `memory` 1.1.0 package and engine-seam tests. Every Roadway
+workflow also remains `unverified`, with no shipped executable adapter or operation.
 
 | Reference workflow | Identity and evidence | Demonstrated | Unsupported |
 |---|---|---|---|
 | Summarize | Real bundled `memory` 1.1.0 package; engine and TUI interaction tests | Configuration read/edit and **Summarize now** | Extras, WebLLM, Classic/default builders, World Info scanning, visual settings, Restore Previous |
-| Stepped Thinking | Controlled `org.stcli.stepped-thinking-fixture` `3.2.3-fixture.1`; `engine_seam` and `extension_interactions` | Ordered prompt add/edit/enable/remove/reorder and character selection | Upstream adapter, thinking generation pipeline, and complete runtime compatibility |
+| Stepped Thinking | Controlled `org.stcli.stepped-thinking-fixture` `3.2.3-fixture.1`; `engine_seam` and `extension_interactions` | Ordered prompt add/edit/enable/remove/reorder and permitted character selection through generic controls | Upstream adapter, thinking generation and reasoning pipelines, and complete runtime compatibility |
 | Roadway | No adapter or fixture in ticket 04 | Nothing | All Roadway workflows |
+
+Later adapters must name their exact component digest, declaration hash, per-workflow support state,
+and executable evidence. A controlled fixture is not evidence of complete upstream support.
 
 ### Import a SillyTavern Extension
 
