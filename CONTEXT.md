@@ -79,7 +79,7 @@ A rebuildable presentation of a Candidate produced by pinned transformation rule
 _Avoid_: Candidate, provider response, rewritten candidate
 
 **Concealed Content**:
-HTML source a conformant renderer would not visually present, such as script and style bodies, comments, `hidden`/`aria-hidden` elements, `display:none`/`visibility:hidden`, and text whose foreground equals its background. The styled-text fallback suppresses it rather than extracting its text.
+HTML source a conformant renderer would not visually present, such as script and style bodies, comments, `hidden`/`aria-hidden` elements, `display:none`/`visibility:hidden`, and text whose foreground equals its background. The styled-text presentation suppresses it rather than extracting its text.
 _Avoid_: Hidden State, hidden text, invisible content
 
 **Selection**:

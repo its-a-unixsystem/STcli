@@ -1,20 +1,20 @@
-# Rich-content renderer experiment: Chromium and Kitty approved
+# Rich-content renderer experiment: graphical production selection retired
 
 ## Status
 
-Decided. The bounded ticket-01 experiment approves the tested Linux configuration: system Chromium rendered through mandatory Bubblewrap and cgroup isolation, displayed through Kitty's direct PNG graphics protocol. Other configurations retain readable fallback behavior.
+Retired on 2026-09-08. STcli no longer develops or ships graphical terminal rendering. ADR 0013's styled-text renderer is the sole TUI Candidate presentation path; the executable Chromium, WebKit, and Kitty graphics probes were removed.
 
-The macOS WebKit helper experiment is functionally viable under its clarified constraints. Its measured footprint is accepted, it may be started directly from the terminal, and its renderer-level network policy is documented below. This does not yet select a production macOS backend; text fallback remains the current default.
+The bounded ticket-01 experiment did successfully approve the tested Linux configuration: system Chromium rendered through mandatory Bubblewrap and cgroup isolation, displayed through Kitty's direct PNG graphics protocol. The later macOS WebKit helper experiment was also functionally viable under its documented constraints. Retiring graphical rendering is a product-scope decision, not a reversal of those technical findings.
 
-The "readable/text fallback" named throughout this ADR is the styled-text HTML converter specified in ADR 0013, not plain text. ADR 0013 governs how Candidate content renders on terminals without the graphical renderer.
+The measurements, captures, and reproduction ledgers under `docs/experiments/rich-content-renderer/` remain historical evidence. Their commands and probe paths describe the repository at the time of the experiments and are not runnable from current HEAD.
 
 ## Context
 
-The TUI needs a safe path from untrusted static HTML/CSS to terminal graphics. ADR 0008 keeps presentation in the frontend; ADRs 0009 and 0010 keep Extension execution in QuickJS and retain broker and Replay authority. This experiment used no engine, Session, database, Plugin, or Extension integration.
+The experiment evaluated a safe path from untrusted static HTML/CSS to terminal graphics. ADR 0008 keeps presentation in the frontend; ADRs 0009 and 0010 keep Extension execution in QuickJS and retain broker and Replay authority. The experiment used no engine, Session, database, Plugin, or Extension integration.
 
 The initial attempt created an incognito BrowserContext but passed `newWindow: false` when creating that context's first target. Chromium 152 returned `Failed to open new tab - no browser is open`. Creating the first target with `newWindow: true` is required for a fresh context in this headless configuration. A diagnostic 256-task run proved that increasing the task ceiling alone did not fix the original call. The recovered configuration combines the corrected target call with a measured 256-task ceiling; the successful workload peaked at 127 tasks.
 
-## Decision
+## Historical decision
 
 Use system-provided Chromium with all of the following requirements:
 
@@ -104,7 +104,7 @@ The measured scope peak was 182,935,552 bytes memory and 127 tasks. CPU accounti
 Selected ceilings are: 256 KiB combined HTML/CSS; 1 MiB and 1,048,576 pixels per approved PNG; 4 MiB aggregate assets; 1600×4096 output; 32 MiB PNG; 48 MiB framed response; 10 seconds for the full cold path; 3 seconds warm rendering; one active plus one replaceable pending request; 1 GiB scope memory; zero swap; 256 tasks; two CPUs; 128 MiB private `/tmp`; and 64 MiB private `/dev/shm`. Observed values fit these ceilings without widening fidelity or isolation.
 
 
-## Support table
+## Historical support table
 | Environment | Outcome |
 |---|---|
 | Kitty 0.48.2 on the tested Linux/Sway setup | Tested graphical path |
@@ -113,7 +113,7 @@ Selected ceilings are: 256 KiB combined HTML/CSS; 1 MiB and 1,048,576 pixels per
 | Alacritty 0.17.0 | Tested readable fallback after capability negotiation returned no Kitty acknowledgement |
 | Multiplexers, remote transport, other Linux terminals | Unverified; readable fallback intended |
 | macOS 26.4.1 with Kitty 0.48.2 | Kitty protocol and the WebKit helper were tested; the helper is functionally viable under its documented no-arbitrary-network policy, but text fallback remains the current default pending production integration. |
-## Lifecycle and trust consequences
+## Historical lifecycle and trust consequences
 
 On the approved Linux path, text-only startup does not launch Chromium. A successful browser is reused for sequential renders and retired after 30 seconds idle, explicit exit, or failure. Each render disposes its BrowserContext. Exit removes the owned Kitty placement and image, closes pipes, terminates and reaps the owned scope, and removes private profiles. The observed normal exit left no `rich_content_probe`, `stcli-rich-probe`, or private-profile process.
 

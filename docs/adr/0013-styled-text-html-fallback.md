@@ -6,7 +6,7 @@ accepted
 
 ## Context
 
-The TUI must display Candidate content on terminals without the graphical renderer (ADR 0012) — the common case, since the non-Kitty terminal is the primary target ahead of any browser frontend. Real Candidate content, after Core applies display-eligible regex scripts (`apply_display_scripts`), is Markdown prose (`*emphasis*`, quotes) intermixed with regex-generated and model-generated HTML carrying inline CSS: `<details>/<summary>` trees, `<div style>`, `<font color>`, `<b style>`.
+The TUI must display all Candidate content through one terminal-native presentation path. Real Candidate content, after Core applies display-eligible regex scripts (`apply_display_scripts`), is Markdown prose (`*emphasis*`, quotes) intermixed with regex-generated and model-generated HTML carrying inline CSS: `<details>/<summary>` trees, `<div style>`, `<font color>`, `<b style>`.
 
 The prior production path (`crates/stcli-tui/src/markdown.rs`) rendered this with pulldown-cmark and a naive `strip_tags` that removed only `<...>` delimiters. That path leaked `<script>`/`<style>` body text and terminal-control characters into the terminal, and lost all HTML structure. Ticket 14 research confirmed pulldown-cmark is not an HTML parser or sanitizer, and that stdlib subprocess parsing is not HTML5-compliant. Ticket 14's original "supplied-Markdown-first, no HTML parser" recommendation was superseded once the real content shape (HTML-with-inline-CSS) was established: automatic HTML rendering is required, not optional.
 
@@ -17,7 +17,7 @@ Render Candidate content to styled terminal text with a **two-stage pipeline tha
 1. **Stage 1 — Markdown → HTML.** `pulldown_cmark::html::push_html` with GFM extensions (strikethrough, tables, autolinks), matching marked.js. Raw HTML passes through. The crate is repurposed, not dropped.
 2. **Stage 2 — HTML → terminal spans.** A `scraper`/`html5ever` DOM walk emits Ratatui spans, applying Concealed Content suppression and inline-CSS color.
 
-`markdown.rs`'s span-emitting body and `strip_tags` are replaced by a single `content.rs` converter, which also serves the graphical-panel text fallback (one audited HTML→text path, not two).
+`markdown.rs`'s span-emitting body and `strip_tags` are replaced by a single `content.rs` converter. It is the sole audited Candidate HTML-to-terminal-text path.
 
 Boundaries and policy:
 
@@ -26,10 +26,10 @@ Boundaries and policy:
 - **Control-character safety.** Content-originated C0/C1 control bytes and ANSI/OSC escape sequences are stripped before any span is emitted. This is a hard requirement, not best-effort.
 - **Bounds.** Sources above 256 KiB or DOM nesting deeper than 128 elements (excluding the fragment root) fall back to control-neutralized literal source, not partially converted HTML. Tags remain visible in this fallback; tabs become spaces and newlines remain line boundaries. Both limits apply per `render()` call, leaving the surrounding TUI usable.
 - **Color mode.** A `preserve | semantic | contrast` mode enum is defined; only `preserve` is implemented, and it is the default. The other modes are follow-up tasks.
-- **`<details>` divergence.** A browser renders `<details>` collapsed by default; the static text fallback cannot collapse, so summaries render as headings with bodies always shown flattened. This is a deliberate, documented lossy-layout item; interactive collapse is separate future work.
+- **`<details>` divergence.** A browser renders `<details>` collapsed by default; terminal text cannot collapse it, so summaries render as headings with bodies always shown flattened. This is a deliberate, documented lossy-layout item; interactive collapse is separate future work.
 
 ## Consequences
 
 - `scraper` adds 24 net-new transitive crates (Servo-project: `html5ever`, `markup5ever`, `tendril`, `selectors`, `cssparser`, `ego-tree`, and plumbing), in-process, no subprocess. This is the accepted floor for parsing real AI HTML with a defensible Concealed Content boundary.
 - The two-stage topology is the only shape that stays in Parity with ST's marked.js + browser rendering. Parsing Candidate content as HTML-first would diverge from marked.js emphasis and block-interruption semantics.
-- ADR 0012's "text fallback" is now this styled/structured converter rather than plain readable text; that ADR carries a pointer here.
+- ADR 0012's retired graphical renderer experiment now points here as the sole styled/structured Candidate presentation path.
