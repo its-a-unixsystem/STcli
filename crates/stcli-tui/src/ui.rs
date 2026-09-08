@@ -1974,6 +1974,47 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
                     .map(|reason| format!(" · {reason}"))
                     .unwrap_or_default();
                 lines.push(Line::from(format!("{marker} [{}]{reason}", action.label)));
+                if let Some(content) = &action.content {
+                    for (choice_index, choice) in content.choices.iter().enumerate() {
+                        let actions = choice
+                            .actions
+                            .iter()
+                            .map(|action| {
+                                if action.enabled {
+                                    action.label.clone()
+                                } else {
+                                    format!(
+                                        "{} unavailable: {}",
+                                        action.label,
+                                        action.support_reason.as_deref().unwrap_or("unsupported")
+                                    )
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" · ");
+                        let selected = state.content_choice == choice_index;
+                        let text = if selected {
+                            state.content_draft.as_deref().unwrap_or(&choice.text)
+                        } else {
+                            &choice.text
+                        };
+                        lines.push(Line::from(format!(
+                            "  {} {}",
+                            if selected { "›" } else { "•" },
+                            display_safe(text)
+                        )));
+                        lines.push(Line::from(Span::styled(
+                            format!("    {actions}"),
+                            Style::default().fg(app.theme.muted),
+                        )));
+                    }
+                    if !content.choices.is_empty() {
+                        lines.push(Line::from(Span::styled(
+                            "  N/P select · E edit · U use in composer · Enter still submits",
+                            Style::default().fg(app.theme.muted),
+                        )));
+                    }
+                }
             }
             let cancel_marker = if state.focused == state.item_count().saturating_sub(1) {
                 "›"

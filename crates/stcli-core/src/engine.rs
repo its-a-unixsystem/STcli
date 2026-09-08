@@ -268,11 +268,11 @@ impl StcliEngine {
             })
             .collect::<Result<Vec<_>, crate::ArtifactError>>()?;
         let state = store.state_transaction(session_id)?;
-        let completed_attempt = branch_id
-            .map(|branch_id| store.latest_completed_primary_attempt(branch_id))
+        let content_candidate = branch_id
+            .map(|branch_id| selected_content_candidate(store, branch_id))
             .transpose()?
-            .flatten()
-            .is_some();
+            .flatten();
+        let completed_attempt = content_candidate.is_some();
         let mut surfaces = Vec::new();
         for pin in &configuration.configuration.plugins {
             let installed = self.installed_plugin(&pin.id, &pin.version, &pin.component_hash)?;
@@ -304,6 +304,8 @@ impl StcliEngine {
                     provider_profiles: &providers,
                     characters: &characters,
                     completed_attempt,
+                    content_candidate,
+                    content_choices: &[],
                 },
             )?);
         }
@@ -539,7 +541,20 @@ impl StcliEngine {
                     command,
                     serde_json::Value::Null,
                 )?;
-                let surface = self
+                let output = result
+                    .receipt
+                    .effects
+                    .iter()
+                    .find_map(|effect| match effect {
+                        crate::PluginEffect::Observe { value } => {
+                            value.get("output").and_then(serde_json::Value::as_str)
+                        }
+                        _ => None,
+                    });
+                let choices = output
+                    .and_then(|output| serde_json::from_str::<Vec<String>>(output).ok())
+                    .unwrap_or_default();
+                let mut surface = self
                     .extension_interactions(store, identity.session_id, identity.branch_id)?
                     .into_iter()
                     .find(|surface| surface.identity.extension_id == identity.extension_id)
@@ -548,6 +563,24 @@ impl StcliEngine {
                             "Extension interaction disappeared after action".to_owned(),
                         )
                     })?;
+                if !choices.is_empty()
+                    && let Some(surface_action) = surface
+                        .actions
+                        .iter_mut()
+                        .find(|surface_action| surface_action.target == target)
+                    && let Some(candidate_id) = surface_action
+                        .content
+                        .as_ref()
+                        .map(|content| content.candidate_id)
+                    && let Some(declared) = action.presentation.as_ref()
+                {
+                    surface_action.content = Some(crate::interaction::build_content(
+                        &surface.identity.surface_id,
+                        candidate_id,
+                        &choices,
+                        declared,
+                    )?);
+                }
                 Ok(InteractionResult {
                     surface,
                     outcome: crate::InteractionOutcome::Invoked {
@@ -2182,6 +2215,7 @@ fn branch_history(
             })
         })
         .collect::<Result<Vec<_>, TurnError>>()?;
+
     Ok(BranchHistory {
         session,
         configuration,
@@ -2189,6 +2223,26 @@ fn branch_history(
         greeting,
         turns,
     })
+}
+fn selected_content_candidate(
+    store: &Store,
+    branch_id: EntityId,
+) -> Result<Option<EntityId>, TurnError> {
+    for turn in store.turns_for_branch(branch_id)?.into_iter().rev() {
+        if let Some(candidate_id) = turn.selected_candidate_id {
+            let completed = store
+                .attempts_for_turn(turn.turn_id)?
+                .into_iter()
+                .any(|attempt| {
+                    attempt.kind == crate::AttemptKind::Primary
+                        && attempt.status == crate::AttemptStatus::Completed
+                });
+            if completed {
+                return Ok(Some(candidate_id));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn previous_selected_attempt(

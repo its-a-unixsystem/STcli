@@ -428,6 +428,15 @@ disabled Extension, missing target, malformed value, or missing grant is rejecte
 inference, egress, or Turn Trace effects. Rejections return the current surface when the identified
 workflow still exists; if it no longer exists, the engine returns a bounded invalidation reason.
 Diagnostics are limited to contract metadata and never include credentials or Session content.
+
+Actions may declare a `content-choices` presentation. Its snapshot binds generated
+choice text and opaque action targets to the selected Candidate ID. This associates
+actions with conversation content without storing terminal layout in Core. Frontends
+may implement the declared `edit` and `draft` effects natively; a `draft` effect changes
+only the local composer. Unsupported effects use `unavailable`, remain disabled, and
+include a concrete support reason. A changed selection produces a new surface revision,
+so an obsolete generation action is rejected before its command runs.
+
 Frontends keep drafts locally until Save.
 
 Save merges only accepted declared properties into the exact Extension pin and creates or selects
@@ -459,14 +468,32 @@ This demonstration covers only native configuration interaction. STcli does not 
 Stepped Thinking adapter, execute its thinking-generation or reasoning pipeline, or claim complete
 Stepped Thinking 3.2.3 compatibility. Those runtime workflows remain `unverified` and unsupported.
 The bundled Summarize settings workflow and **Summarize now** action remain separately `available`,
-verified against the content-addressed `memory` 1.1.0 package and engine-seam tests. Every Roadway
-workflow also remains `unverified`, with no shipped executable adapter or operation.
+verified against the content-addressed `memory` 1.1.0 package and engine-seam tests. Roadway's
+controlled content-choice workflow is separately `partially-available`; the upstream runtime remains
+`unverified` and unsupported.
 
 | Reference workflow | Identity and evidence | Demonstrated | Unsupported |
 |---|---|---|---|
 | Summarize | Real bundled `memory` 1.1.0 package; engine and TUI interaction tests | Configuration read/edit and **Summarize now** | Extras, WebLLM, Classic/default builders, World Info scanning, visual settings, Restore Previous |
 | Stepped Thinking | Controlled `org.stcli.stepped-thinking-fixture` `3.2.3-fixture.1`; `engine_seam` and `extension_interactions` | Ordered prompt add/edit/enable/remove/reorder and permitted character selection through generic controls | Upstream adapter, thinking generation and reasoning pipelines, and complete runtime compatibility |
-| Roadway | No adapter or fixture in ticket 04 | Nothing | All Roadway workflows |
+| Roadway | Controlled `org.stcli.roadway-fixture` `0.4.0-fixture.1`; `engine_seam` and `extension_interactions` | Candidate-bound choice generation, generic Edit/Use/Impersonate/Regenerate metadata, choice-to-composer draft, and stale-content rejection | Upstream adapter, provider-backed generation, impersonation inference, automatic submission, and complete runtime compatibility |
+
+#### Roadway content-choice demonstration
+
+Ticket 05 demonstrates the content-associated action contract with the controlled
+`org.stcli.roadway-fixture` package at version `0.4.0-fixture.1`. The fixture binds its
+choice list to the selected Candidate identity and exposes generic **Edit**, **Use**,
+**Impersonate**, and **Regenerate** labels. **Use** is a frontend draft operation: it
+places the selected text in the TUI composer without changing the Candidate or sending
+an engine command. Submission remains a separate explicit composer action. The fixture
+does not claim compatibility with the upstream Roadway package or its provider-backed
+generation and impersonation host operations.
+
+Generated choices are invalidated when the selected Candidate changes. The engine
+rejects the old identity before invoking the Extension command or appending a trace
+event. Unsupported host operations remain visible with their concrete reason and are
+not represented as successful DOM mutations.
+
 
 Later adapters must name their exact component digest, declaration hash, per-workflow support state,
 and executable evidence. A controlled fixture is not evidence of complete upstream support.

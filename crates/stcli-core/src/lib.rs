@@ -81,10 +81,12 @@ pub use inference::{
     StubInferenceTransport, validate_inference_receipt, validate_persisted_inference_receipt,
 };
 pub use interaction::{
-    InteractionAction, InteractionChoice, InteractionConstraints, InteractionControl,
-    InteractionEdit, InteractionField, InteractionGroup, InteractionIdentity, InteractionList,
-    InteractionListField, InteractionListItem, InteractionOutcome, InteractionResult,
-    InteractionSubmission, InteractionSupport, InteractionSurface, InteractionValue,
+    InteractionAction, InteractionChoice, InteractionConstraints, InteractionContent,
+    InteractionContentAction, InteractionContentChoice, InteractionContentEffect,
+    InteractionControl, InteractionEdit, InteractionField, InteractionGroup, InteractionIdentity,
+    InteractionList, InteractionListField, InteractionListItem, InteractionOutcome,
+    InteractionResult, InteractionSubmission, InteractionSupport, InteractionSurface,
+    InteractionValue,
 };
 pub use lore::{
     ActivatedLore, LoreDecision, LoreDecisionOutcome, LoreEngine, LoreEntry, LoreError,

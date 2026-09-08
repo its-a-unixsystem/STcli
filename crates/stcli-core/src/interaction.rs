@@ -220,6 +220,40 @@ pub struct InteractionAction {
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unavailable_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<InteractionContent>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InteractionContentEffect {
+    Edit,
+    Draft,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct InteractionContentAction {
+    pub target: ContentHash,
+    pub label: String,
+    pub effect: InteractionContentEffect,
+    pub support: InteractionSupport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support_reason: Option<String>,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct InteractionContentChoice {
+    pub target: ContentHash,
+    pub text: String,
+    pub actions: Vec<InteractionContentAction>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct InteractionContent {
+    pub candidate_id: EntityId,
+    pub choices: Vec<InteractionContentChoice>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -322,6 +356,21 @@ pub(crate) struct DeclaredAction {
     requires_branch: bool,
     requires_completed_attempt: bool,
     capabilities: BTreeSet<PluginCapability>,
+    pub(crate) presentation: Option<DeclaredContentPresentation>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct DeclaredContentPresentation {
+    actions: Vec<DeclaredContentAction>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DeclaredContentAction {
+    id: String,
+    label: String,
+    effect: InteractionContentEffect,
+    support: InteractionSupport,
+    support_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -353,6 +402,23 @@ struct ActionSource {
     requires_branch: bool,
     requires_completed_attempt: bool,
     capabilities: BTreeSet<PluginCapability>,
+    presentation: Option<ContentPresentationSource>,
+}
+
+#[derive(Deserialize)]
+struct ContentPresentationSource {
+    #[serde(rename = "type")]
+    kind: String,
+    actions: Vec<ContentActionSource>,
+}
+
+#[derive(Deserialize)]
+struct ContentActionSource {
+    id: String,
+    label: String,
+    effect: InteractionContentEffect,
+    support: InteractionSupport,
+    support_reason: Option<String>,
 }
 
 pub(crate) fn load_interaction_declaration(
@@ -505,6 +571,10 @@ pub(crate) fn load_declaration(
                     action.id
                 )));
             }
+            let presentation = action
+                .presentation
+                .map(|presentation| parse_content_presentation(&action.id, presentation))
+                .transpose()?;
             Ok(DeclaredAction {
                 id: action.id,
                 label: action.label,
@@ -515,9 +585,55 @@ pub(crate) fn load_declaration(
                 requires_branch: action.requires_branch,
                 requires_completed_attempt: action.requires_completed_attempt,
                 capabilities: action.capabilities,
+                presentation,
             })
         })
         .collect::<Result<Vec<_>, PluginError>>()?;
+
+    fn parse_content_presentation(
+        action_id: &str,
+        source: ContentPresentationSource,
+    ) -> Result<DeclaredContentPresentation, PluginError> {
+        if source.kind != "content-choices" {
+            return Err(invalid(format!(
+                "interaction action '{action_id}' has unsupported presentation '{}'",
+                source.kind
+            )));
+        }
+        let mut ids = BTreeSet::new();
+        let actions = source
+            .actions
+            .into_iter()
+            .map(|action| {
+                if !ids.insert(action.id.clone())
+                    || action.id.trim().is_empty()
+                    || action.label.trim().is_empty()
+                {
+                    return Err(invalid("content actions require unique id and label"));
+                }
+                if action.effect == InteractionContentEffect::Unavailable
+                    && action.support.is_executable()
+                {
+                    return Err(invalid("unavailable content effects cannot be executable"));
+                }
+                if action.support != InteractionSupport::Available
+                    && action.support_reason.as_deref().is_none_or(str::is_empty)
+                {
+                    return Err(invalid(
+                        "non-available content actions require a concrete reason",
+                    ));
+                }
+                Ok(DeclaredContentAction {
+                    id: action.id,
+                    label: action.label,
+                    effect: action.effect,
+                    support: action.support,
+                    support_reason: action.support_reason,
+                })
+            })
+            .collect::<Result<Vec<_>, PluginError>>()?;
+        Ok(DeclaredContentPresentation { actions })
+    }
 
     let declaration_value = json!({
         "schema": INTERACTION_SCHEMA,
@@ -1027,6 +1143,23 @@ fn target_id(
     )?)
 }
 
+fn content_target_id(
+    surface: &ContentHash,
+    candidate_id: EntityId,
+    choice: usize,
+    action: &str,
+) -> Result<ContentHash, PluginError> {
+    Ok(canonical_json_hash(
+        TARGET_DOMAIN,
+        &json!({
+            "surface_id": surface,
+            "candidate_id": candidate_id,
+            "choice": choice,
+            "action": action,
+        }),
+    )?)
+}
+
 pub(crate) struct SurfaceBuild<'a> {
     pub session_id: EntityId,
     pub branch_id: Option<EntityId>,
@@ -1040,6 +1173,8 @@ pub(crate) struct SurfaceBuild<'a> {
     pub provider_profiles: &'a [String],
     pub characters: &'a [(ContentHash, String)],
     pub completed_attempt: bool,
+    pub content_candidate: Option<EntityId>,
+    pub content_choices: &'a [String],
 }
 
 pub(crate) fn build_surface(input: SurfaceBuild<'_>) -> Result<InteractionSurface, PluginError> {
@@ -1207,6 +1342,14 @@ pub(crate) fn build_surface(input: SurfaceBuild<'_>) -> Result<InteractionSurfac
                     (!cfg!(feature = "scripting"))
                         .then(|| "Extension execution requires scripting support".to_owned())
                 });
+            let content = action
+                .presentation
+                .as_ref()
+                .zip(input.content_candidate)
+                .map(|(presentation, candidate_id)| {
+                    build_content(&id, candidate_id, input.content_choices, presentation)
+                })
+                .transpose()?;
             Ok(InteractionAction {
                 target: target_id(&id, "action", &action.id)?,
                 label: action.label.clone(),
@@ -1215,6 +1358,7 @@ pub(crate) fn build_surface(input: SurfaceBuild<'_>) -> Result<InteractionSurfac
                 support_reason: action.support_reason.clone(),
                 enabled: reason.is_none(),
                 unavailable_reason: reason,
+                content,
             })
         })
         .collect::<Result<Vec<_>, PluginError>>()?;
@@ -1226,7 +1370,9 @@ pub(crate) fn build_surface(input: SurfaceBuild<'_>) -> Result<InteractionSurfac
         support_reason: input.declaration.support_reason.clone(),
         enabled: can_save,
         unavailable_reason: save_reason,
+        content: None,
     };
+
     let revision = canonical_json_hash(
         REVISION_DOMAIN,
         &json!({
@@ -1261,6 +1407,43 @@ pub(crate) fn build_surface(input: SurfaceBuild<'_>) -> Result<InteractionSurfac
         groups,
         save,
         actions,
+    })
+}
+pub(crate) fn build_content(
+    surface: &ContentHash,
+    candidate_id: EntityId,
+    choices: &[String],
+    presentation: &DeclaredContentPresentation,
+) -> Result<InteractionContent, PluginError> {
+    let choices = choices
+        .iter()
+        .enumerate()
+        .map(|(index, text)| {
+            let actions = presentation
+                .actions
+                .iter()
+                .map(|action| {
+                    Ok(InteractionContentAction {
+                        target: content_target_id(surface, candidate_id, index, &action.id)?,
+                        label: action.label.clone(),
+                        effect: action.effect,
+                        support: action.support,
+                        support_reason: action.support_reason.clone(),
+                        enabled: action.support.is_executable()
+                            && action.effect != InteractionContentEffect::Unavailable,
+                    })
+                })
+                .collect::<Result<Vec<_>, PluginError>>()?;
+            Ok(InteractionContentChoice {
+                target: content_target_id(surface, candidate_id, index, "choice")?,
+                text: text.clone(),
+                actions,
+            })
+        })
+        .collect::<Result<Vec<_>, PluginError>>()?;
+    Ok(InteractionContent {
+        candidate_id,
+        choices,
     })
 }
 

@@ -136,6 +136,81 @@ pub fn write_stepped_thinking_interaction_fixture(directory: &Path) -> PathBuf {
     package
 }
 
+pub fn write_roadway_interaction_fixture(directory: &Path) -> PathBuf {
+    let package = directory.join("roadway-fixture");
+    std::fs::create_dir_all(&package).unwrap();
+    let component = br#"
+SillyTavern.registerSlashCommand('/roadway-generate', () => JSON.stringify([
+  'Search the archive for a hidden route.',
+  'Ask the librarian who last opened the sealed wing.'
+]));
+"#;
+    let digest = stcli_core::plugin_digest(component);
+    std::fs::write(package.join("index.js"), component).unwrap();
+    std::fs::write(
+        package.join("manifest.json"),
+        serde_json::to_vec_pretty(&json!({
+            "schema": "stcli.plugin-manifest/v1",
+            "id": "org.stcli.roadway-fixture",
+            "version": "0.4.0-fixture.1",
+            "engine": ">=0.1.0, <0.2.0",
+            "runtime": "st-bridge",
+            "component": "index.js",
+            "component_sha256": digest,
+            "dependencies": [],
+            "license": "LicenseRef-TestFixture",
+            "subscriptions": [],
+            "prompt_slots": [],
+            "commands": ["roadway-generate"],
+            "macros": [],
+            "settings_schema": "settings.schema.json",
+            "requested_capabilities": ["register-command"],
+            "before": [],
+            "after": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        package.join("settings.schema.json"),
+        serde_json::to_vec_pretty(&json!({
+            "type": "object",
+            "properties": {},
+            "x-stcli-interaction": {
+                "schema": "stcli.interaction/v1",
+                "id": "roadway-choices",
+                "component_sha256": digest,
+                "support": "partially-available",
+                "support_reason": "Controlled fixture demonstrates content-associated choices only; the upstream runtime is not ported.",
+                "groups": [],
+                "actions": [{
+                    "id": "generate",
+                    "label": "Generate Roadway choices",
+                    "help": "Generate controlled choices for the latest selected Candidate.",
+                    "command": "roadway-generate",
+                    "support": "partially-available",
+                    "support_reason": "Controlled deterministic fixture output; no provider call is made.",
+                    "requires_branch": true,
+                    "requires_completed_attempt": true,
+                    "capabilities": ["register-command"],
+                    "presentation": {
+                        "type": "content-choices",
+                        "actions": [
+                            {"id": "edit", "label": "Edit", "effect": "edit", "support": "available"},
+                            {"id": "use", "label": "Use", "effect": "draft", "support": "available"},
+                            {"id": "impersonate", "label": "Impersonate", "effect": "unavailable", "support": "unavailable", "support_reason": "Roadway impersonation requires an unported host generation operation."},
+                            {"id": "regenerate", "label": "Regenerate", "effect": "unavailable", "support": "unavailable", "support_reason": "Roadway choice regeneration is not mapped by this controlled fixture."}
+                        ]
+                    }
+                }]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    package
+}
+
 pub fn configuration(character_revision: ContentHash) -> SessionConfiguration {
     SessionConfiguration {
         compatibility_profile: "sillytavern-1.18-core".to_owned(),

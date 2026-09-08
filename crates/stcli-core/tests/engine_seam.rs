@@ -4,7 +4,10 @@ use stcli_core::{
     EngineCommand, EngineError, EngineInspection, EngineQuery, EngineResult, EntityId,
     SessionError, StcliEngine, Store,
 };
-use stcli_testkit::{configuration, fixtures, write_stepped_thinking_interaction_fixture};
+use stcli_testkit::{
+    configuration, fixtures, write_roadway_interaction_fixture,
+    write_stepped_thinking_interaction_fixture,
+};
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -1690,4 +1693,118 @@ async fn ordered_list_and_resource_selector_save_atomically_and_reject_stale_reo
         _ => panic!("configuration"),
     };
     assert_eq!(unchanged, stored);
+}
+
+#[cfg(feature = "scripting")]
+#[tokio::test]
+async fn roadway_choices_bind_to_selected_candidate_and_stale_content_rejects_before_effects() {
+    // Regression test for ticket 05: choice actions stay bound to their source Candidate.
+    use stcli_core::{InteractionOutcome, InteractionSubmission};
+
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let engine = StcliEngine::new(&database);
+    let package = write_roadway_interaction_fixture(directory.path());
+    let EngineResult::InstalledPlugin(installed) = engine
+        .execute(EngineCommand::InstallPlugin { directory: package }, |_| {})
+        .await
+        .unwrap()
+    else {
+        panic!("installed fixture")
+    };
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let mut config = configuration(character.revision_hash);
+    config.plugins.push(stcli_core::PluginPin {
+        id: installed.manifest.id,
+        version: installed.manifest.version.to_string(),
+        component_hash: installed.manifest.component_sha256,
+        capabilities: [stcli_core::PluginCapability::RegisterCommand]
+            .into_iter()
+            .collect(),
+        settings: json!({}),
+        egress_allow_list: Vec::new(),
+        enabled: true,
+    });
+    let created = store.create_session(config, 0).unwrap();
+    let turn = create_failed_turn(
+        &mut store,
+        created.session.session_id,
+        created.branch.branch_id,
+        "Look around",
+    )
+    .await;
+    let first_candidate = complete_with_candidate(&mut store, &turn, "The archive is quiet.");
+    drop(store);
+
+    let surface = match engine
+        .inspect(EngineQuery::ExtensionInteractions {
+            session_id: created.session.session_id,
+            branch_id: Some(created.branch.branch_id),
+        })
+        .unwrap()
+    {
+        EngineInspection::ExtensionInteractions(mut surfaces) => surfaces.pop().unwrap(),
+        _ => panic!("surface"),
+    };
+    let action = &surface.actions[0];
+    assert_eq!(
+        action.content.as_ref().unwrap().candidate_id,
+        first_candidate
+    );
+    assert_eq!(action.content.as_ref().unwrap().choices.len(), 0);
+
+    let command = EngineCommand::SubmitExtensionInteraction {
+        identity: surface.identity.clone(),
+        expected_revision: surface.revision.clone(),
+        submission: InteractionSubmission::Invoke {
+            target: action.target.clone(),
+        },
+    };
+    let EngineResult::ExtensionInteraction(generated) =
+        engine.execute(command.clone(), |_| {}).await.unwrap()
+    else {
+        panic!("generated")
+    };
+    assert!(matches!(
+        generated.outcome,
+        InteractionOutcome::Invoked { .. }
+    ));
+    assert_eq!(
+        generated.surface.actions[0]
+            .content
+            .as_ref()
+            .unwrap()
+            .choices
+            .len(),
+        2
+    );
+
+    let mut store = Store::open(&database).unwrap();
+    let second_candidate = complete_with_candidate(&mut store, &turn, "A door opens.");
+    store.select_swipe(turn.turn_id, second_candidate).unwrap();
+    let trace_before = store
+        .trace_events(Some(created.session.session_id))
+        .unwrap()
+        .len();
+    drop(store);
+    let EngineResult::ExtensionInteraction(rejected) =
+        engine.execute(command, |_| {}).await.unwrap()
+    else {
+        panic!("rejected")
+    };
+    assert!(matches!(
+        rejected.outcome,
+        InteractionOutcome::Rejected { .. }
+    ));
+    assert_eq!(
+        Store::open(&database)
+            .unwrap()
+            .trace_events(Some(created.session.session_id))
+            .unwrap()
+            .len(),
+        trace_before
+    );
 }

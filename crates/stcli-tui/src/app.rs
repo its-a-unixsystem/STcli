@@ -800,6 +800,9 @@ pub struct InteractionFormState {
     pub list_item: usize,
     pub list_field: usize,
     pub resource_filter: Option<String>,
+    pub content_choice: usize,
+    pub content_editing: bool,
+    pub content_draft: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -808,6 +811,11 @@ struct PendingInteraction {
     branch_id: Option<EntityId>,
     surface_id: ContentHash,
     kind: &'static str,
+}
+
+enum InteractionFormOutcome {
+    Effect(Box<Effect>),
+    Close,
 }
 impl InteractionFormState {
     fn new(surface: InteractionSurface) -> Self {
@@ -868,6 +876,9 @@ impl InteractionFormState {
             list_item: 0,
             list_field: 0,
             resource_filter: None,
+            content_choice: 0,
+            content_editing: false,
+            content_draft: None,
         }
     }
 
@@ -1573,9 +1584,14 @@ impl App {
                 if self.pending_interaction.is_some() {
                     state.notice =
                         Some("Another Extension interaction is still pending".to_owned());
-                } else if let Some(effect) = self.handle_interaction_form_key(key, state) {
-                    self.popup = Some(Popup::InteractionForm(state.clone()));
-                    return effect;
+                } else if let Some(outcome) = self.handle_interaction_form_key(key, state) {
+                    match outcome {
+                        InteractionFormOutcome::Effect(effect) => {
+                            self.popup = Some(Popup::InteractionForm(state.clone()));
+                            return *effect;
+                        }
+                        InteractionFormOutcome::Close => return Effect::None,
+                    }
                 }
             }
             Popup::ConfirmExit => match key.code {
@@ -2648,13 +2664,80 @@ impl App {
         &mut self,
         key: KeyEvent,
         state: &mut InteractionFormState,
-    ) -> Option<Effect> {
+    ) -> Option<InteractionFormOutcome> {
+        if state.content_editing {
+            let Some(draft) = state.content_draft.as_mut() else {
+                state.content_editing = false;
+                return None;
+            };
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => state.content_editing = false,
+                KeyCode::Backspace => {
+                    draft.pop();
+                }
+                KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    draft.push(character);
+                }
+                _ => {}
+            }
+            return None;
+        }
+        match key.code {
+            KeyCode::Char('n') => {
+                let count = Self::content_choice_count(state);
+                state.content_choice = (state.content_choice + 1).min(count.saturating_sub(1));
+                state.content_draft = None;
+                return None;
+            }
+            KeyCode::Char('p') => {
+                state.content_choice = state.content_choice.saturating_sub(1);
+                state.content_draft = None;
+                return None;
+            }
+            KeyCode::Char('e') => {
+                if Self::selected_content_choice(state).is_some_and(|choice| {
+                    choice.actions.iter().any(|action| {
+                        action.enabled
+                            && action.effect == stcli_core::InteractionContentEffect::Edit
+                    })
+                }) {
+                    state.content_draft =
+                        Self::selected_content_choice(state).map(|choice| choice.text.clone());
+                    state.content_editing = true;
+                } else {
+                    state.notice = Some("No editable content choice is available".to_owned());
+                }
+                return None;
+            }
+            KeyCode::Char('u') => {
+                if let Some(choice) = Self::selected_content_choice(state).filter(|choice| {
+                    choice.actions.iter().any(|action| {
+                        action.enabled
+                            && action.effect == stcli_core::InteractionContentEffect::Draft
+                    })
+                }) {
+                    self.composer = state
+                        .content_draft
+                        .clone()
+                        .unwrap_or_else(|| choice.text.clone());
+                    self.chat_focus = ChatFocus::Composer;
+                    self.popup = None;
+                    self.show_info("Choice placed in composer; press Enter to submit");
+                    return Some(InteractionFormOutcome::Close);
+                }
+                state.notice = Some("No usable content choice is available".to_owned());
+                return None;
+            }
+            _ => {}
+        }
         let field_count = state.drafts.len();
         let action_start = field_count + 1;
         let cancel_index = action_start + state.surface.actions.len();
         if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
             state.focus(field_count);
-            return Some(self.submit_interaction_save(state));
+            return Some(InteractionFormOutcome::Effect(Box::new(
+                self.submit_interaction_save(state),
+            )));
         }
         match key.code {
             KeyCode::Tab => {
@@ -2809,7 +2892,9 @@ impl App {
             }
         }
         if state.focused == field_count {
-            return (key.code == KeyCode::Enter).then(|| self.submit_interaction_save(state));
+            return (key.code == KeyCode::Enter).then(|| {
+                InteractionFormOutcome::Effect(Box::new(self.submit_interaction_save(state)))
+            });
         }
         if state.focused >= action_start && state.focused < cancel_index {
             if key.code != KeyCode::Enter {
@@ -2831,13 +2916,15 @@ impl App {
                 kind: "action",
             });
             state.notice = Some("Running action…".to_owned());
-            return Some(Effect::Execute(EngineCommand::SubmitExtensionInteraction {
-                identity: state.surface.identity.clone(),
-                expected_revision: state.surface.revision.clone(),
-                submission: stcli_core::InteractionSubmission::Invoke {
-                    target: action.target.clone(),
+            return Some(InteractionFormOutcome::Effect(Box::new(Effect::Execute(
+                EngineCommand::SubmitExtensionInteraction {
+                    identity: state.surface.identity.clone(),
+                    expected_revision: state.surface.revision.clone(),
+                    submission: stcli_core::InteractionSubmission::Invoke {
+                        target: action.target.clone(),
+                    },
                 },
-            }));
+            ))));
         }
         if state.focused == cancel_index && key.code == KeyCode::Enter {
             let session_id = state.surface.identity.session_id;
@@ -2853,7 +2940,7 @@ impl App {
                     selected: 0,
                 });
             }
-            return Some(Effect::None);
+            return Some(InteractionFormOutcome::Effect(Box::new(Effect::None)));
         }
 
         let field = state.field(state.focused).cloned()?;
@@ -2921,6 +3008,28 @@ impl App {
             InteractionDraftValue::OrderedList(_) => {}
         }
         None
+    }
+
+    fn content_choice_count(state: &InteractionFormState) -> usize {
+        state
+            .surface
+            .actions
+            .iter()
+            .filter_map(|action| action.content.as_ref())
+            .map(|content| content.choices.len())
+            .sum()
+    }
+
+    fn selected_content_choice(
+        state: &InteractionFormState,
+    ) -> Option<&stcli_core::InteractionContentChoice> {
+        state
+            .surface
+            .actions
+            .iter()
+            .filter_map(|action| action.content.as_ref())
+            .flat_map(|content| &content.choices)
+            .nth(state.content_choice)
     }
 
     fn submit_interaction_save(&mut self, state: &mut InteractionFormState) -> Effect {

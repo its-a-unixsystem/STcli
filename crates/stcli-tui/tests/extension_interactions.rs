@@ -1,7 +1,10 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend};
 use stcli_core::{EngineInspection, EngineQuery, InteractionValue, StcliEngine, Store};
-use stcli_testkit::{configuration, fixtures, write_stepped_thinking_interaction_fixture};
+use stcli_testkit::{
+    configuration, fixtures, write_roadway_interaction_fixture,
+    write_stepped_thinking_interaction_fixture,
+};
 use stcli_tui::{App, Config, Effect, InteractionDraftValue, Popup, render as render_ui};
 use tempfile::tempdir;
 
@@ -313,4 +316,137 @@ async fn generic_form_edits_reorders_and_selects_resources_by_keyboard() {
     };
     assert_eq!(items.len(), 2);
     assert_eq!(items[0].id, "check");
+}
+
+#[tokio::test]
+async fn roadway_choice_use_places_draft_without_submitting() {
+    // Regression test for ticket 05: Use changes only the local composer until explicit submit.
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let engine = StcliEngine::new(&database);
+    let package = write_roadway_interaction_fixture(directory.path());
+    let stcli_core::EngineResult::InstalledPlugin(installed) = engine
+        .execute(
+            stcli_core::EngineCommand::InstallPlugin { directory: package },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("installed fixture")
+    };
+    let mut store = Store::open(&database).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let mut config = configuration(character.revision_hash);
+    config.plugins.push(stcli_core::PluginPin {
+        id: installed.manifest.id,
+        version: installed.manifest.version.to_string(),
+        component_hash: installed.manifest.component_sha256,
+        capabilities: [stcli_core::PluginCapability::RegisterCommand]
+            .into_iter()
+            .collect(),
+        settings: serde_json::json!({}),
+        egress_allow_list: Vec::new(),
+        enabled: true,
+    });
+    let created = store.create_session(config, 0).unwrap();
+    drop(store);
+    let mut app = App::load(
+        StcliEngine::new(&database),
+        Config::default(),
+        Some(created.session.session_id),
+    )
+    .unwrap();
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('E'));
+    press(&mut app, KeyCode::Enter);
+    let Some(Popup::InteractionForm(state)) = &mut app.popup else {
+        panic!("form")
+    };
+    state.surface.actions[0].content = Some(stcli_core::InteractionContent {
+        candidate_id: stcli_core::EntityId::new(),
+        choices: vec![
+            stcli_core::InteractionContentChoice {
+                target: stcli_core::ContentHash::new([1; 32]),
+                text: "Search the archive for a hidden route.".to_owned(),
+                actions: vec![
+                    stcli_core::InteractionContentAction {
+                        target: stcli_core::ContentHash::new([2; 32]),
+                        label: "Edit".to_owned(),
+                        effect: stcli_core::InteractionContentEffect::Edit,
+                        support: stcli_core::InteractionSupport::Available,
+                        support_reason: None,
+                        enabled: true,
+                    },
+                    stcli_core::InteractionContentAction {
+                        target: stcli_core::ContentHash::new([3; 32]),
+                        label: "Use".to_owned(),
+                        effect: stcli_core::InteractionContentEffect::Draft,
+                        support: stcli_core::InteractionSupport::Available,
+                        support_reason: None,
+                        enabled: true,
+                    },
+                ],
+            },
+            stcli_core::InteractionContentChoice {
+                target: stcli_core::ContentHash::new([4; 32]),
+                text: "Ask the librarian.".to_owned(),
+                actions: vec![
+                    stcli_core::InteractionContentAction {
+                        target: stcli_core::ContentHash::new([5; 32]),
+                        label: "Edit".to_owned(),
+                        effect: stcli_core::InteractionContentEffect::Edit,
+                        support: stcli_core::InteractionSupport::Available,
+                        support_reason: None,
+                        enabled: true,
+                    },
+                    stcli_core::InteractionContentAction {
+                        target: stcli_core::ContentHash::new([6; 32]),
+                        label: "Use".to_owned(),
+                        effect: stcli_core::InteractionContentEffect::Draft,
+                        support: stcli_core::InteractionSupport::Available,
+                        support_reason: None,
+                        enabled: true,
+                    },
+                ],
+            },
+        ],
+    });
+    let turns_before = match app
+        .engine
+        .inspect(EngineQuery::BranchHistory {
+            session_id: created.session.session_id,
+            branch_id: created.branch.branch_id,
+        })
+        .unwrap()
+    {
+        EngineInspection::BranchHistory(history) => history.turns.len(),
+        _ => panic!("history"),
+    };
+
+    assert!(render(&mut app).contains("Ask the librarian."));
+    press(&mut app, KeyCode::Char('n'));
+    press(&mut app, KeyCode::Char('e'));
+    press(&mut app, KeyCode::Backspace);
+    press(&mut app, KeyCode::Char('!'));
+    press(&mut app, KeyCode::Enter);
+
+    let effect = press(&mut app, KeyCode::Char('u'));
+    assert!(matches!(effect, Effect::None));
+    assert_eq!(app.composer, "Ask the librarian!");
+    assert!(app.popup.is_none());
+    let turns_after = match app
+        .engine
+        .inspect(EngineQuery::BranchHistory {
+            session_id: created.session.session_id,
+            branch_id: created.branch.branch_id,
+        })
+        .unwrap()
+    {
+        EngineInspection::BranchHistory(history) => history.turns.len(),
+        _ => panic!("history"),
+    };
+    assert_eq!(turns_after, turns_before);
 }
