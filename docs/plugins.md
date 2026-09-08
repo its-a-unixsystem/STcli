@@ -16,6 +16,7 @@ This page is the complete guide. It has an introduction, two tutorials, a packag
 - [Brokered HTTPS egress](#brokered-https-egress)
 - [SillyTavern.getContext() read-only surface](#sillytaverngetcontext-read-only-surface)
 - [The manifest](#the-manifest)
+- [Declared interaction surfaces](#declared-interaction-surfaces)
 - [Tutorial: a script plugin](#tutorial-a-script-plugin)
 - [Tutorial: a Wasm plugin](#tutorial-a-wasm-plugin)
 - [Combine several features in one plugin](#combine-several-features-in-one-plugin)
@@ -383,6 +384,12 @@ The engine validates the component digest before it runs the component. When the
 
 ### Declared interaction surfaces
 
+An interaction surface is a complete, current description of one supported Extension workflow.
+It gives frontends typed controls, values, choices, help, validation errors, actions, and support
+states without prescribing terminal layout. Packages can declare the contract directly. A
+compatibility adapter can declare the same contract for exact, digest-pinned Extension bytes.
+STcli does not infer safe mutations from arbitrary HTML, jQuery, or JavaScript.
+
 An `st-bridge` package can opt into a frontend-neutral settings form by putting an
 `x-stcli-interaction` annotation in its `settings_schema`. The annotation schema is
 `stcli.interaction/v1`. It identifies ordered groups of property names and actions. Scalar
@@ -413,6 +420,18 @@ arguments. Its annotation lists required manifest capabilities and whether a Bra
 Primary Attempt is required. The engine checks the current pin, grant, Branch ownership, action
 availability, and scripting support before dispatch. A surface also declares the support state and
 reason for its whole workflow.
+
+The `InteractionSupport` contract applies one of four serialized states to each workflow and action:
+
+| State | Meaning |
+|---|---|
+| `available` | The named operation has an implemented binding and executable evidence. Runtime requirements such as grants still apply. |
+| `partially-available` | Only the named subset has an implemented binding and evidence. The reason identifies the missing behavior. |
+| `unavailable` | STcli knows the operation cannot run through the current host contract. It stays disabled and has no handler binding. |
+| `unverified` | No executable evidence establishes the operation. It stays disabled and has no handler binding. |
+
+A package-level state does not promote every action to that state. Frontends display each narrower
+action state and reason.
 
 The engine returns one `InteractionIdentity` with the Session, optional Branch, Extension ID,
 package version, component digest, declaration hash, and opaque surface ID. The component digest
@@ -472,11 +491,11 @@ verified against the content-addressed `memory` 1.1.0 package and engine-seam te
 controlled content-choice workflow is separately `partially-available`; the upstream runtime remains
 `unverified` and unsupported.
 
-| Reference workflow | Identity and evidence | Demonstrated | Unsupported |
-|---|---|---|---|
-| Summarize | Real bundled `memory` 1.1.0 package; engine and TUI interaction tests | Configuration read/edit and **Summarize now** | Extras, WebLLM, Classic/default builders, World Info scanning, visual settings, Restore Previous |
-| Stepped Thinking | Controlled `org.stcli.stepped-thinking-fixture` `3.2.3-fixture.1`; `engine_seam` and `extension_interactions` | Ordered prompt add/edit/enable/remove/reorder and permitted character selection through generic controls | Upstream adapter, thinking generation and reasoning pipelines, and complete runtime compatibility |
-| Roadway | Controlled `org.stcli.roadway-fixture` `0.4.0-fixture.1`; `engine_seam` and `extension_interactions` | Candidate-bound choice generation, generic Edit/Use/Impersonate/Regenerate metadata, choice-to-composer draft, and stale-content rejection | Upstream adapter, provider-backed generation, impersonation inference, automatic submission, and complete runtime compatibility |
+| Reference workflow | Support | Tested identity | Executable evidence | Demonstrated | Not demonstrated |
+|---|---|---|---|---|---|
+| Summarize | `available` for the named subset | Bundled `memory` 1.1.0, component `sha256:113a5e468b3636b8d0af66954a9e557fac347e864dab386429f5aabfc758d30a` | `crates/stcli-core/tests/engine_seam.rs`: `summarize_interaction_exposes_declared_settings_and_action`, `summarize_interaction_save_creates_revision_and_rejects_stale_submission`, and `summarize_interaction_action_uses_saved_settings_and_appends_checkpoints`; `crates/stcli-tui/tests/extension_interactions.rs`: `extension_interaction_surface_opens_as_generic_form` and `extension_interaction_drafts_cancel_and_save_through_typed_targets` | Configuration read/edit and **Summarize now** | Extras, WebLLM, Classic/default builders, World Info scanning, visual settings, and Restore Previous |
+| Stepped Thinking | `partially-available` fixture demonstration; upstream workflow `unverified` | Controlled `org.stcli.stepped-thinking-fixture` `3.2.3-fixture.1` | `crates/stcli-core/tests/engine_seam.rs`: `ordered_list_and_resource_selector_save_atomically_and_reject_stale_reorder`; `crates/stcli-tui/tests/extension_interactions.rs`: `generic_form_edits_reorders_and_selects_resources_by_keyboard` | Ordered prompt add/edit/enable/remove/reorder and permitted character selection through generic controls | Upstream adapter, thinking generation and reasoning pipelines, and complete runtime compatibility |
+| Roadway | `partially-available` fixture demonstration; upstream workflow `unverified` | Controlled `org.stcli.roadway-fixture` `0.4.0-fixture.1` | `crates/stcli-core/tests/engine_seam.rs`: `roadway_choices_bind_to_selected_candidate_and_stale_content_rejects_before_effects`; `crates/stcli-tui/tests/extension_interactions.rs`: `roadway_choice_use_places_draft_without_submitting` | Candidate-bound choice generation, generic Edit/Use/Impersonate/Regenerate metadata, choice-to-composer draft, and stale-content rejection | Upstream adapter, provider-backed generation, impersonation inference, automatic submission, and complete runtime compatibility |
 
 #### Roadway content-choice demonstration
 
@@ -497,6 +516,21 @@ not represented as successful DOM mutations.
 
 Later adapters must name their exact component digest, declaration hash, per-workflow support state,
 and executable evidence. A controlled fixture is not evidence of complete upstream support.
+
+#### Interaction and presentation trust boundary
+
+Native controls do not convert an Extension's arbitrary HTML, CSS, or JavaScript into a terminal
+application. Live Extension JavaScript runs only in the headless QuickJS bridge. It does not run in
+Chromium, a user browser profile, or Candidate presentation. Missing DOM and browser operations
+remain warned stubs or unavailable interaction actions.
+
+Candidate presentation does not execute model-generated scripts or handlers. It cannot fetch
+unrestricted resources, open local files, read browser profiles or credentials, or host arbitrary
+interactive web applications. Resource selectors expose only the permitted references described
+above. Brokered HTTPS Egress and Secondary Inference remain the only granted live-effect paths.
+
+Replay uses recorded Extension effects without QuickJS or the TUI. Headless Consumers receive
+presentation-neutral content and do not depend on native controls or terminal conversion.
 
 ### Import a SillyTavern Extension
 

@@ -11,11 +11,11 @@ This index maps every document to its audience and purpose.
 | [Root README](../README.md) | What STcli is, quick start, and the documentation map |
 | [Usage guide](guide.md) | Task guide: import, sessions, generation, editing, capsules, plugins |
 | [Configuration](configuration.md) | Provider profiles, Credential References, and secure credential management |
-| [Terminal user interface](tui.md) | TUI navigation, preset management, and in-TUI imports |
+| [Terminal user interface](tui.md) | TUI navigation, native Extension interactions, styled Candidate content, and in-TUI imports |
 | [CLI reference](cli.md) | Every command, argument, and value format |
 | [Chat Completion presets](presets.md) | Preset semantics, settings precedence, and field classification |
 | [Text Completion prompts](text-completion.md) | Text Completion provider profiles, instruct templates, and story strings |
-| [Writing plugins](plugins.md) | Wasm and QuickJS script plugins: manifest, script API, and limits |
+| [Writing plugins](plugins.md) | Plugin and Extension runtimes, interaction adapter contracts, support evidence, and trust limits |
 | [Examples](../examples/README.md) | Sample character, lorebook, and preset artifacts |
 | [Plugins directory](../plugins/README.md) | In-tree plugins and the reference proof component |
 
@@ -43,6 +43,12 @@ Each ADR records one design decision and its consequences.
 | [0005](adr/0005-granular-deletion-tombstones.md) | Granular deletion as tombstones plus session compaction |
 | [0006](adr/0006-layered-plugins-and-brokered-effects.md) | Layered plugins with a single brokered live-effect boundary |
 | [0007](adr/0007-external-content-addressed-asset-storage.md) | External content-addressed filesystem storage for media assets |
+| [0008](adr/0008-frontend-core-boundary.md) | Core returns presentation-neutral content and interactive frontends own rendering |
+| [0009](adr/0009-sillytavern-extension-bridge-packaging-and-trust.md) | SillyTavern Extensions run in digest-pinned QuickJS contexts and Replay uses recorded effects |
+| [0010](adr/0010-brokered-egress-and-secondary-inference.md) | Extensions use shared, grant-controlled live-effect brokers |
+| [0011](adr/0011-prompt-order-entry-toggle-storage.md) | Prompt-order toggles create immutable revisions or Session overrides |
+| [0012](adr/0012-rich-content-renderer-experiment.md) | Graphical terminal rendering is retired; experiment evidence remains historical |
+| [0013](adr/0013-styled-text-html-fallback.md) | Candidate content uses a bounded Markdown-to-HTML-to-styled-terminal-text pipeline |
 
 ## Diagrams
 

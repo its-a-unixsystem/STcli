@@ -6,6 +6,46 @@ Run the terminal user interface with:
 stcli tui
 ```
 
+## Read Candidate content
+
+The TUI presents every Candidate through one shared, in-process converter:
+
+1. `pulldown-cmark` converts Markdown to HTML with the supported GitHub-Flavored Markdown
+   extensions. Raw HTML outside a code span or fenced code block passes through this stage.
+2. `scraper`/`html5ever` parses the HTML fragment. `content.rs` walks the parsed tree and emits
+   styled Ratatui text.
+
+Inline and fenced HTML examples stay literal because Markdown marks them as code. Press `c` with
+the Candidate focused to copy its original source, not the styled presentation. Candidate Rendering
+does not rewrite the stored Candidate.
+
+The converter suppresses Concealed Content, including script and style bodies, comments,
+`hidden`/`aria-hidden` elements, supported inline hidden styles, and equal inline foreground and
+background colors. It strips content-originated terminal control characters and ANSI/OSC control
+sequences before emitting text. Links and image alternative text remain inspectable as text; the
+TUI fetches no content-originated resource.
+
+Each conversion accepts at most 256 KiB of source and 128 nested HTML elements. Larger or deeper
+input uses control-neutralized literal source instead of a partial conversion. Tags remain visible
+in that bounded fallback. `<details>` differs from browser layout: its summary becomes a heading
+and its body is always shown.
+
+Candidate presentation cannot run generated scripts, access unrestricted resources or local files,
+reuse browser profiles, read credentials, or host an arbitrary interactive web application. It
+starts no browser, image worker, or graphics protocol. Replay and Headless Consumers remain
+independent of this TUI-only presentation.
+
+## Use Extension interactions
+
+In Chat history, press `E` to open the adopted Extensions that declare a native interaction
+surface. The TUI renders their typed forms, ordered lists, resource selectors, actions, support
+states, and unavailable reasons. Draft edits stay local until you save. Candidate-associated
+**Use** actions place text in the composer without sending it.
+
+These native controls describe supported workflows. They do not convert an Extension's browser UI
+or prove full upstream compatibility. See [Writing plugins](plugins.md#declared-interaction-surfaces)
+for the adapter contract and the exact Summarize, Stepped Thinking, and Roadway evidence.
+
 ## Branch from Chat
 
 In Chat history, focus a Turn and press `b` to create a new child Branch at that Turn. The new Branch excludes the focused Turn from its inherited history and pre-fills the composer with that Turn's user content, ready to resend or edit. With the Greeting (or no Turn) focused, `b` branches from the start with an empty composer. Branch creation switches Chat to the new Branch and confirms with a toast; while a Generation Attempt is streaming, `b` is ignored.

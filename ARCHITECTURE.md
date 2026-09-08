@@ -57,12 +57,27 @@ All crates and external consumers fall into one of four tiers ([ADR 0008](docs/a
 |---|---|---|
 | **Core** | `stcli-core` | Engine library — all domain logic, storage, prompt construction, provider communication, display script execution, and configuration parsing live here |
 | **Gateway** | `stcli-cli` | Scriptable CLI — wraps `StcliEngine` commands/queries as shell subcommands with `CliEnvelope` JSON output, plus hidden `internal` plumbing for tooling authors |
-| **Interactive Frontend** | `stcli-tui` (future: GUI, browser, mobile) | Interactive UX — real-time streaming, candidate presentation (markdown→ANSI, HTML→DOM), session navigation, frontend-specific config (theme, layout) |
+| **Interactive Frontend** | `stcli-tui` (future: GUI, browser, mobile) | Interactive UX — real-time streaming, Candidate presentation through `content.rs` and native controls with no browser or image worker, Session navigation, frontend-specific config (theme, layout) |
 | **Headless Consumer** | External scripts, backup tools | Consumes `CliEnvelope` JSON or reads `Store` directly for bulk operations |
 
 Mutations call `StcliEngine::execute`, inspections call `StcliEngine::inspect`. `Store` remains `pub` for specialized tooling (backups, migrations) but direct use bypasses Turn Trace guarantees — prefer the engine seam.
 
 Core returns raw strings after semantic transformations (display scripts, macros). Frontends own all presentation rendering. Core is format-agnostic: it never parses markdown, strips HTML, or emits terminal escape sequences.
+
+### Candidate presentation and Extension interactions
+
+Core returns presentation-neutral Candidate content after semantic transformations. It does not
+parse Markdown or HTML. QuickJS remains the sole executor for adopted Extension JavaScript, and the
+broker remains the sole path for granted network and Secondary Inference effects.
+
+The TUI owns native interaction controls and the sole shared Candidate text converter. As selected
+by [ADR 0013](docs/adr/0013-styled-text-html-fallback.md), `content.rs` first converts Markdown to
+HTML and then walks an HTML fragment to emit styled Ratatui spans. Native controls submit typed,
+revision-bound interactions through the engine seam; Candidate markup cannot invoke them.
+
+This boundary is not a universal HTML, CSS, or JavaScript conversion layer. The TUI does not run
+Extension code in Chromium or turn arbitrary browser applications into terminal controls. Replay
+uses recorded effects, and Headless Consumers use Core content without loading the TUI converter.
 
 `stcli-cli` also contains a deterministic HTTPS mock server (`provider_test`) built on `axum` for integration testing.
 

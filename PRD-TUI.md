@@ -232,7 +232,24 @@ Color tokens are defined as named constants in the theme module, making future t
 - Code spans → highlighted inline
 - Code blocks → bordered region with syntax indication
 - Headers, lists, blockquotes → indented/styled appropriately
-- HTML content → stripped or rendered as plain text (full HTML rendering deferred)
+- Markdown and embedded HTML → a bounded Markdown-to-HTML-to-styled-text pipeline; it suppresses Concealed Content, preserves literal code, and emits terminal spans rather than graphical image layout
+
+Every Candidate follows the two-stage converter selected by
+[ADR 0013](docs/adr/0013-styled-text-html-fallback.md). Stage 1 converts Markdown to HTML with
+`pulldown-cmark`; raw HTML passes through unless Markdown identifies it as literal inline or fenced
+code. Stage 2 parses the HTML fragment with `scraper`/`html5ever` and emits styled Ratatui spans
+through the sole shared TUI converter in `content.rs`. Copy and source inspection use the original
+Candidate content, and presentation never edits it.
+
+The DOM walk suppresses Concealed Content and neutralizes content-originated C0/C1, ANSI, and OSC
+controls. Input above 256 KiB or nesting deeper than 128 elements produces control-neutralized
+literal source with visible tags instead of a partial conversion. `<details>` summaries become
+headings and their bodies remain shown because terminal text has no collapsed state.
+
+Candidate presentation executes no generated script or handler and fetches no content-originated
+resource. It has no local-file resolver, browser profile, credential access, or interactive web
+application host. The TUI starts no Chromium process or graphical worker. Replay and Headless
+Consumers use Core content without this presentation layer.
 
 **Message blocks:** Each message is a tagged block:
 
@@ -289,7 +306,6 @@ The following are explicitly excluded from the initial TUI release and tracked f
 
 ### Content & Rendering
 
-- **HTML rendering in chat.** Parse and render HTML content in messages beyond plain-text stripping.
 - **Nerd Font icon support.** Opt-in Nerd Font icons alongside plain Unicode glyphs, toggled via config.
 - **User-defined themes.** Custom theme files with named color tokens.
 
