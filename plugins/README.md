@@ -11,6 +11,7 @@ STcli also runs plugins written in JavaScript through a sandboxed QuickJS runtim
 | Plugin | Identifier | Purpose |
 |---|---|---|
 | [`proof/`](proof/) | `org.stcli.proof` | Reference implementation and test harness proving the pure Wasm plugin architecture. |
+| [`ccv3-codec/`](ccv3-codec/) | `org.stcli.ccv3-codec` | Proof Wasm codec for CCv3 CHARX detection, decode, and encode. |
 | [`turn-counter/`](turn-counter/) | `org.stcli.turn-counter` | Reference script plugin for the [Writing plugins](../docs/plugins.md#tutorial-a-script-plugin) tutorial. Counts turns and injects one prompt line. |
 | [`nemo-directives/`](nemo-directives/) | `org.stcli.nemo-directives` | Default read-only evaluator for the supported NemoPresetExt prompt-directive subset. |
 
@@ -21,6 +22,10 @@ STcli also runs plugins written in JavaScript through a sandboxed QuickJS runtim
 - **Not a production plugin**: It is neither bundled into releases nor enabled by default in user sessions.
 - **Architectural role**: Proves that an out-of-tree plugin builds against the public WIT world, installs without host recompilation, and runs within strict sandbox boundaries.
 - **Test harness**: Implements declarative effects (macros, commands, prompt contributions, namespaced state) and controllable test modes in [`proof/src/lib.rs`](proof/src/lib.rs) to exercise host limits, error handling, timeouts, and unauthorized state rejection in [`crates/stcli-core/tests/plugins.rs`](../crates/stcli-core/tests/plugins.rs) and [`crates/stcli-cli/tests/plugins.rs`](../crates/stcli-cli/tests/plugins.rs).
+
+## The `ccv3-codec` plugin
+
+[`plugins/ccv3-codec`](ccv3-codec/) is a separately built proof package for the bounded [`stcli.artifact-codec/v1`](../docs/artifacts.md) Engine Hook. It reads and writes CCv3 CHARX with no Core recompilation. It is not bundled or enabled by default. Core tests install and register its checked-in Component, import a card and asset, inspect recorded provenance and compatibility items, and export through the same exact Plugin pin.
 
 ## The `turn-counter` plugin
 
@@ -33,7 +38,9 @@ STcli also runs plugins written in JavaScript through a sandboxed QuickJS runtim
 
 ## Artifact inspectors
 
-An Artifact inspector subscribes to `inspect-artifact`, requests the matching capability, and returns one typed JSON value without a Session. Before use, its exact id, version, component digest, and granted capability set are registered in the Store. Inspection is read-only and ephemeral: mutation effects are rejected and no Turn Trace receipt is created. See [Inspect an Artifact outside a Session](../docs/plugins.md#inspect-an-artifact-outside-a-session).
+An Artifact inspector subscribes to `inspect-artifact`, requests the matching capability, and returns one typed JSON value without a Session. Before use, its exact id, version, digest, and capability set are registered in the Store. Inspection is read-only and ephemeral: mutation effects are rejected and no Turn Trace receipt is created.
+
+An Artifact codec is the stricter Wasm-only form. It requests exactly `artifact-codec` and `inspect-artifact`; Core accepts only bounded flat proposals and owns validation and persistence. See [Artifacts and external codecs](../docs/artifacts.md).
 
 ## Default plugin lifecycle
 

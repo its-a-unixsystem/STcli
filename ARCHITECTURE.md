@@ -94,7 +94,8 @@ All modules live in `crates/stcli-core/src/`. The public API is re-exported from
 | Identity | [`identity.rs`](crates/stcli-core/src/identity.rs) |
 | Paths | [`paths.rs`](crates/stcli-core/src/paths.rs) |
 | Storage | [`storage.rs`](crates/stcli-core/src/storage.rs) |
-| Artifact Codecs | [`artifact.rs`](crates/stcli-core/src/artifact.rs) |
+| Artifact storage and validation | [`artifact.rs`](crates/stcli-core/src/artifact.rs) |
+| External Artifact codec contract | [`artifact_codec.rs`](crates/stcli-core/src/artifact_codec.rs) |
 | Session Manager | [`session.rs`](crates/stcli-core/src/session.rs) |
 | State Store | [`state.rs`](crates/stcli-core/src/state.rs) |
 | Macro Engine | [`macros.rs`](crates/stcli-core/src/macros.rs) |
@@ -114,7 +115,7 @@ All modules live in `crates/stcli-core/src/`. The public API is re-exported from
 
 ## Data model
 
-### SQLite schema (v12)
+### SQLite schema (v13)
 
 The database lives at `$STCLI_HOME/data/stcli.sqlite3` (or XDG equivalent) and runs in WAL mode with foreign keys enabled.
 
@@ -124,6 +125,7 @@ trace_events            Append-only authoritative event log (event sourcing)
 content_blobs           Content-addressed artifact storage
 content_refs            Reference counting for blob GC
 artifact_revisions      Artifact metadata indexed by content hash
+artifact_codec_provenance  Exact codec pin, interface version, format, and compatibility report
 assets                  Media asset index (avatars and CHARX files)
 asset_refs              Reference counting for external asset files
 sessions                Session projection
@@ -216,7 +218,7 @@ Plugins are **sandboxed by design**. The original MVP capability boundary is sho
 | | Arbitrary segment mutation |
 | | Post-commit state mutation |
 
-The implemented post-MVP host also supports read-only Artifact inspection, Brokered HTTPS Egress, and Secondary Inference. Wasm components request live operations through declared effects; Script Plugins remain offline. The `st-bridge` exposes grant-controlled host APIs. These operations do not grant raw sockets or direct provider access. See the [runtime matrix](docs/plugins.md#choose-a-runtime) and [ADR 0010](docs/adr/0010-brokered-egress-and-secondary-inference.md).
+The implemented post-MVP host also supports read-only Artifact inspection, bounded Wasm-only external Artifact codecs, Brokered HTTPS Egress, and Secondary Inference. Wasm components request live operations through declared effects; Script Plugins remain offline. The `st-bridge` exposes grant-controlled host APIs. These operations do not grant raw sockets or direct provider access. See the [runtime matrix](docs/plugins.md#choose-a-runtime), [Artifact codec reference](docs/artifacts.md), [ADR 0010](docs/adr/0010-brokered-egress-and-secondary-inference.md), and [ADR 0014](docs/adr/0014-artifact-codec-engine-hook.md).
 
 Plugins return **declarative, serializable effects** and receive no mutable engine references. This means the engine can record exactly what a plugin did and replay it without re-executing the Wasm component.
 
@@ -236,6 +238,10 @@ Plugins return **declarative, serializable effects** and receive no mutable engi
 <!-- Editable source: docs/diagrams/plugin-data-flow.html — re-export the PNG with headless Chromium after edits. -->
 
 The Plugin Host (`plugin.rs`) runs both runtimes. The Wasmtime path enforces fuel, epoch timeouts, and memory limits. The QuickJS path enforces memory, stack, and step limits. Each run returns an effect receipt that the trace records for replay.
+
+### External Artifact codec seam
+
+`EngineCommand::ImportArtifact` performs bounded `detect` and `decode` operations before Core creates an Artifact Revision. A codec proposes a flat payload and assets with declared sizes and hashes; Core independently validates the proposal and owns the atomic transaction. `EngineQuery::ArtifactSource` invokes the exact recorded codec for explicit export, while ordinary Artifact reads use stored flat data without executing code. Codecs are Wasm-only, receive no Session or live-effect handles, and are limited to the `artifact-codec` plus `inspect-artifact` capabilities. See [`docs/artifacts.md`](docs/artifacts.md) for the interface and limits.
 
 ## Key patterns
 
@@ -296,4 +302,4 @@ Formal ADRs live in [`docs/adr/`](docs/adr/):
 | [0006](docs/adr/0006-layered-plugins-and-brokered-effects.md) | Layered plugins with a single brokered live-effect boundary | Supersedes 0003 post-MVP; adds QuickJS Plugin Scripts and brokered HTTPS egress/secondary inference |
 | [0007](docs/adr/0007-external-content-addressed-asset-storage.md) | External content-addressed filesystem storage for media assets | SQLite store.db remains lightweight and vacuum-friendly; avatars and media are stored in data/assets/sha256/ with SQLite reference tracking |
 | [0008](docs/adr/0008-frontend-core-boundary.md) | Four-tier frontend–core boundary taxonomy | Core/Gateway/Interactive Frontend/Headless Consumer tiers; engine seam recommended but Store stays pub; core returns raw strings, frontends own presentation |
-
+| [0014](docs/adr/0014-artifact-codec-engine-hook.md) | External Artifact codecs run at a bounded pre-Artifact Wasm seam | Core validates and atomically persists flat proposals; ordinary reads never execute codecs |

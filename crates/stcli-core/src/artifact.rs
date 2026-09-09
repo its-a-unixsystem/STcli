@@ -18,7 +18,12 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    ArtifactCodecOutput, ContentHash, Store,
+    ArtifactCodecAsset, ArtifactCodecBundle, ArtifactCodecError, ArtifactCodecProvenance,
+    ContentHash, Store,
+    artifact_codec::{
+        MAX_CODEC_ASSET_BYTES, MAX_CODEC_ASSETS, MAX_CODEC_LOGICAL_PATH_BYTES,
+        MAX_CODEC_PAYLOAD_BYTES, MAX_CODEC_TOTAL_ASSET_BYTES,
+    },
     identity::{artifact_revision_hash, canonical_json_hash, hash_parts},
     storage::{StorageError, append_event},
 };
@@ -314,34 +319,98 @@ impl Store {
 
     pub fn import_artifact_from_codec(
         &mut self,
-        output: &ArtifactCodecOutput,
-    ) -> Result<ArtifactBundle, ArtifactError> {
-        let payload = BASE64
-            .decode(&output.payload)
-            .map_err(ArtifactError::InvalidCodecBase64)?;
+        bundle: &ArtifactCodecBundle,
+        provenance: &ArtifactCodecProvenance,
+    ) -> Result<ArtifactBundle, ArtifactCodecError> {
+        validate_codec_format(&bundle.source_format)?;
+        if bundle.source_format != "json" {
+            return Err(ArtifactCodecError::InvalidFormat(
+                bundle.source_format.clone(),
+            ));
+        }
+        validate_codec_format(&provenance.format)?;
+        if bundle.assets.len() > MAX_CODEC_ASSETS {
+            return Err(ArtifactCodecError::AssetCount {
+                actual: bundle.assets.len(),
+                limit: MAX_CODEC_ASSETS,
+            });
+        }
+        let payload =
+            BASE64
+                .decode(&bundle.payload)
+                .map_err(|source| ArtifactCodecError::InvalidBase64 {
+                    field: "payload",
+                    source,
+                })?;
+        if payload.len() > MAX_CODEC_PAYLOAD_BYTES {
+            return Err(ArtifactCodecError::PayloadSize {
+                actual: payload.len(),
+                limit: MAX_CODEC_PAYLOAD_BYTES,
+            });
+        }
+        if ContentHash::new(Sha256::digest(&payload).into()) != bundle.payload_sha256 {
+            return Err(ArtifactCodecError::HashMismatch { field: "payload" });
+        }
         let decoded = decode_artifact_payload(&payload)?;
-        match output.kind.as_str() {
-            "charx" => validate_character_card_v3(&decoded)?,
-            "webp" | "png" | "json" => {}
-            kind => return Err(ArtifactError::UnsupportedCodecFormat(kind.to_owned())),
+        if decoded.kind != bundle.artifact_kind {
+            return Err(ArtifactCodecError::ArtifactKindMismatch {
+                proposed: bundle.artifact_kind,
+                actual: decoded.kind,
+            });
+        }
+        if provenance.format == "charx" {
+            validate_character_card_v3(&decoded)?;
         }
 
-        let decoded_assets = output
-            .assets
-            .iter()
-            .map(|asset| {
-                let bytes = BASE64
-                    .decode(&asset.bytes)
-                    .map_err(ArtifactError::InvalidCodecBase64)?;
-                Store::validate_asset(&bytes)?;
-                Ok((asset.logical_path.clone(), bytes))
-            })
-            .collect::<Result<Vec<_>, ArtifactError>>()?;
-        if output.kind == "charx" {
-            let paths = decoded_assets
-                .iter()
-                .map(|(path, _)| path.as_str())
-                .collect::<HashSet<_>>();
+        let mut paths = HashSet::with_capacity(bundle.assets.len());
+        let mut total_asset_bytes = 0usize;
+        let mut decoded_assets = Vec::with_capacity(bundle.assets.len());
+        for asset in &bundle.assets {
+            validate_codec_logical_path(&asset.logical_path)?;
+            if !paths.insert(asset.logical_path.as_str()) {
+                return Err(ArtifactCodecError::DuplicateLogicalPath(
+                    asset.logical_path.clone(),
+                ));
+            }
+            let bytes = BASE64.decode(&asset.bytes).map_err(|source| {
+                ArtifactCodecError::InvalidBase64 {
+                    field: "asset",
+                    source,
+                }
+            })?;
+            if bytes.len() != asset.byte_size {
+                return Err(ArtifactCodecError::ByteSizeMismatch {
+                    path: asset.logical_path.clone(),
+                    proposed: asset.byte_size,
+                    actual: bytes.len(),
+                });
+            }
+            if bytes.len() > MAX_CODEC_ASSET_BYTES {
+                return Err(ArtifactCodecError::AssetSize {
+                    path: asset.logical_path.clone(),
+                    actual: bytes.len(),
+                    limit: MAX_CODEC_ASSET_BYTES,
+                });
+            }
+            total_asset_bytes = total_asset_bytes.checked_add(bytes.len()).ok_or(
+                ArtifactCodecError::TotalAssetSize {
+                    actual: usize::MAX,
+                    limit: MAX_CODEC_TOTAL_ASSET_BYTES,
+                },
+            )?;
+            if total_asset_bytes > MAX_CODEC_TOTAL_ASSET_BYTES {
+                return Err(ArtifactCodecError::TotalAssetSize {
+                    actual: total_asset_bytes,
+                    limit: MAX_CODEC_TOTAL_ASSET_BYTES,
+                });
+            }
+            if ContentHash::new(Sha256::digest(&bytes).into()) != asset.sha256 {
+                return Err(ArtifactCodecError::HashMismatch { field: "asset" });
+            }
+            Store::validate_asset(&bytes).map_err(ArtifactError::Storage)?;
+            decoded_assets.push((asset.logical_path.clone(), bytes));
+        }
+        if provenance.format == "charx" {
             validate_embedded_asset_references(&decoded, &paths)?;
         }
 
@@ -349,15 +418,16 @@ impl Store {
         let transaction = self
             .connection
             .transaction()
-            .map_err(StorageError::Sqlite)?;
+            .map_err(StorageError::Sqlite)
+            .map_err(ArtifactError::Storage)?;
         let mut created_assets = HashSet::new();
-        let result = (|| {
+        let result: Result<ArtifactBundle, ArtifactError> = (|| {
             let primary = insert_artifact_revision(
                 &transaction,
                 &payload,
                 &payload,
                 &decoded,
-                &output.format,
+                &bundle.source_format,
             )?;
             for (logical_path, bytes) in &decoded_assets {
                 let hash = ContentHash::new(Sha256::digest(bytes).into());
@@ -373,6 +443,23 @@ impl Store {
                     logical_path,
                 )?;
             }
+            let provenance_body =
+                serde_json::to_vec(provenance).map_err(ArtifactError::Canonicalize)?;
+            transaction
+                .execute(
+                    "INSERT OR IGNORE INTO artifact_codec_provenance(revision_hash, body) VALUES (?1, ?2)",
+                    params![primary.revision_hash.to_string(), provenance_body],
+                )
+                .map_err(StorageError::Sqlite)?;
+            append_event(
+                &transaction,
+                None,
+                "artifact.codec-imported",
+                &serde_json::json!({
+                    "revision_hash": primary.revision_hash,
+                    "provenance": provenance,
+                }),
+            )?;
             Ok(ArtifactBundle {
                 primary,
                 supplementary_artifacts: Vec::new(),
@@ -384,16 +471,68 @@ impl Store {
             Ok(bundle) => {
                 if let Err(error) = transaction.commit() {
                     cleanup_assets(&assets_root, &created_assets)?;
-                    return Err(StorageError::Sqlite(error).into());
+                    return Err(ArtifactError::Storage(StorageError::Sqlite(error)).into());
                 }
                 Ok(bundle)
             }
             Err(error) => {
                 drop(transaction);
                 cleanup_assets(&assets_root, &created_assets)?;
-                Err(error)
+                Err(error.into())
             }
         }
+    }
+
+    pub fn artifact_codec_provenance(
+        &self,
+        revision_hash: &ContentHash,
+    ) -> Result<Option<ArtifactCodecProvenance>, ArtifactError> {
+        let body = self
+            .connection
+            .query_row(
+                "SELECT body FROM artifact_codec_provenance WHERE revision_hash = ?1",
+                [revision_hash.to_string()],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .map_err(StorageError::Sqlite)?;
+        body.map(|body| serde_json::from_slice(&body).map_err(StorageError::Json))
+            .transpose()
+            .map_err(ArtifactError::Storage)
+    }
+
+    pub(crate) fn artifact_codec_bundle(
+        &self,
+        revision_hash: &ContentHash,
+    ) -> Result<ArtifactCodecBundle, ArtifactCodecError> {
+        let artifact = self
+            .artifact(revision_hash)?
+            .ok_or_else(|| ArtifactError::NotFound(revision_hash.clone()))?;
+        let payload = self.export_artifact(revision_hash)?;
+        let assets = self
+            .asset_references("artifact-revision", &revision_hash.to_string())
+            .map_err(ArtifactError::Storage)?
+            .into_iter()
+            .map(|reference| {
+                let bytes = self
+                    .asset_bytes(&reference.asset_hash)?
+                    .ok_or_else(|| StorageError::MissingAsset(reference.asset_hash.clone()))?;
+                Ok(ArtifactCodecAsset {
+                    logical_path: reference.logical_path,
+                    byte_size: bytes.len(),
+                    sha256: ContentHash::new(Sha256::digest(&bytes).into()),
+                    bytes: BASE64.encode(bytes),
+                })
+            })
+            .collect::<Result<Vec<_>, StorageError>>()
+            .map_err(ArtifactError::Storage)?;
+        Ok(ArtifactCodecBundle {
+            artifact_kind: artifact.kind,
+            source_format: artifact.source_format,
+            payload_sha256: ContentHash::new(Sha256::digest(&payload).into()),
+            payload: BASE64.encode(payload),
+            assets,
+        })
     }
 
     pub fn artifact(
@@ -703,6 +842,33 @@ fn validate_embedded_asset_references(
     Ok(())
 }
 
+fn validate_codec_format(format: &str) -> Result<(), ArtifactCodecError> {
+    if format.is_empty()
+        || format.len() > 32
+        || !format
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(ArtifactCodecError::InvalidFormat(format.to_owned()));
+    }
+    Ok(())
+}
+
+fn validate_codec_logical_path(path: &str) -> Result<(), ArtifactCodecError> {
+    if path.is_empty()
+        || path.len() > MAX_CODEC_LOGICAL_PATH_BYTES
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || path.chars().any(char::is_control)
+    {
+        return Err(ArtifactCodecError::InvalidLogicalPath(path.to_owned()));
+    }
+    Ok(())
+}
+
 pub fn decode_artifact(source: &[u8]) -> Result<DecodedArtifact, ArtifactError> {
     let decoded = decode_artifact_payload(&artifact_payload(source)?)?;
     validate_webp_card_kind(source, &decoded)?;
@@ -984,8 +1150,6 @@ pub enum ArtifactError {
     TruncatedPng,
     #[error("WebP character metadata is not valid base64: {0}")]
     InvalidBase64WebpMetadata(base64::DecodeError),
-    #[error("artifact codec output is not valid base64: {0}")]
-    InvalidCodecBase64(base64::DecodeError),
     #[error("invalid WebP artifact: {0}")]
     InvalidWebp(&'static str),
     #[error("artifact kind '{0}' is not a Chat Completion preset")]
@@ -1032,8 +1196,6 @@ pub enum ArtifactError {
     InvalidField(&'static str),
     #[error("JSON does not match a supported Phase 1 artifact format")]
     UnknownFormat,
-    #[error("artifact codec format '{0}' is unsupported")]
-    UnsupportedCodecFormat(String),
     #[error("artifact source exceeds {limit} byte limit ({size} bytes)")]
     SourceTooLarge { size: usize, limit: usize },
     #[error("stored artifact kind '{0}' is unknown")]

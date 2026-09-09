@@ -40,7 +40,11 @@ pub use artifact::{
     artifact_semantic_hash, clone_and_patch_preset, content_blob_hash, decode_artifact,
     decode_unique_json,
 };
-pub use artifact_codec::{ArtifactCodecAsset, ArtifactCodecInput, ArtifactCodecOutput};
+pub use artifact_codec::{
+    ARTIFACT_CODEC_INTERFACE_VERSION, ArtifactCodecAsset, ArtifactCodecBundle,
+    ArtifactCodecCompatibility, ArtifactCodecError, ArtifactCodecInput, ArtifactCodecOutput,
+    ArtifactCodecProvenance,
+};
 pub use capsule::{
     CapsuleArtifact, CapsuleArtifactSource, CapsuleBaseline, CapsuleCapabilities,
     CapsuleCompatibility, CapsuleEngine, CapsuleError, CapsuleIdentity, CapsuleKind,

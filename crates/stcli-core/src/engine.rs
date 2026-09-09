@@ -10,30 +10,84 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    ArtifactCodecInput, ArtifactCodecOutput, ArtifactError, ArtifactInspectorRegistration,
-    ArtifactKind, ArtifactRecord, AttemptProjection, BranchProjection, CandidateProjection,
-    CapsuleError, CapsuleKind, CompactionReport, CompatibilityWarning, CompletedTurn, Config,
-    ConfigError, ContentHash, CreatedSession, DryRunResult, EcmaRegexWorker, EditedCandidate,
-    EntityId, GlobalExtensionPin, ImportedCapsule, InstalledPlugin, InteractionResult,
-    InteractionSubmission, InteractionSurface, NativeExtensionImport, PluginCapability,
-    PluginCommandResult, PluginEffect, PluginError, PluginEvent, PluginGrant, PluginHost,
-    PluginInput, PluginPin, PluginRegistry, PromptDiff, PromptPlan, PromptSegmentInspection,
-    ProviderEvent, RecoveryReport, ReplayReport, SessionConfiguration, SessionConfigurationRecord,
-    SessionError, SessionProjection, StateError, StorageError, Store, StscriptError,
-    StscriptLimits, StscriptResult, TokenizerError, TokenizerId, TurnCapsule, TurnError,
-    TurnProjection, apply_display_scripts, diff_prompt_plans, extract_character_scripts,
-    st_bridge_capability_tier, transform_preset_content,
+    ARTIFACT_CODEC_INTERFACE_VERSION, ArtifactCodecBundle, ArtifactCodecCompatibility,
+    ArtifactCodecError, ArtifactCodecInput, ArtifactCodecOutput, ArtifactCodecProvenance,
+    ArtifactError, ArtifactInspectorRegistration, ArtifactKind, ArtifactRecord, AttemptProjection,
+    BranchProjection, CandidateProjection, CapsuleError, CapsuleKind, CompactionReport,
+    CompatibilityWarning, CompletedTurn, Config, ConfigError, ContentHash, CreatedSession,
+    DryRunResult, EcmaRegexWorker, EditedCandidate, EntityId, GlobalExtensionPin, ImportedCapsule,
+    InstalledPlugin, InteractionResult, InteractionSubmission, InteractionSurface,
+    NativeExtensionImport, PluginCapability, PluginCommandResult, PluginEffect, PluginError,
+    PluginEvent, PluginGrant, PluginHost, PluginInput, PluginLimits, PluginPin, PluginRegistry,
+    PluginRuntime, PromptDiff, PromptPlan, PromptSegmentInspection, ProviderEvent, RecoveryReport,
+    ReplayReport, SessionConfiguration, SessionConfigurationRecord, SessionError,
+    SessionProjection, StateError, StorageError, Store, StscriptError, StscriptLimits,
+    StscriptResult, TokenizerError, TokenizerId, TurnCapsule, TurnError, TurnProjection,
+    apply_display_scripts,
+    artifact_codec::{
+        MAX_CODEC_COMPATIBILITY_ITEMS, MAX_CODEC_COMPATIBILITY_MESSAGE_BYTES,
+        MAX_CODEC_SOURCE_BYTES,
+    },
+    diff_prompt_plans, extract_character_scripts, st_bridge_capability_tier,
+    transform_preset_content,
 };
 
 pub const DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID: &str = "org.stcli.nemo-directives";
 pub const DEFAULT_MEMORY_EXTENSION_ID: &str = "memory";
-const MAX_CODEC_SOURCE_BYTES: usize = 2 * 1024 * 1024;
 const NEMO_PLUGIN_MANIFEST: &str = include_str!("../../../plugins/nemo-directives/manifest.json");
 const NEMO_PLUGIN_SCRIPT: &str = include_str!("../../../plugins/nemo-directives/script.js");
 const MEMORY_EXTENSION_MANIFEST: &str = include_str!("../../../extensions/memory/manifest.json");
 const MEMORY_EXTENSION_SCRIPT: &str = include_str!("../../../extensions/memory/index.js");
 const MEMORY_EXTENSION_SETTINGS_SCHEMA: &str =
     include_str!("../../../extensions/memory/settings.schema.json");
+
+fn validate_codec_interface(actual: &str) -> Result<(), ArtifactCodecError> {
+    if actual != ARTIFACT_CODEC_INTERFACE_VERSION {
+        return Err(ArtifactCodecError::InterfaceVersion {
+            expected: ARTIFACT_CODEC_INTERFACE_VERSION.to_owned(),
+            actual: actual.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_codec_compatibility(
+    compatibility: &[ArtifactCodecCompatibility],
+) -> Result<(), ArtifactCodecError> {
+    if compatibility.len() > MAX_CODEC_COMPATIBILITY_ITEMS {
+        return Err(ArtifactCodecError::CompatibilityCount {
+            actual: compatibility.len(),
+            limit: MAX_CODEC_COMPATIBILITY_ITEMS,
+        });
+    }
+    for item in compatibility {
+        if item.code.is_empty()
+            || item.code.len() > 64
+            || !item.code.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'.'
+            })
+            || item.message.is_empty()
+            || item.message.len() > MAX_CODEC_COMPATIBILITY_MESSAGE_BYTES
+        {
+            return Err(ArtifactCodecError::InvalidCompatibility {
+                code: item.code.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn codec_operation_error(
+    expected: &'static str,
+    output: &ArtifactCodecOutput,
+) -> ArtifactCodecError {
+    let actual = match output {
+        ArtifactCodecOutput::Detect { .. } => "detect",
+        ArtifactCodecOutput::Decode { .. } => "decode",
+        ArtifactCodecOutput::Encode { .. } => "encode",
+    };
+    ArtifactCodecError::Operation { expected, actual }
+}
 
 #[derive(Clone, Copy)]
 struct DefaultPackage {
@@ -219,71 +273,223 @@ impl StcliEngine {
             })
     }
 
-    fn decode_artifact_with_codec(
+    fn codec_plugin(
         &self,
-        store: &Store,
-        source: &[u8],
-    ) -> Result<Option<ArtifactCodecOutput>, EngineError> {
-        if source.len() > MAX_CODEC_SOURCE_BYTES {
-            return Ok(None);
+        id: &str,
+        version: &str,
+        digest: &ContentHash,
+        capabilities: &BTreeSet<PluginCapability>,
+    ) -> Result<(InstalledPlugin, PluginGrant), EngineError> {
+        let installed = self.installed_plugin(id, version, digest)?;
+        let required = [
+            PluginCapability::ArtifactCodec,
+            PluginCapability::InspectArtifact,
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        if installed.manifest.runtime != PluginRuntime::Wasm
+            || installed.manifest.requested_capabilities != required
+            || *capabilities != required
+            || installed.manifest.subscriptions
+                != [PluginEvent::InspectArtifact]
+                    .into_iter()
+                    .collect::<BTreeSet<_>>()
+            || !installed.manifest.prompt_slots.is_empty()
+            || !installed.manifest.commands.is_empty()
+            || !installed.manifest.macros.is_empty()
+            || installed.manifest.settings_schema.is_some()
+        {
+            return Err(ArtifactCodecError::InvalidPluginContract(id.to_owned()).into());
         }
-
-        let Some(registration) = store
-            .artifact_inspectors()?
-            .into_iter()
-            .find(|registration| {
-                registration
-                    .capabilities
-                    .contains(&PluginCapability::ArtifactCodec)
-            })
-        else {
-            return Ok(None);
-        };
-        let installed = self.installed_plugin(
-            &registration.id,
-            &registration.version.to_string(),
-            &registration.component_sha256,
-        )?;
         let grant = PluginGrant {
-            id: registration.id.clone(),
-            version: registration.version,
-            component_sha256: registration.component_sha256,
-            capabilities: registration.capabilities,
+            id: id.to_owned(),
+            version: installed.manifest.version.clone(),
+            component_sha256: digest.clone(),
+            capabilities: capabilities.clone(),
             settings: serde_json::Value::Null,
             egress_allow_list: Vec::new(),
             enabled: true,
         };
+        Ok((installed, grant))
+    }
+
+    fn execute_artifact_codec(
+        &self,
+        installed: &InstalledPlugin,
+        grant: &PluginGrant,
+        input: ArtifactCodecInput,
+    ) -> Result<ArtifactCodecOutput, EngineError> {
         let input = PluginInput {
             event: PluginEvent::InspectArtifact,
             plugin_id: installed.manifest.id.clone(),
             settings: serde_json::Value::Null,
             context: serde_json::Value::Null,
-            payload: serde_json::to_value(ArtifactCodecInput {
-                source: BASE64.encode(source),
-                metadata: serde_json::Value::Null,
-            })
-            .map_err(PluginError::Json)?,
-            state: serde_json::json!({}),
+            payload: serde_json::to_value(input).map_err(PluginError::Json)?,
+            state: serde_json::Value::Null,
             artifact: serde_json::Value::Null,
             session: serde_json::Value::Null,
         };
-        let receipt = PluginHost::new(Default::default()).execute(&installed, &grant, input)?;
-        let mut outputs = receipt
+        let limits = PluginLimits {
+            input_bytes: 16 * 1024 * 1024,
+            output_bytes: 16 * 1024 * 1024,
+            memory_bytes: 64 * 1024 * 1024,
+            ..PluginLimits::default()
+        };
+        let receipt = PluginHost::new(limits).execute(installed, grant, input)?;
+        let outputs = receipt
             .effects
             .into_iter()
             .filter_map(|effect| match effect {
                 PluginEffect::Output { value } => Some(value),
                 _ => None,
-            });
-        let output = outputs
-            .next()
-            .ok_or(PluginError::ArtifactInspectionOutputCount(0))?;
-        if outputs.next().is_some() {
-            return Err(PluginError::ArtifactInspectionOutputCount(2).into());
+            })
+            .collect::<Vec<_>>();
+        if outputs.len() != 1 {
+            return Err(PluginError::ArtifactInspectionOutputCount(outputs.len()).into());
         }
-        Ok(Some(
-            serde_json::from_value(output).map_err(PluginError::Json)?,
-        ))
+        serde_json::from_value(outputs.into_iter().next().expect("one output"))
+            .map_err(PluginError::Json)
+            .map_err(EngineError::Plugin)
+    }
+
+    fn decode_artifact_with_codec(
+        &self,
+        store: &Store,
+        source: &[u8],
+    ) -> Result<Option<(ArtifactCodecBundle, ArtifactCodecProvenance)>, EngineError> {
+        if source.len() > MAX_CODEC_SOURCE_BYTES {
+            return Ok(None);
+        }
+        let encoded = BASE64.encode(source);
+        for registration in store
+            .artifact_inspectors()?
+            .into_iter()
+            .filter(|registration| {
+                registration
+                    .capabilities
+                    .contains(&PluginCapability::ArtifactCodec)
+            })
+        {
+            let (installed, grant) = self.codec_plugin(
+                &registration.id,
+                &registration.version.to_string(),
+                &registration.component_sha256,
+                &registration.capabilities,
+            )?;
+            let detection = self.execute_artifact_codec(
+                &installed,
+                &grant,
+                ArtifactCodecInput::Detect {
+                    interface_version: ARTIFACT_CODEC_INTERFACE_VERSION.to_owned(),
+                    source: encoded.clone(),
+                },
+            )?;
+            let ArtifactCodecOutput::Detect {
+                interface_version,
+                compatible,
+                mut compatibility,
+            } = detection
+            else {
+                return Err(codec_operation_error("detect", &detection).into());
+            };
+            validate_codec_interface(&interface_version)?;
+            validate_codec_compatibility(&compatibility)?;
+            if !compatible {
+                continue;
+            }
+            let decoded = self.execute_artifact_codec(
+                &installed,
+                &grant,
+                ArtifactCodecInput::Decode {
+                    interface_version: ARTIFACT_CODEC_INTERFACE_VERSION.to_owned(),
+                    source: encoded.clone(),
+                },
+            )?;
+            let ArtifactCodecOutput::Decode {
+                interface_version,
+                format,
+                bundle,
+                compatibility: decoded_compatibility,
+            } = decoded
+            else {
+                return Err(codec_operation_error("decode", &decoded).into());
+            };
+            validate_codec_interface(&interface_version)?;
+            validate_codec_compatibility(&decoded_compatibility)?;
+            if compatibility.len() + decoded_compatibility.len() > MAX_CODEC_COMPATIBILITY_ITEMS {
+                return Err(ArtifactCodecError::CompatibilityCount {
+                    actual: compatibility.len() + decoded_compatibility.len(),
+                    limit: MAX_CODEC_COMPATIBILITY_ITEMS,
+                }
+                .into());
+            }
+            compatibility.extend(decoded_compatibility);
+            let provenance = ArtifactCodecProvenance {
+                plugin_id: installed.manifest.id,
+                version: installed.manifest.version,
+                component_sha256: installed.manifest.component_sha256,
+                interface_version,
+                format,
+                compatibility,
+            };
+            return Ok(Some((bundle, provenance)));
+        }
+        Ok(None)
+    }
+
+    fn export_artifact_with_codec(
+        &self,
+        store: &Store,
+        revision_hash: &ContentHash,
+    ) -> Result<Vec<u8>, EngineError> {
+        let Some(provenance) = store.artifact_codec_provenance(revision_hash)? else {
+            return Ok(store.export_artifact(revision_hash)?);
+        };
+        let capabilities = [
+            PluginCapability::ArtifactCodec,
+            PluginCapability::InspectArtifact,
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let (installed, grant) = self.codec_plugin(
+            &provenance.plugin_id,
+            &provenance.version.to_string(),
+            &provenance.component_sha256,
+            &capabilities,
+        )?;
+        let output = self.execute_artifact_codec(
+            &installed,
+            &grant,
+            ArtifactCodecInput::Encode {
+                interface_version: ARTIFACT_CODEC_INTERFACE_VERSION.to_owned(),
+                format: provenance.format,
+                bundle: store.artifact_codec_bundle(revision_hash)?,
+            },
+        )?;
+        let ArtifactCodecOutput::Encode {
+            interface_version,
+            source,
+            compatibility,
+        } = output
+        else {
+            return Err(codec_operation_error("encode", &output).into());
+        };
+        validate_codec_interface(&interface_version)?;
+        validate_codec_compatibility(&compatibility)?;
+        let source = BASE64
+            .decode(source)
+            .map_err(|source| ArtifactCodecError::InvalidBase64 {
+                field: "encoded source",
+                source,
+            })?;
+        if source.len() > MAX_CODEC_SOURCE_BYTES {
+            return Err(ArtifactCodecError::EncodedSourceSize {
+                actual: source.len(),
+                limit: MAX_CODEC_SOURCE_BYTES,
+            }
+            .into());
+        }
+        Ok(source)
     }
     fn extension_interactions(
         &self,
@@ -782,8 +988,13 @@ impl StcliEngine {
                     .ok_or_else(|| ArtifactError::NotFound(revision_hash))?,
             )),
             EngineQuery::ArtifactSource { revision_hash } => Ok(EngineInspection::ArtifactSource(
-                store.export_artifact(&revision_hash)?,
+                self.export_artifact_with_codec(&store, &revision_hash)?,
             )),
+            EngineQuery::ArtifactCodecProvenance { revision_hash } => {
+                Ok(EngineInspection::ArtifactCodecProvenance(
+                    store.artifact_codec_provenance(&revision_hash)?,
+                ))
+            }
             EngineQuery::BranchTurns { branch_id } => Ok(EngineInspection::Turns(
                 store
                     .turns_for_branch(branch_id)?
@@ -1109,6 +1320,9 @@ impl StcliEngine {
                 if !capabilities.is_subset(&installed.manifest.requested_capabilities) {
                     return Err(EngineError::PluginGrantExceeded);
                 }
+                if capabilities.contains(&PluginCapability::ArtifactCodec) {
+                    self.codec_plugin(&id, &version, &digest, &capabilities)?;
+                }
                 let registration = ArtifactInspectorRegistration {
                     id,
                     version: installed.manifest.version,
@@ -1242,7 +1456,9 @@ impl StcliEngine {
             )?))),
             EngineCommand::ImportArtifact { source } => {
                 let bundle = match self.decode_artifact_with_codec(&store, &source)? {
-                    Some(output) => store.import_artifact_from_codec(&output)?,
+                    Some((codec_bundle, provenance)) => {
+                        store.import_artifact_from_codec(&codec_bundle, &provenance)?
+                    }
                     None => store.import_artifact_bundle(&source)?,
                 };
                 Ok(EngineResult::ArtifactBundle {
@@ -1582,6 +1798,9 @@ pub enum EngineQuery {
     ArtifactSource {
         revision_hash: ContentHash,
     },
+    ArtifactCodecProvenance {
+        revision_hash: ContentHash,
+    },
     BranchTurns {
         branch_id: EntityId,
     },
@@ -1905,6 +2124,7 @@ pub enum EngineInspection {
     Artifacts(Vec<ArtifactRecord>),
     Artifact(ArtifactRecord),
     ArtifactSource(Vec<u8>),
+    ArtifactCodecProvenance(Option<ArtifactCodecProvenance>),
     Attempt(AttemptProjection),
     Attempts(Vec<AttemptProjection>),
     TurnDetails(Box<TurnDetails>),
@@ -2362,6 +2582,8 @@ pub enum EngineError {
     Turn(#[from] TurnError),
     #[error(transparent)]
     Artifact(#[from] ArtifactError),
+    #[error(transparent)]
+    ArtifactCodec(#[from] ArtifactCodecError),
     #[error(transparent)]
     State(#[from] StateError),
     #[error(transparent)]

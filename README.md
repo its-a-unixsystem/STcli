@@ -143,6 +143,7 @@ Group chat and vector lore remain outside the current implementation. STscript a
 | Document | Audience | Contents |
 |---|---|---|
 | [Usage guide](docs/guide.md) | Users | Import, sessions, generation, editing, capsules, plugins |
+| [Artifacts and external codecs](docs/artifacts.md) | Users/Devs | Artifact storage, codec interface, validation, and bounds |
 | [CLI reference](docs/cli.md) | Users | Every command, subcommand, and flag |
 | [TUI guide](docs/tui.md) | Users | Keyboard controls, Extension forms, and styled Candidate presentation |
 | [Configuration](docs/configuration.md) | Users | Provider credentials and platform Credential Store references |
@@ -150,6 +151,7 @@ Group chat and vector lore remain outside the current implementation. STscript a
 | [Text Completion](docs/text-completion.md) | Users | Flat-prompt provider profiles, instruct templates, story strings |
 | [Examples](examples/README.md) | Users | Sample character, lorebook, and preset files |
 | [Writing plugins](docs/plugins.md) | Users/Devs | Wasm and QuickJS script plugins, manifest, and script API |
+| [Security model](docs/security.md) | Users/Devs | Credentials, runtimes, brokers, storage, and codec trust boundaries |
 | [Plugins directory](plugins/README.md) | Users/Devs | In-tree plugins and the reference proof component |
 | [Parity matrix](docs/sillytavern-parity.md) | Everyone | SillyTavern feature coverage and gap analysis |
 | [Domain glossary](CONTEXT.md) | Everyone | Terminology used across the code and docs |

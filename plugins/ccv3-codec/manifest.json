@@ -1,0 +1,18 @@
+{
+  "schema": "stcli.plugin-manifest/v1",
+  "id": "org.stcli.ccv3-codec",
+  "version": "1.0.0",
+  "engine": ">=0.1.0, <0.2.0",
+  "component": "component.wasm",
+  "component_sha256": "sha256:76863efa62615158130019685c17dfd0d714da932c4ee0da93e25a7417afb434",
+  "dependencies": [],
+  "license": "MIT",
+  "subscriptions": ["inspect-artifact"],
+  "prompt_slots": [],
+  "commands": [],
+  "macros": [],
+  "settings_schema": null,
+  "requested_capabilities": ["artifact-codec", "inspect-artifact"],
+  "before": [],
+  "after": []
+}

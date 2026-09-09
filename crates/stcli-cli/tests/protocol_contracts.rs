@@ -41,6 +41,10 @@ fn proof_manifest() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/proof/manifest.json")
 }
 
+fn codec_manifest() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/ccv3-codec/manifest.json")
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn reasoning_json_event_is_flushed_before_generation_completes() {
     let home = TestHome::new().unwrap();
@@ -233,6 +237,8 @@ async fn real_cli_workflows_conform_to_public_protocol_schemas() {
     let manifest =
         serde_json::from_slice::<Value>(&std::fs::read(proof_manifest()).unwrap()).unwrap();
     assert_valid(&parse_schema(PLUGIN_MANIFEST_SCHEMA), &manifest);
+    let codec = serde_json::from_slice::<Value>(&std::fs::read(codec_manifest()).unwrap()).unwrap();
+    assert_valid(&parse_schema(PLUGIN_MANIFEST_SCHEMA), &codec);
 
     provider.shutdown();
 }

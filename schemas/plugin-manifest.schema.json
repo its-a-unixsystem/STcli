@@ -82,6 +82,7 @@
           "write-own-state",
           "abort-pre-request",
           "inspect-artifact",
+          "artifact-codec",
           "brokered-egress",
           "secondary-inference"
         ]

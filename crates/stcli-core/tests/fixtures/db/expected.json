@@ -18,6 +18,15 @@
       ],
       "projection_hash": "sha256:abc418703e34ff44d6410910fe814623a608e126d5b358d95d7d0a88a156d80e"
     },
+    "12": {
+      "ancestry": [
+        [
+          "01M1Q8CF219G16WTJKSSQPPV01",
+          "01M1Q8CF1Z7C5GYPNSNBE1PTY2"
+        ]
+      ],
+      "projection_hash": "sha256:abc418703e34ff44d6410910fe814623a608e126d5b358d95d7d0a88a156d80e"
+    },
     "5": {
       "ancestry": [],
       "projection_hash": "sha256:abc418703e34ff44d6410910fe814623a608e126d5b358d95d7d0a88a156d80e"
@@ -59,5 +68,5 @@
       "projection_hash": "sha256:abc418703e34ff44d6410910fe814623a608e126d5b358d95d7d0a88a156d80e"
     }
   },
-  "schema_version": 12
+  "schema_version": 13
 }

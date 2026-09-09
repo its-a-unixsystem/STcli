@@ -70,6 +70,8 @@ Import returns a bundle with three parts:
 
 STcli stores media files in a content-addressed asset store, apart from the main database. For the reason, see [ADR 0007](adr/0007-external-content-addressed-asset-storage.md).
 
+Installed external Artifact codecs use this same command and bundle result. A codec may recognize sources up to 2 MiB, but Core still validates every proposed Artifact and asset before an atomic import. Explicit export uses the exact codec version and digest recorded at import. See [Artifacts and external codecs](artifacts.md).
+
 ## Import and inspect presets in the TUI
 
 Start the TUI, then open the prompt preset picker:
@@ -432,5 +434,8 @@ Streaming provider events use the `stcli.cli-event/v1` JSONL schema. All schemas
 - The engine rejects URL userinfo.
 - On Unix, the engine creates its directories with mode `0700` and the SQLite database with mode `0600`.
 - ECMAScript lore regex runs in a subprocess with input limits and a timeout.
+- External Artifact codecs are Wasm-only, have no WASI or live-effect access, and cannot write storage directly. Core validates their bounded proposals.
 
 CAUTION: Do not put secrets directly in `--generation-settings` or literal configuration fields. Use environment variable references or the [Credential Store](configuration.md#provider-credentials).
+
+The full trust model is in [Security](security.md).

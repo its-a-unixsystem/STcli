@@ -23,10 +23,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  proof-component:
-    name: Rebuild and verify proof Plugin
+  proof-components:
+    name: Rebuild and verify ${{ matrix.directory }} Plugin
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      matrix:
+        include:
+          - directory: proof
+            crate: stcli_proof_plugin
+          - directory: ccv3-codec
+            crate: stcli_ccv3_codec_plugin
 
     env:
       CARGO_TERM_COLOR: always
@@ -53,21 +60,21 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-            plugins/proof/target
-          key: cargo-plugin-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('plugins/proof/Cargo.lock') }}
+            plugins/${{ matrix.directory }}/target
+          key: cargo-plugin-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles(format('plugins/{0}/Cargo.lock', matrix.directory)) }}
           restore-keys: |
             cargo-plugin-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}-
 
-      - name: Rebuild the proof component from source
-        working-directory: plugins/proof
+      - name: Rebuild the component from source
+        working-directory: plugins/${{ matrix.directory }}
         run: |
           cargo build --release --target wasm32-unknown-unknown --locked
           wasm-tools component new \
-            target/wasm32-unknown-unknown/release/stcli_proof_plugin.wasm \
+            target/wasm32-unknown-unknown/release/${{ matrix.crate }}.wasm \
             -o rebuilt-component.wasm
 
       - name: Compare the rebuilt digest against the checked-in component
-        working-directory: plugins/proof
+        working-directory: plugins/${{ matrix.directory }}
         run: |
           expected="$(sha256sum component.wasm | cut -d ' ' -f 1)"
           actual="$(sha256sum rebuilt-component.wasm | cut -d ' ' -f 1)"
@@ -76,7 +83,7 @@ jobs:
           echo "rebuilt component:         $actual"
           echo "manifest component_sha256: $manifest"
           if [ "$actual" != "$expected" ]; then
-            echo "::error::Rebuilt proof component does not match the checked-in component.wasm digest." >&2
+            echo "::error::Rebuilt component does not match the checked-in component.wasm." >&2
             exit 1
           fi
           if [ "$manifest" != "$expected" ]; then

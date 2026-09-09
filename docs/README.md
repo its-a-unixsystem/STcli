@@ -10,12 +10,14 @@ This index maps every document to its audience and purpose.
 |---|---|
 | [Root README](../README.md) | What STcli is, quick start, and the documentation map |
 | [Usage guide](guide.md) | Task guide: import, sessions, generation, editing, capsules, plugins |
+| [Artifacts and external codecs](artifacts.md) | Artifact import, storage, export, codec contract, and bounds |
 | [Configuration](configuration.md) | Provider profiles, Credential References, and secure credential management |
 | [Terminal user interface](tui.md) | TUI navigation, native Extension interactions, styled Candidate content, and in-TUI imports |
 | [CLI reference](cli.md) | Every command, argument, and value format |
 | [Chat Completion presets](presets.md) | Preset semantics, settings precedence, and field classification |
 | [Text Completion prompts](text-completion.md) | Text Completion provider profiles, instruct templates, and story strings |
 | [Writing plugins](plugins.md) | Plugin and Extension runtimes, interaction adapter contracts, support evidence, and trust limits |
+| [Security model](security.md) | Trust boundaries for credentials, runtimes, brokers, storage, and Artifact codecs |
 | [Examples](../examples/README.md) | Sample character, lorebook, and preset artifacts |
 | [Plugins directory](../plugins/README.md) | In-tree plugins and the reference proof component |
 
@@ -49,6 +51,7 @@ Each ADR records one design decision and its consequences.
 | [0011](adr/0011-prompt-order-entry-toggle-storage.md) | Prompt-order toggles create immutable revisions or Session overrides |
 | [0012](adr/0012-rich-content-renderer-experiment.md) | Graphical terminal rendering is retired; experiment evidence remains historical |
 | [0013](adr/0013-styled-text-html-fallback.md) | Candidate content uses a bounded Markdown-to-HTML-to-styled-terminal-text pipeline |
+| [0014](adr/0014-artifact-codec-engine-hook.md) | External Artifact codecs run at a bounded pre-Artifact Wasm seam |
 
 ## Diagrams
 

@@ -70,11 +70,13 @@ An Artifact inspector runs without a Session. The engine loads one decoded Artif
 
 This path is read-only. The host rejects prompt contributions, state writes, aborts, and every effect except `output`. It does not create a Turn Trace receipt because no Turn exists; the result is ephemeral. The WIT interface remains the same JSON-string boundary used by Session events.
 
-### Decode an external Artifact format
+### Decode and encode an external Artifact format
 
-An Artifact codec is a registered Artifact inspector that also requests the `artifact-codec` capability. During `EngineCommand::ImportArtifact`, the engine passes sources up to 2 MiB as base64 in `input.payload.source`. The codec returns exactly one output containing the decoded payload, source format, and any extracted assets as base64. Core validates the decoded Artifact and assets, then persists them atomically. If no codec is registered, or the source exceeds 2 MiB, Core uses its built-in decoders.
+An Artifact codec is a restricted Wasm Artifact inspector with the versioned `stcli.artifact-codec/v1` protocol. During `EngineCommand::ImportArtifact`, the engine sends sources up to 2 MiB through `detect`, then asks the first compatible codec to `decode` a flat Artifact payload and assets. Each proposed byte sequence carries a size and SHA-256. Core recomputes those values, validates the Artifact kind, JSON, assets, logical paths, counts, and limits, and owns the atomic transaction.
 
-Codec plugins must request and register both `artifact-codec` and `inspect-artifact`, and subscribe to `inspect-artifact`. The codec path is import-only; export continues to return the stored decoded source.
+Codec Plugins must request and register exactly `artifact-codec` and `inspect-artifact`, subscribe only to `inspect-artifact`, and declare no settings, commands, macros, or prompt slots. Script and `st-bridge` runtimes are rejected. The Wasm linker has no WASI imports, and codec input contains no Session or live-effect handles.
+
+Import records the exact Plugin ID, semantic version, component digest, interface version, external format, and compatibility items. `EngineQuery::ArtifactSource` uses that pin for `encode`; ordinary Artifact reads use the stored flat payload without running the codec. If no codec accepts an import, or the source exceeds 2 MiB, Core uses its built-in path. See the [Artifact codec reference](artifacts.md) for the complete contract and bounds.
 
 ## Choose a runtime
 
@@ -89,7 +91,7 @@ Use this table to pick a runtime. `st-bridge` is for importing SillyTavern Exten
 | Abort a turn before the request? | No | Yes | No |
 | Brokered HTTPS or Secondary Inference? | No | Through declared effects | Yes, with the fixed bridge grant and configured policy |
 | Needs a build toolchain? | No | Yes (Rust and `wasm-tools`) | No |
-| Best for | Small prompt and state logic | Full effects and heavy logic | Headless-compatible SillyTavern Extensions |
+| Best for | Small prompt and state logic | Full effects, heavy logic, and external Artifact codecs | Headless-compatible SillyTavern Extensions |
 
 Start with a Script Plugin for native narrative logic, such as a counter, a clock, or an ambient prompt line. Move to Wasm when you need a macro, an abort, or heavy computation. Use `st-bridge` only when importing or adapting a SillyTavern Extension.
 
@@ -940,7 +942,7 @@ The manifest requests capabilities. The session grant allows a subset. The engin
 |---|---|---|
 | `observe-lifecycle` | An `observe` effect. | Wasm |
 | `inspect-artifact` | One `output` effect from a registered Artifact inspector. | Wasm, Script |
-| `artifact-codec` | Marks a registered Artifact inspector as the external-format decoder used during import. Requires `inspect-artifact` for its output effect. | Wasm, Script |
+| `artifact-codec` | Marks a Wasm Artifact inspector for bounded detect, decode, and encode operations. Registration also requires `inspect-artifact` and excludes every other capability. | Wasm |
 | `register-macro` | A `register-macro` effect. | Wasm |
 | `register-command` | A `register-command` effect. | Wasm |
 | `contribute-prompt` | A `prompt` effect, and `stcli.prompt.inject`. | Wasm, Script |
@@ -962,6 +964,8 @@ The deterministic public-engine workflow test (`real_extension_complete_session_
 - [Plugins directory](../plugins/README.md)
 - [Architecture: plugin system](../ARCHITECTURE.md#plugin-system)
 - [ADR 0003: pure Wasm plugins](adr/0003-pure-wasm-plugins.md)
+- [ADR 0014: Artifact codec Engine Hook](adr/0014-artifact-codec-engine-hook.md)
+- [Artifact codec reference](artifacts.md)
 - [ADR 0006: layered plugins](adr/0006-layered-plugins-and-brokered-effects.md)
 - [Manifest schema](../schemas/plugin-manifest.schema.json)
 - [Plugin WIT world](../wit/plugin.wit)

@@ -1,43 +1,21 @@
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{
+    collections::BTreeSet,
+    fs,
+    io::{Cursor, Read, Write},
+    path::{Path, PathBuf},
+};
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde_json::{Value, json};
 use stcli_core::{
-    ArtifactKind, EngineCommand, EngineResult, PluginCapability, StcliEngine, Store, plugin_digest,
+    ARTIFACT_CODEC_INTERFACE_VERSION, ArtifactCodecError, ArtifactKind, EngineCommand,
+    EngineInspection, EngineQuery, EngineResult, PluginCapability, StcliEngine, Store,
+    plugin_digest,
 };
 use tempfile::tempdir;
+use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
-fn write_codec(directory: &Path, source: &[u8], payload: &[u8], asset: &[u8]) {
-    fs::create_dir_all(directory).unwrap();
-    let script = format!(
-        "function inspectArtifact(input) {{\n  if (input.payload.source !== '{}') throw new Error('unexpected source');\n  stcli.output({{ kind: 'charx', payload: '{}', assets: [{{ logical_path: 'assets/avatar.png', bytes: '{}' }}], format: 'json' }});\n}}",
-        BASE64.encode(source),
-        BASE64.encode(payload),
-        BASE64.encode(asset),
-    );
-    fs::write(directory.join("script.js"), &script).unwrap();
-    fs::write(
-        directory.join("manifest.json"),
-        serde_json::to_vec_pretty(&json!({
-            "schema": "stcli.plugin-manifest/v1",
-            "id": "org.stcli.artifact-codec",
-            "version": "1.0.0",
-            "engine": ">=0.1.0, <0.2.0",
-            "runtime": "script",
-            "component": "script.js",
-            "component_sha256": plugin_digest(script.as_bytes()),
-            "dependencies": [],
-            "license": "MIT",
-            "subscriptions": ["inspect-artifact"],
-            "prompt_slots": [],
-            "commands": [],
-            "macros": [],
-            "settings_schema": null,
-            "requested_capabilities": ["artifact-codec", "inspect-artifact"],
-        }))
-        .unwrap(),
-    )
-    .unwrap();
+fn codec_directory() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/ccv3-codec")
 }
 
 fn character_card_v3() -> Vec<u8> {
@@ -69,6 +47,22 @@ fn character_card_v3() -> Vec<u8> {
         }
     }))
     .unwrap()
+}
+
+fn charx(marker: Option<&str>) -> Vec<u8> {
+    let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    archive.start_file("card.json", options).unwrap();
+    archive.write_all(&character_card_v3()).unwrap();
+    archive.start_file("assets/avatar.png", options).unwrap();
+    archive
+        .write_all(b"\x89PNG\r\n\x1a\ncodec fixture")
+        .unwrap();
+    if let Some(marker) = marker {
+        archive.start_file(marker, options).unwrap();
+        archive.write_all(b"marker").unwrap();
+    }
+    archive.finish().unwrap().into_inner()
 }
 
 fn preset(description_bytes: usize) -> Vec<u8> {
@@ -114,16 +108,12 @@ async fn install_and_register(engine: &StcliEngine, directory: &Path) {
 }
 
 #[tokio::test]
-async fn engine_import_decodes_artifact_through_registered_codec() {
+async fn wasm_codec_imports_and_exports_ccv3_with_recorded_provenance() {
     let directory = tempdir().unwrap();
     let database = directory.path().join("stcli.sqlite3");
-    let plugin = directory.path().join("codec");
-    let source = b"external codec container";
-    let payload = character_card_v3();
-    let asset = b"\x89PNG\r\n\x1a\ncodec fixture";
-    write_codec(&plugin, source, &payload, asset);
     let engine = StcliEngine::new(&database);
-    install_and_register(&engine, &plugin).await;
+    install_and_register(&engine, &codec_directory()).await;
+    let source = charx(None);
 
     let EngineResult::ArtifactBundle {
         primary,
@@ -132,7 +122,7 @@ async fn engine_import_decodes_artifact_through_registered_codec() {
     } = engine
         .execute(
             EngineCommand::ImportArtifact {
-                source: source.to_vec(),
+                source: source.clone(),
             },
             |_| {},
         )
@@ -146,63 +136,83 @@ async fn engine_import_decodes_artifact_through_registered_codec() {
     assert_eq!(primary.source_format, "json");
     assert!(supplementary_artifacts.is_empty());
     assert_eq!(asset_count, 1);
-    let store = Store::open(&database).unwrap();
-    assert_eq!(
-        store.export_artifact(&primary.revision_hash).unwrap(),
-        payload
-    );
-    assert_eq!(
-        store
-            .asset_references("artifact-revision", &primary.revision_hash.to_string())
-            .unwrap()[0]
-            .logical_path,
-        "assets/avatar.png"
-    );
-}
 
-#[tokio::test]
-async fn engine_import_uses_core_decoder_without_registered_codec() {
-    let directory = tempdir().unwrap();
-    let database = directory.path().join("stcli.sqlite3");
-    let source = preset(0);
+    let EngineInspection::ArtifactCodecProvenance(Some(provenance)) = engine
+        .inspect(EngineQuery::ArtifactCodecProvenance {
+            revision_hash: primary.revision_hash.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("codec provenance was not recorded");
+    };
+    assert_eq!(provenance.plugin_id, "org.stcli.ccv3-codec");
+    assert_eq!(
+        provenance.interface_version,
+        ARTIFACT_CODEC_INTERFACE_VERSION
+    );
+    assert_eq!(provenance.format, "charx");
+    assert_eq!(
+        provenance
+            .compatibility
+            .iter()
+            .map(|item| item.code.as_str())
+            .collect::<Vec<_>>(),
+        ["ccv3-charx", "ccv3-decoded"]
+    );
 
-    let EngineResult::ArtifactBundle { primary, .. } = StcliEngine::new(&database)
+    let EngineInspection::ArtifactSource(exported) = engine
+        .inspect(EngineQuery::ArtifactSource {
+            revision_hash: primary.revision_hash.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("unexpected artifact export result");
+    };
+    let mut archive = ZipArchive::new(Cursor::new(exported)).unwrap();
+    let mut card = Vec::new();
+    archive
+        .by_name("card.json")
+        .unwrap()
+        .read_to_end(&mut card)
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&card).unwrap()["data"]["name"],
+        "Codec fixture"
+    );
+    let mut avatar = Vec::new();
+    archive
+        .by_name("assets/avatar.png")
+        .unwrap()
+        .read_to_end(&mut avatar)
+        .unwrap();
+    assert_eq!(avatar, b"\x89PNG\r\n\x1a\ncodec fixture");
+
+    engine
         .execute(
-            EngineCommand::ImportArtifact {
-                source: source.clone(),
+            EngineCommand::RemovePlugin {
+                plugin_id: provenance.plugin_id,
             },
             |_| {},
         )
         .await
+        .unwrap();
+    let EngineInspection::Artifact(stored) = engine
+        .inspect(EngineQuery::Artifact {
+            revision_hash: primary.revision_hash,
+        })
         .unwrap()
     else {
-        panic!("unexpected artifact import result");
+        panic!("unexpected artifact inspection");
     };
-
-    assert_eq!(primary.kind, ArtifactKind::ChatCompletionPreset);
-    assert_eq!(
-        Store::open(&database)
-            .unwrap()
-            .export_artifact(&primary.revision_hash)
-            .unwrap(),
-        source
-    );
+    assert_eq!(stored.kind, ArtifactKind::CharacterCardV3);
 }
 
 #[tokio::test]
-async fn engine_import_uses_core_decoder_above_codec_size_limit() {
+async fn import_keeps_core_fallbacks_without_a_codec_and_above_the_codec_limit() {
     let directory = tempdir().unwrap();
     let database = directory.path().join("stcli.sqlite3");
-    let plugin = directory.path().join("codec");
-    let source = preset(2 * 1024 * 1024);
-    write_codec(
-        &plugin,
-        b"codec must not receive oversized source",
-        &character_card_v3(),
-        b"\x89PNG\r\n\x1a\ncodec fixture",
-    );
+    let source = preset(0);
     let engine = StcliEngine::new(&database);
-    install_and_register(&engine, &plugin).await;
 
     let EngineResult::ArtifactBundle { primary, .. } = engine
         .execute(
@@ -216,14 +226,187 @@ async fn engine_import_uses_core_decoder_above_codec_size_limit() {
     else {
         panic!("unexpected artifact import result");
     };
-
     assert_eq!(primary.kind, ArtifactKind::ChatCompletionPreset);
-    let exported = Store::open(&database)
+
+    install_and_register(&engine, &codec_directory()).await;
+    let oversized = preset(2 * 1024 * 1024);
+    let EngineResult::ArtifactBundle { primary, .. } = engine
+        .execute(EngineCommand::ImportArtifact { source: oversized }, |_| {})
+        .await
         .unwrap()
-        .export_artifact(&primary.revision_hash)
-        .unwrap();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&exported).unwrap()["name"],
-        "Core fixture"
+    else {
+        panic!("unexpected oversized artifact import result");
+    };
+    assert_eq!(primary.kind, ArtifactKind::ChatCompletionPreset);
+}
+
+#[tokio::test]
+async fn incompatible_codec_interface_fails_without_persisting_an_artifact() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let engine = StcliEngine::new(&database);
+    install_and_register(&engine, &codec_directory()).await;
+
+    let error = engine
+        .execute(
+            EngineCommand::ImportArtifact {
+                source: b"bad-interface".to_vec(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        stcli_core::EngineError::ArtifactCodec(ArtifactCodecError::InterfaceVersion { .. })
+    ));
+    assert!(
+        Store::open(&database)
+            .unwrap()
+            .artifacts()
+            .unwrap()
+            .is_empty()
     );
+}
+
+#[tokio::test]
+async fn malformed_codec_bundle_fails_without_partial_persistence() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let engine = StcliEngine::new(&database);
+    install_and_register(&engine, &codec_directory()).await;
+
+    let error = engine
+        .execute(
+            EngineCommand::ImportArtifact {
+                source: charx(Some("malformed-hash")),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        stcli_core::EngineError::ArtifactCodec(ArtifactCodecError::HashMismatch {
+            field: "payload"
+        })
+    ));
+    assert!(
+        Store::open(&database)
+            .unwrap()
+            .artifacts()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn codec_registration_rejects_non_wasm_and_additional_capabilities() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let plugin = directory.path().join("script-codec");
+    fs::create_dir(&plugin).unwrap();
+    let script = "function inspectArtifact() { stcli.output({}); }";
+    fs::write(plugin.join("script.js"), script).unwrap();
+    fs::write(
+        plugin.join("manifest.json"),
+        serde_json::to_vec(&json!({
+            "schema": "stcli.plugin-manifest/v1",
+            "id": "org.stcli.script-codec",
+            "version": "1.0.0",
+            "engine": ">=0.1.0, <0.2.0",
+            "runtime": "script",
+            "component": "script.js",
+            "component_sha256": plugin_digest(script.as_bytes()),
+            "dependencies": [],
+            "license": "MIT",
+            "subscriptions": ["inspect-artifact"],
+            "prompt_slots": [],
+            "commands": [],
+            "macros": [],
+            "settings_schema": null,
+            "requested_capabilities": [
+                "artifact-codec",
+                "inspect-artifact"
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let engine = StcliEngine::new(&database);
+    let EngineResult::InstalledPlugin(installed) = engine
+        .execute(EngineCommand::InstallPlugin { directory: plugin }, |_| {})
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected plugin install result");
+    };
+
+    let error = engine
+        .execute(
+            EngineCommand::RegisterArtifactInspector {
+                id: installed.manifest.id,
+                version: installed.manifest.version.to_string(),
+                digest: installed.manifest.component_sha256,
+                capabilities: installed.manifest.requested_capabilities,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        stcli_core::EngineError::ArtifactCodec(ArtifactCodecError::InvalidPluginContract(_))
+    ));
+
+    let wasm_plugin = directory.path().join("wasm-codec");
+    fs::create_dir(&wasm_plugin).unwrap();
+    fs::copy(
+        codec_directory().join("component.wasm"),
+        wasm_plugin.join("component.wasm"),
+    )
+    .unwrap();
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(codec_directory().join("manifest.json")).unwrap())
+            .unwrap();
+    manifest["requested_capabilities"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("brokered-egress"));
+    fs::write(
+        wasm_plugin.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let EngineResult::InstalledPlugin(installed) = engine
+        .execute(
+            EngineCommand::InstallPlugin {
+                directory: wasm_plugin,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected plugin install result");
+    };
+    let error = engine
+        .execute(
+            EngineCommand::RegisterArtifactInspector {
+                id: installed.manifest.id,
+                version: installed.manifest.version.to_string(),
+                digest: installed.manifest.component_sha256,
+                capabilities: installed.manifest.requested_capabilities,
+            },
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        stcli_core::EngineError::ArtifactCodec(ArtifactCodecError::InvalidPluginContract(_))
+    ));
 }

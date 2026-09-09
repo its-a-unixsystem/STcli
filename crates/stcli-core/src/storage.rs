@@ -16,7 +16,7 @@ use crate::{
 };
 
 const TRACE_PAYLOAD_DOMAIN: &str = "stcli:trace-payload:v1";
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 
 pub struct Store {
     pub(crate) connection: Connection,
@@ -656,6 +656,10 @@ fn migrate(connection: &Connection) -> Result<(), StorageError> {
                 semantic_hash TEXT NOT NULL,
                 source_blob_hash TEXT NOT NULL REFERENCES content_blobs(hash),
                 imported_event_id TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS artifact_codec_provenance (
+                revision_hash TEXT PRIMARY KEY REFERENCES artifact_revisions(revision_hash) ON DELETE CASCADE,
+                body BLOB NOT NULL
             );
             CREATE TABLE IF NOT EXISTS artifact_inspector_registrations (
                 plugin_id TEXT PRIMARY KEY,
