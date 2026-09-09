@@ -715,7 +715,7 @@ fn preset_picker(app: &App) -> &PresetPickerState {
 
 #[test]
 fn preset_details_scrolling_clamps_and_resets_on_selection_change() {
-    // Regression test for .scratch/tui-preset-management/issues/03: the detail
+    // Regression test for STcli-scratch#106: the detail
     // inspector rendered a static paragraph with no way to read overflowing metadata.
     let directory = tempdir().unwrap();
     let database = directory.path().join("stcli.sqlite3");

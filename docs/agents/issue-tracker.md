@@ -3,10 +3,9 @@
 Issues for this repo are tracked on the local Gitea instance at
 [git.februus.net/its-a-unixsystem/STcli-scratch](https://git.februus.net/its-a-unixsystem/STcli-scratch/issues).
 
-The historical `.scratch/` issue files were migrated to Gitea on 2026-09-09;
-their content (and the migration mapping in `.scratch-migration-mapping.json`,
-committed inside the scratch repo) remains available in the scratch repo's git
-history at `ssh://git@192.168.178.10:2222/its-a-unixsystem/STcli-scratch.git`.
+The historical local issue files were migrated to Gitea on 2026-09-09. Their
+content and the migration mapping remain available in the scratch repository's
+git history. The repository has no persistent local checkout inside STcli.
 
 ## Conventions
 
@@ -17,8 +16,18 @@ history at `ssh://git@192.168.178.10:2222/its-a-unixsystem/STcli-scratch.git`.
   `ready-for-human`, `wontfix`, `done`). Closed issues map to `done`,
   `resolved`, `dropped`, or `wontfix`.
 - Comments and conversation history live as Gitea issue comments.
-- Specs and wayfinding maps remain as markdown files in the scratch repo
-  (`.scratch/<feature-slug>/spec.md`, `.scratch/<effort>/map.md`).
+- Specs, wayfinding maps, verification evidence, and other planning artifacts
+  are versioned files in the remote scratch repository.
+
+## When a skill needs a spec, map, or evidence
+
+Read repository files from
+`https://git.februus.net/its-a-unixsystem/STcli-scratch` through Gitea, or use
+a temporary checkout of
+`ssh://git@192.168.178.10:2222/its-a-unixsystem/STcli-scratch.git` outside the
+STcli working tree. Repository-relative paths keep their historical layout,
+for example `<feature-slug>/spec.md`, `<effort>/map.md`, and
+`<feature-slug>/verification/`.
 
 ## When a skill says "publish to the issue tracker"
 
@@ -43,10 +52,11 @@ GET https://git.februus.net/api/v1/repos/its-a-unixsystem/STcli-scratch/issues?s
 
 ## Wayfinding operations
 
-Used by `/wayfinder`. The **map** is a markdown file in the scratch repo with
-one Gitea issue per child ticket.
+Used by `/wayfinder`. The **map** is a markdown file in the remote scratch
+repository with one Gitea issue per child ticket.
 
-- **Map**: `.scratch/<effort>/map.md` (the Notes / Decisions-so-far / Fog body).
+- **Map**: `<effort>/map.md` in the remote scratch repository (the Notes /
+  Decisions-so-far / Fog body).
 - **Child ticket**: a Gitea issue labeled `feature/<effort>`, with the question
   in the body. A `Type:` line records the ticket type
   (`research`/`prototype`/`grilling`/`task`).
