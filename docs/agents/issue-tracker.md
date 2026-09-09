@@ -1,30 +1,60 @@
-# Issue tracker: Local Markdown
+# Issue tracker: Gitea
 
-Issues and specs for this repo live as markdown files in `.scratch/`.
+Issues for this repo are tracked on the local Gitea instance at
+[git.februus.net/its-a-unixsystem/STcli-scratch](https://git.februus.net/its-a-unixsystem/STcli-scratch/issues).
+
+The historical `.scratch/` issue files were migrated to Gitea on 2026-09-09;
+their content (and the migration mapping in `.scratch-migration-mapping.json`,
+committed inside the scratch repo) remains available in the scratch repo's git
+history at `ssh://git@192.168.178.10:2222/its-a-unixsystem/STcli-scratch.git`.
 
 ## Conventions
 
-- One feature per directory: `.scratch/<feature-slug>/`
-- The spec is `.scratch/<feature-slug>/spec.md`
-- Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
-- Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
-- Comments and conversation history append to the bottom of the file under a `## Comments` heading
+- One Gitea issue per ticket; issues carry a `feature/<feature-slug>` label
+  identifying the epic they belong to.
+- Triage state is recorded as a Gitea label; see `triage-labels.md` for the
+  canonical role strings (`needs-triage`, `needs-info`, `ready-for-agent`,
+  `ready-for-human`, `wontfix`, `done`). Closed issues map to `done`,
+  `resolved`, `dropped`, or `wontfix`.
+- Comments and conversation history live as Gitea issue comments.
+- Specs and wayfinding maps remain as markdown files in the scratch repo
+  (`.scratch/<feature-slug>/spec.md`, `.scratch/<effort>/map.md`).
 
 ## When a skill says "publish to the issue tracker"
 
-Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).
+Create a Gitea issue in `its-a-unixsystem/STcli-scratch` via the API:
+
+```
+POST https://git.februus.net/api/v1/repos/its-a-unixsystem/STcli-scratch/issues
+Authorization: token $GITEA_TOKEN
+```
+
+Set the epic label (`feature/<feature-slug>`) and the matching triage label.
+Label IDs must be integers resolved from
+`GET /repos/its-a-unixsystem/STcli-scratch/labels` (paginated, 50 per page).
 
 ## When a skill says "fetch the relevant ticket"
 
-Read the file at the referenced path. The user will normally pass the path or the issue number directly.
+Fetch the Gitea issue by number, or query open issues:
+
+```
+GET https://git.februus.net/api/v1/repos/its-a-unixsystem/STcli-scratch/issues?state=open&labels=<id>&limit=50&page=<n>
+```
 
 ## Wayfinding operations
 
-Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
+Used by `/wayfinder`. The **map** is a markdown file in the scratch repo with
+one Gitea issue per child ticket.
 
 - **Map**: `.scratch/<effort>/map.md` (the Notes / Decisions-so-far / Fog body).
-- **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`); a `Status:` line records `claimed`/`resolved`.
-- **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `resolved`.
-- **Frontier**: scan `.scratch/<effort>/issues/` for files that are open, unblocked, and unclaimed; first by number wins.
-- **Claim**: set `Status: claimed` and save before any work.
-- **Resolve**: append the answer under an `## Answer` heading, set `Status: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
+- **Child ticket**: a Gitea issue labeled `feature/<effort>`, with the question
+  in the body. A `Type:` line records the ticket type
+  (`research`/`prototype`/`grilling`/`task`).
+- **Blocking**: a `Blocked by: #NN, #NN` line near the top of the issue body.
+  A ticket is unblocked when every issue it lists is closed.
+- **Frontier**: query open, unclaimed issues with the `feature/<effort>` label;
+  lowest issue number wins.
+- **Claim**: comment `claimed` on the issue (or assign yourself) before work.
+- **Resolve**: close the issue with the answer in the final comment, then
+  append a context pointer (gist + issue link) to the map's Decisions-so-far
+  in `map.md`.

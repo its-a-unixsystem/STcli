@@ -25,7 +25,7 @@ Planning can be ambitious, execution should be lightweight, constraints come fir
 
 ### Issue tracker
 
-Issues and specs are tracked as local Markdown files under `.scratch/`. See `docs/agents/issue-tracker.md`.
+Issues are tracked as Gitea issues at `git.februus.net/its-a-unixsystem/STcli-scratch`; specs and maps remain under `.scratch/` (gitignored). See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
