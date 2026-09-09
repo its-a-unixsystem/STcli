@@ -7,6 +7,7 @@ use std::{
     str::FromStr,
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{
     Deserialize, Deserializer, Serialize,
@@ -17,7 +18,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    ContentHash, Store,
+    ArtifactCodecOutput, ContentHash, Store,
     identity::{artifact_revision_hash, canonical_json_hash, hash_parts},
     storage::{StorageError, append_event},
 };
@@ -292,6 +293,90 @@ impl Store {
                 primary,
                 supplementary_artifacts,
                 asset_count: archive.assets.len(),
+            })
+        })();
+
+        match result {
+            Ok(bundle) => {
+                if let Err(error) = transaction.commit() {
+                    cleanup_assets(&assets_root, &created_assets)?;
+                    return Err(StorageError::Sqlite(error).into());
+                }
+                Ok(bundle)
+            }
+            Err(error) => {
+                drop(transaction);
+                cleanup_assets(&assets_root, &created_assets)?;
+                Err(error)
+            }
+        }
+    }
+
+    pub fn import_artifact_from_codec(
+        &mut self,
+        output: &ArtifactCodecOutput,
+    ) -> Result<ArtifactBundle, ArtifactError> {
+        let payload = BASE64
+            .decode(&output.payload)
+            .map_err(ArtifactError::InvalidCodecBase64)?;
+        let decoded = decode_artifact_payload(&payload)?;
+        match output.kind.as_str() {
+            "charx" => validate_character_card_v3(&decoded)?,
+            "webp" | "png" | "json" => {}
+            kind => return Err(ArtifactError::UnsupportedCodecFormat(kind.to_owned())),
+        }
+
+        let decoded_assets = output
+            .assets
+            .iter()
+            .map(|asset| {
+                let bytes = BASE64
+                    .decode(&asset.bytes)
+                    .map_err(ArtifactError::InvalidCodecBase64)?;
+                Store::validate_asset(&bytes)?;
+                Ok((asset.logical_path.clone(), bytes))
+            })
+            .collect::<Result<Vec<_>, ArtifactError>>()?;
+        if output.kind == "charx" {
+            let paths = decoded_assets
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<HashSet<_>>();
+            validate_embedded_asset_references(&decoded, &paths)?;
+        }
+
+        let assets_root = self.assets_root().to_owned();
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(StorageError::Sqlite)?;
+        let mut created_assets = HashSet::new();
+        let result = (|| {
+            let primary = insert_artifact_revision(
+                &transaction,
+                &payload,
+                &payload,
+                &decoded,
+                &output.format,
+            )?;
+            for (logical_path, bytes) in &decoded_assets {
+                let hash = ContentHash::new(Sha256::digest(bytes).into());
+                if !Store::asset_file_exists(&assets_root, &hash) {
+                    created_assets.insert(hash);
+                }
+                let record = Store::put_asset_in_transaction(&transaction, &assets_root, bytes)?;
+                Store::add_asset_reference_in_transaction(
+                    &transaction,
+                    "artifact-revision",
+                    &primary.revision_hash.to_string(),
+                    &record.hash,
+                    logical_path,
+                )?;
+            }
+            Ok(ArtifactBundle {
+                primary,
+                supplementary_artifacts: Vec::new(),
+                asset_count: decoded_assets.len(),
             })
         })();
 
@@ -588,6 +673,13 @@ fn validate_charx_asset_references(
         .iter()
         .map(|asset| asset.logical_path.as_str())
         .collect::<HashSet<_>>();
+    validate_embedded_asset_references(card, &paths)
+}
+
+fn validate_embedded_asset_references(
+    card: &DecodedArtifact,
+    paths: &HashSet<&str>,
+) -> Result<(), ArtifactError> {
     let Some(declarations) = card
         .semantic
         .get("data")
@@ -892,6 +984,8 @@ pub enum ArtifactError {
     TruncatedPng,
     #[error("WebP character metadata is not valid base64: {0}")]
     InvalidBase64WebpMetadata(base64::DecodeError),
+    #[error("artifact codec output is not valid base64: {0}")]
+    InvalidCodecBase64(base64::DecodeError),
     #[error("invalid WebP artifact: {0}")]
     InvalidWebp(&'static str),
     #[error("artifact kind '{0}' is not a Chat Completion preset")]
@@ -938,6 +1032,8 @@ pub enum ArtifactError {
     InvalidField(&'static str),
     #[error("JSON does not match a supported Phase 1 artifact format")]
     UnknownFormat,
+    #[error("artifact codec format '{0}' is unsupported")]
+    UnsupportedCodecFormat(String),
     #[error("artifact source exceeds {limit} byte limit ({size} bytes)")]
     SourceTooLarge { size: usize, limit: usize },
     #[error("stored artifact kind '{0}' is unknown")]
@@ -960,7 +1056,7 @@ mod tests {
     use std::io::Write as _;
     use tempfile::tempdir;
 
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::engine::general_purpose::STANDARD;
     use flate2::{Compression, write::ZlibEncoder};
 
     const CARD: &str = r#"{

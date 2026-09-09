@@ -5,26 +5,29 @@ use std::{
     str::FromStr,
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    ArtifactError, ArtifactInspectorRegistration, ArtifactKind, ArtifactRecord, AttemptProjection,
-    BranchProjection, CandidateProjection, CapsuleError, CapsuleKind, CompactionReport,
-    CompatibilityWarning, CompletedTurn, Config, ConfigError, ContentHash, CreatedSession,
-    DryRunResult, EcmaRegexWorker, EditedCandidate, EntityId, GlobalExtensionPin, ImportedCapsule,
-    InstalledPlugin, InteractionResult, InteractionSubmission, InteractionSurface,
-    NativeExtensionImport, PluginCapability, PluginCommandResult, PluginEffect, PluginError,
-    PluginEvent, PluginGrant, PluginHost, PluginInput, PluginPin, PluginRegistry, PromptDiff,
-    PromptPlan, PromptSegmentInspection, ProviderEvent, RecoveryReport, ReplayReport,
-    SessionConfiguration, SessionConfigurationRecord, SessionError, SessionProjection, StateError,
-    StorageError, Store, StscriptError, StscriptLimits, StscriptResult, TokenizerError,
-    TokenizerId, TurnCapsule, TurnError, TurnProjection, apply_display_scripts, diff_prompt_plans,
-    extract_character_scripts, st_bridge_capability_tier, transform_preset_content,
+    ArtifactCodecInput, ArtifactCodecOutput, ArtifactError, ArtifactInspectorRegistration,
+    ArtifactKind, ArtifactRecord, AttemptProjection, BranchProjection, CandidateProjection,
+    CapsuleError, CapsuleKind, CompactionReport, CompatibilityWarning, CompletedTurn, Config,
+    ConfigError, ContentHash, CreatedSession, DryRunResult, EcmaRegexWorker, EditedCandidate,
+    EntityId, GlobalExtensionPin, ImportedCapsule, InstalledPlugin, InteractionResult,
+    InteractionSubmission, InteractionSurface, NativeExtensionImport, PluginCapability,
+    PluginCommandResult, PluginEffect, PluginError, PluginEvent, PluginGrant, PluginHost,
+    PluginInput, PluginPin, PluginRegistry, PromptDiff, PromptPlan, PromptSegmentInspection,
+    ProviderEvent, RecoveryReport, ReplayReport, SessionConfiguration, SessionConfigurationRecord,
+    SessionError, SessionProjection, StateError, StorageError, Store, StscriptError,
+    StscriptLimits, StscriptResult, TokenizerError, TokenizerId, TurnCapsule, TurnError,
+    TurnProjection, apply_display_scripts, diff_prompt_plans, extract_character_scripts,
+    st_bridge_capability_tier, transform_preset_content,
 };
 
 pub const DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID: &str = "org.stcli.nemo-directives";
 pub const DEFAULT_MEMORY_EXTENSION_ID: &str = "memory";
+const MAX_CODEC_SOURCE_BYTES: usize = 2 * 1024 * 1024;
 const NEMO_PLUGIN_MANIFEST: &str = include_str!("../../../plugins/nemo-directives/manifest.json");
 const NEMO_PLUGIN_SCRIPT: &str = include_str!("../../../plugins/nemo-directives/script.js");
 const MEMORY_EXTENSION_MANIFEST: &str = include_str!("../../../extensions/memory/manifest.json");
@@ -214,6 +217,73 @@ impl StcliEngine {
                 version: version.to_owned(),
                 digest: digest.clone(),
             })
+    }
+
+    fn decode_artifact_with_codec(
+        &self,
+        store: &Store,
+        source: &[u8],
+    ) -> Result<Option<ArtifactCodecOutput>, EngineError> {
+        if source.len() > MAX_CODEC_SOURCE_BYTES {
+            return Ok(None);
+        }
+
+        let Some(registration) = store
+            .artifact_inspectors()?
+            .into_iter()
+            .find(|registration| {
+                registration
+                    .capabilities
+                    .contains(&PluginCapability::ArtifactCodec)
+            })
+        else {
+            return Ok(None);
+        };
+        let installed = self.installed_plugin(
+            &registration.id,
+            &registration.version.to_string(),
+            &registration.component_sha256,
+        )?;
+        let grant = PluginGrant {
+            id: registration.id.clone(),
+            version: registration.version,
+            component_sha256: registration.component_sha256,
+            capabilities: registration.capabilities,
+            settings: serde_json::Value::Null,
+            egress_allow_list: Vec::new(),
+            enabled: true,
+        };
+        let input = PluginInput {
+            event: PluginEvent::InspectArtifact,
+            plugin_id: installed.manifest.id.clone(),
+            settings: serde_json::Value::Null,
+            context: serde_json::Value::Null,
+            payload: serde_json::to_value(ArtifactCodecInput {
+                source: BASE64.encode(source),
+                metadata: serde_json::Value::Null,
+            })
+            .map_err(PluginError::Json)?,
+            state: serde_json::json!({}),
+            artifact: serde_json::Value::Null,
+            session: serde_json::Value::Null,
+        };
+        let receipt = PluginHost::new(Default::default()).execute(&installed, &grant, input)?;
+        let mut outputs = receipt
+            .effects
+            .into_iter()
+            .filter_map(|effect| match effect {
+                PluginEffect::Output { value } => Some(value),
+                _ => None,
+            });
+        let output = outputs
+            .next()
+            .ok_or(PluginError::ArtifactInspectionOutputCount(0))?;
+        if outputs.next().is_some() {
+            return Err(PluginError::ArtifactInspectionOutputCount(2).into());
+        }
+        Ok(Some(
+            serde_json::from_value(output).map_err(PluginError::Json)?,
+        ))
     }
     fn extension_interactions(
         &self,
@@ -1171,7 +1241,10 @@ impl StcliEngine {
                 false,
             )?))),
             EngineCommand::ImportArtifact { source } => {
-                let bundle = store.import_artifact_bundle(&source)?;
+                let bundle = match self.decode_artifact_with_codec(&store, &source)? {
+                    Some(output) => store.import_artifact_from_codec(&output)?,
+                    None => store.import_artifact_bundle(&source)?,
+                };
                 Ok(EngineResult::ArtifactBundle {
                     primary: bundle.primary,
                     supplementary_artifacts: bundle.supplementary_artifacts,

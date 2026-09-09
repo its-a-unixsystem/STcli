@@ -35,6 +35,7 @@ pub enum PluginCapability {
     WriteOwnState,
     AbortPreRequest,
     InspectArtifact,
+    ArtifactCodec,
     BrokeredEgress,
     #[serde(rename = "secondary-inference")]
     InferenceCapability,
@@ -52,6 +53,7 @@ impl std::str::FromStr for PluginCapability {
             "write-own-state" => Ok(Self::WriteOwnState),
             "abort-pre-request" => Ok(Self::AbortPreRequest),
             "inspect-artifact" => Ok(Self::InspectArtifact),
+            "artifact-codec" => Ok(Self::ArtifactCodec),
             "brokered-egress" => Ok(Self::BrokeredEgress),
             "secondary-inference" => Ok(Self::InferenceCapability),
             _ => Err(PluginError::UnknownCapability(value.to_owned())),

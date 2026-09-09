@@ -70,6 +70,12 @@ An Artifact inspector runs without a Session. The engine loads one decoded Artif
 
 This path is read-only. The host rejects prompt contributions, state writes, aborts, and every effect except `output`. It does not create a Turn Trace receipt because no Turn exists; the result is ephemeral. The WIT interface remains the same JSON-string boundary used by Session events.
 
+### Decode an external Artifact format
+
+An Artifact codec is a registered Artifact inspector that also requests the `artifact-codec` capability. During `EngineCommand::ImportArtifact`, the engine passes sources up to 2 MiB as base64 in `input.payload.source`. The codec returns exactly one output containing the decoded payload, source format, and any extracted assets as base64. Core validates the decoded Artifact and assets, then persists them atomically. If no codec is registered, or the source exceeds 2 MiB, Core uses its built-in decoders.
+
+Codec plugins must request and register both `artifact-codec` and `inspect-artifact`, and subscribe to `inspect-artifact`. The codec path is import-only; export continues to return the stored decoded source.
+
 ## Choose a runtime
 
 Use this table to pick a runtime. `st-bridge` is for importing SillyTavern Extensions; use Script or Wasm when authoring a native STcli Plugin.
@@ -934,6 +940,7 @@ The manifest requests capabilities. The session grant allows a subset. The engin
 |---|---|---|
 | `observe-lifecycle` | An `observe` effect. | Wasm |
 | `inspect-artifact` | One `output` effect from a registered Artifact inspector. | Wasm, Script |
+| `artifact-codec` | Marks a registered Artifact inspector as the external-format decoder used during import. Requires `inspect-artifact` for its output effect. | Wasm, Script |
 | `register-macro` | A `register-macro` effect. | Wasm |
 | `register-command` | A `register-command` effect. | Wasm |
 | `contribute-prompt` | A `prompt` effect, and `stcli.prompt.inject`. | Wasm, Script |
