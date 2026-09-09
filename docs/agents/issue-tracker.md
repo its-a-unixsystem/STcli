@@ -38,7 +38,7 @@ Label IDs must be integers resolved from
 Fetch the Gitea issue by number, or query open issues:
 
 ```
-GET https://git.februus.net/api/v1/repos/its-a-unixsystem/STcli-scratch/issues?state=open&labels=<id>&limit=50&page=<n>
+GET https://git.februus.net/api/v1/repos/its-a-unixsystem/STcli-scratch/issues?state=open&labels=<name>&limit=50&page=<n>
 ```
 
 ## Wayfinding operations
