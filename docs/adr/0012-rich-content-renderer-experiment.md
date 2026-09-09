@@ -76,7 +76,7 @@ This rejection does not weaken the Linux decision or select Chrome's built-in sa
 
 ### macOS WebKit evaluation
 
-Ticket [13](../../.scratch/extension-interactions-and-rich-content/issues/13-evaluate-macos-sandboxed-webkit.md) evaluated an experiment-only, ad-hoc-signed app bundle using App Sandbox and WKWebView. Evidence is in [`docs/experiments/rich-content-renderer/macos-webkit/`](../experiments/rich-content-renderer/macos-webkit/). The helper is functionally viable under the clarified constraints: the measured footprint is accepted and direct terminal launch is sufficient for this use case. This experiment still does not by itself select a production macOS backend, so text fallback remains the current behavior.
+Ticket [13](https://git.februus.net/its-a-unixsystem/STcli-scratch/issues/19) evaluated an experiment-only, ad-hoc-signed app bundle using App Sandbox and WKWebView. Evidence is in [`docs/experiments/rich-content-renderer/macos-webkit/`](../experiments/rich-content-renderer/macos-webkit/). The helper is functionally viable under the clarified constraints: the measured footprint is accepted and direct terminal launch is sufficient for this use case. This experiment still...
 
 | macOS WebKit criterion | Result | Evidence |
 |---|---|---|
