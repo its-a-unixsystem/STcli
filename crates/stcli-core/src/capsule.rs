@@ -8,8 +8,9 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::{
-    ArtifactError, ArtifactRecord, AttemptEffectReceipt, AttemptProjection, AttemptStatus,
-    BranchProjection, CandidateProjection, ContentHash, EntityId, PromptPlan, ProviderError,
+    ArtifactCodecBundle, ArtifactCodecError, ArtifactCodecProvenance, ArtifactError,
+    ArtifactRecord, AttemptEffectReceipt, AttemptProjection, AttemptStatus, BranchProjection,
+    CandidateProjection, ContentHash, EntityId, PromptPlan, ProviderError,
     SessionConfigurationRecord, SessionError, SessionProjection, StateCell, StateError, Store,
     TurnError, TurnProjection, artifact_revision_hash, artifact_semantic_hash, canonical_json,
     canonical_json_hash, content_blob_hash, decode_artifact, provider_request_hash,
@@ -77,9 +78,17 @@ impl CapsuleArtifactSource {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CapsuleArtifactCodec {
+    pub provenance: ArtifactCodecProvenance,
+    pub bundle: ArtifactCodecBundle,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CapsuleArtifact {
     pub record: ArtifactRecord,
     pub source: Option<CapsuleArtifactSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<CapsuleArtifactCodec>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -212,11 +221,19 @@ impl Store {
             let record = self
                 .artifact(&revision_hash)?
                 .ok_or_else(|| CapsuleError::ArtifactNotFound(revision_hash.clone()))?;
-            let source = match kind {
-                CapsuleKind::Portable => Some(CapsuleArtifactSource::from_bytes(
-                    self.export_artifact(&revision_hash)?,
-                )),
-                CapsuleKind::Thin => None,
+            let (source, codec) = match kind {
+                CapsuleKind::Portable => {
+                    let source = self.export_artifact(&revision_hash)?;
+                    let codec = self
+                        .artifact_codec_provenance(&revision_hash)?
+                        .map(|provenance| {
+                            let bundle = self.artifact_codec_bundle(&revision_hash, &provenance)?;
+                            Ok::<_, ArtifactCodecError>(CapsuleArtifactCodec { provenance, bundle })
+                        })
+                        .transpose()?;
+                    (Some(CapsuleArtifactSource::from_bytes(source)), codec)
+                }
+                CapsuleKind::Thin => (None, None),
             };
             references.push(CapsuleReference {
                 owner_kind: "artifact-revision".to_owned(),
@@ -224,7 +241,11 @@ impl Store {
                 blob_hash: record.source_blob_hash.clone(),
                 embedded: source.is_some(),
             });
-            artifacts.push(CapsuleArtifact { record, source });
+            artifacts.push(CapsuleArtifact {
+                record,
+                source,
+                codec,
+            });
         }
         let mut capsule = TurnCapsule {
             format: CAPSULE_FORMAT.to_owned(),
@@ -347,12 +368,24 @@ impl Store {
                     CapsuleError::MissingReferencedBlob(artifact.record.source_blob_hash.clone())
                 })?;
                 let source = source.bytes()?;
-                let imported = self.import_artifact(&source)?;
+                let imported = if let Some(codec) = &artifact.codec {
+                    self.import_artifact_from_codec(&source, &codec.bundle, &codec.provenance)?
+                        .primary
+                } else {
+                    self.restore_artifact_revision(&artifact.record, &source)?
+                };
                 if imported.revision_hash != artifact.record.revision_hash {
                     return Err(CapsuleError::ArtifactHashMismatch(
                         artifact.record.revision_hash.clone(),
                     ));
                 }
+            } else if let Some(codec) = &artifact.codec
+                && self.artifact_codec_provenance(&artifact.record.revision_hash)?
+                    != Some(codec.provenance.clone())
+            {
+                return Err(CapsuleError::ArtifactCodecStateMismatch(
+                    artifact.record.revision_hash.clone(),
+                ));
             }
         }
         let configuration = capsule
@@ -643,6 +676,7 @@ impl TurnCapsule {
     pub fn redact_content(&mut self) {
         for artifact in &mut self.artifacts {
             artifact.source = None;
+            artifact.codec = None;
         }
         self.configuration = None;
         self.baseline = None;
@@ -766,20 +800,45 @@ impl TurnCapsule {
             }
             if let Some(source) = &artifact.source {
                 let source = source.bytes()?;
+                let payload = if let Some(codec) = &artifact.codec {
+                    if codec.bundle.artifact_kind != artifact.record.kind
+                        || codec.bundle.source_format != artifact.record.source_format
+                    {
+                        return Err(CapsuleError::ArtifactCodecStateMismatch(
+                            artifact.record.revision_hash.clone(),
+                        ));
+                    }
+                    Cow::Owned(STANDARD.decode(&codec.bundle.payload).map_err(|source| {
+                        ArtifactCodecError::InvalidBase64 {
+                            field: "capsule codec payload",
+                            source,
+                        }
+                    })?)
+                } else {
+                    Cow::Borrowed(source.as_ref())
+                };
+                let identity_source = if artifact
+                    .codec
+                    .as_ref()
+                    .is_some_and(|codec| codec.provenance.format == "charx")
+                {
+                    payload.as_ref()
+                } else {
+                    source.as_ref()
+                };
                 let actual = artifact_revision_hash(
                     artifact.record.kind.as_str(),
                     &artifact.record.source_format,
-                    &source,
+                    identity_source,
                 );
                 if actual != artifact.record.revision_hash
-                    || crate::artifact::artifact_source_blob_hash(&source)?
-                        != artifact.record.source_blob_hash
+                    || content_blob_hash(&payload) != artifact.record.source_blob_hash
                 {
                     return Err(CapsuleError::ArtifactHashMismatch(
                         artifact.record.revision_hash.clone(),
                     ));
                 }
-                let decoded = decode_artifact(&source)?;
+                let decoded = decode_artifact(&payload)?;
                 if decoded.kind != artifact.record.kind
                     || artifact_semantic_hash(&decoded.semantic)? != artifact.record.semantic_hash
                 {
@@ -787,6 +846,10 @@ impl TurnCapsule {
                         artifact.record.revision_hash.clone(),
                     ));
                 }
+            } else if artifact.codec.is_some() {
+                return Err(CapsuleError::ArtifactCodecStateMismatch(
+                    artifact.record.revision_hash.clone(),
+                ));
             } else if store
                 .blob(&artifact.record.source_blob_hash.to_string())?
                 .is_none()
@@ -855,6 +918,8 @@ fn feature_manifest_digest() -> Result<ContentHash, CapsuleError> {
 pub enum CapsuleError {
     #[error("artifact operation failed: {0}")]
     Artifact(#[from] ArtifactError),
+    #[error("Artifact codec operation failed: {0}")]
+    ArtifactCodec(#[from] ArtifactCodecError),
     #[error("session operation failed: {0}")]
     Session(#[from] SessionError),
     #[error("turn operation failed: {0}")]
@@ -907,6 +972,8 @@ pub enum CapsuleError {
     DuplicateArtifact(ContentHash),
     #[error("capsule artifact revision hash is invalid for {0}")]
     ArtifactHashMismatch(ContentHash),
+    #[error("capsule Artifact codec state does not match revision {0}")]
+    ArtifactCodecStateMismatch(ContentHash),
     #[error("capsule artifact set does not match its configuration")]
     ArtifactSetMismatch,
     #[error("thin capsule references missing blob {0}")]

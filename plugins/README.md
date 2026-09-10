@@ -25,7 +25,7 @@ STcli also runs plugins written in JavaScript through a sandboxed QuickJS runtim
 
 ## The bundled SillyTavern codec
 
-[`plugins/ccv3-codec`](ccv3-codec/) is the source package for the bundled `stcli.artifact-codec/v1` implementation. It handles every SillyTavern Artifact format currently supported by Core: Character Card V1/V2/V3 JSON, PNG/APNG/WebP cards, CHARX archives, Lorebooks, and Chat Completion presets. Core tests compare its public Engine results with the retained native import paths.
+[`plugins/ccv3-codec`](ccv3-codec/) is the source package for the bundled `stcli.artifact-codec/v1` implementation. It owns every supported SillyTavern serialization and container format: Character Card V1/V2/V3 JSON, PNG/APNG/WebP cards, CHARX archives, Lorebooks, and Chat Completion presets. Core retains only canonical flat-Artifact validation, hashing, asset storage, provenance, and atomic persistence; the Engine-level compatibility suite verifies the bundled codec directly.
 
 ## The `turn-counter` plugin
 

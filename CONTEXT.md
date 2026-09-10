@@ -14,6 +14,10 @@ _Avoid_: Asset, document, file
 An immutable snapshot identified by its artifact kind, source format, and exact imported bytes. Re-importing changed or reformatted content creates a new revision.
 _Avoid_: Live file, current file, semantic version
 
+**Artifact Codec**:
+A digest-pinned, sandboxed Wasm Plugin that detects and converts an external Artifact format at the Engine import/export seam. Core validates and stores the proposed flat Artifact Bundle; ordinary reads and Replay do not execute the codec.
+_Avoid_: Core parser, trusted converter, storage plugin
+
 **Session**:
 The durable container for one roleplay, including all of its branches.
 _Avoid_: Chat, conversation

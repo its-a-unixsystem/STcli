@@ -11,7 +11,7 @@ An Artifact Revision is an immutable flat payload plus its kind, source format, 
 
 `EngineQuery::ArtifactSource` is the public export seam. Artifacts imported by Core return their stored source. Artifacts imported through a codec run the exact encoder recorded in their provenance. `EngineQuery::ArtifactCodecProvenance` reports that provenance without running the Plugin.
 
-Direct `Store` import methods keep the built-in Core decoders and do not discover Plugins.
+Direct `Store` imports are the recovery-only canonical JSON bootstrap. They reject image and archive containers and never discover or execute Plugins.
 
 ## Codec registration
 
@@ -53,12 +53,12 @@ Compatibility items contain a stable lowercase `code` and a human-readable `mess
 | Codec host JSON input/output | 16 MiB each |
 | Codec Wasm memory | 64 MiB |
 
-The Plugin host also applies its component, fuel, and wall-clock limits. Oversized imports bypass codec discovery and use the native Core path. Oversized or malformed codec proposals fail; they never fall back after a codec has claimed compatibility.
+The Plugin host also applies its component, fuel, and wall-clock limits. Sources above 2 MiB skip codec execution; canonical JSON up to the Core Artifact limit can still use the bootstrap path. An external container without an accepting codec fails with guidance to run `stcli plugin restore-defaults`. Malformed codec proposals fail and never fall back after a codec claims ownership.
 
 ## Core validation and persistence
 
-Core validates JSON with duplicate-key rejection, derives the Artifact kind, compares the proposed kind and hashes, validates supported media, rejects unsafe or duplicate logical paths, checks CCv3 embedded asset references, and enforces every bound above.
+Core parses the codec's flat JSON payload with duplicate-key rejection, validates the declared Artifact kind against the payload, compares hashes, validates supported media, rejects unsafe or duplicate logical paths, checks embedded asset ownership, and enforces every bound above. Core does not parse SillyTavern image metadata or CHARX archives.
 
-Only after validation does Core open the transaction that inserts the Artifact Revision, asset rows, references, provenance, and import events. If the flat payload already identifies an existing Artifact Revision, codec import rejects the collision rather than attaching provenance or assets to an immutable revision. If any database operation or commit fails, the transaction rolls back and newly created external asset files are removed.
+Only after validation does Core open the transaction that inserts the Artifact Revision, asset rows, references, provenance, and import events. If the flat payload already identifies an existing Artifact Revision, codec import rejects the collision rather than attaching provenance or assets to an immutable revision. If any database operation or commit fails, the transaction rolls back and newly created external asset files are removed. Portable Capsules retain the external revision source together with the accepted codec bundle and provenance, so import can restore flat payloads, assets, supplementary Artifacts, and exact codec ownership without executing codec code.
 
 See [ADR 0014](adr/0014-artifact-codec-engine-hook.md) for the design decision and [Security](security.md#artifact-codecs) for the trust model.

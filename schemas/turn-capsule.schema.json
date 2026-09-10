@@ -81,7 +81,7 @@
                   "chat-completion-preset"
                 ]
               },
-              "source_format": { "enum": ["json", "png"] },
+              "source_format": { "enum": ["json", "png", "webp"] },
               "semantic_hash": { "$ref": "#/$defs/hash" },
               "source_blob_hash": { "$ref": "#/$defs/hash" },
               "imported_event_id": { "$ref": "#/$defs/ulid" }
@@ -100,6 +100,9 @@
               },
               { "type": "null" }
             ]
+          },
+          "codec": {
+            "type": ["object", "null"]
           }
         }
       }

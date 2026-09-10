@@ -70,7 +70,7 @@ Import returns a bundle with three parts:
 
 STcli stores media files in a content-addressed asset store, apart from the main database. For the reason, see [ADR 0007](adr/0007-external-content-addressed-asset-storage.md).
 
-The bundled Artifact codec uses this command and bundle result automatically for sources up to 2 MiB. Core still validates every proposed Artifact and asset before one atomic import. Export uses the exact codec version and digest recorded at import. Remove `org.stcli.sillytavern-codec` to opt out and use Core fallbacks; run `stcli plugin restore-defaults` to restore it. See [Artifacts and external codecs](artifacts.md).
+The bundled Artifact codec uses this command and bundle result automatically for sources up to 2 MiB. Core validates every proposed Artifact and asset before one atomic import. Export uses the exact codec version and digest recorded at import. Removing `org.stcli.sillytavern-codec` opts out of image and archive format support; canonical JSON remains available for recovery. If a bundled codec is absent or incompatible, run `stcli plugin restore-defaults`. See [Artifacts and external codecs](artifacts.md).
 
 ## Import and inspect presets in the TUI
 

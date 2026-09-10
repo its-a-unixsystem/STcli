@@ -116,7 +116,7 @@ The canonical vocabulary lives in `CONTEXT.md`. The structural relationships are
 
 **Acceptance Criteria:**
 
-- Built-in codecs accept Character Card V1 JSON, Character Card V2 JSON, embedded V2 `character_book`, standalone SillyTavern 1.18 lorebook JSON, and supported Chat Completion prompt-preset JSON.
+- The bundled offline Artifact Codec Plugin accepts Character Card V1/V2/V3 JSON, embedded character books, standalone SillyTavern 1.18 lorebooks, Chat Completion presets, PNG/APNG/WebP cards, and CHARX archives.
 - Import reports artifact kind, source format, specification version, exact source SHA-256, semantic SHA-256, and compatibility outcomes.
 - Artifact Revision identity is the domain-separated SHA-256 of artifact kind, source format, and exact imported bytes.
 - Duplicate object keys are rejected with a path-aware hard-unsupported error.
@@ -727,8 +727,8 @@ Current implementation status:
 
 | Milestone | Implemented | Remaining |
 |---|---|---|
-| v0.2 | Interactive TUI, keyboard/mouse navigation, themes, native Extension forms, and styled Markdown/HTML text | External Wasm codecs and official macOS CI/binaries |
-| v0.3 | PNG/APNG/WebP cards, CCv3, CHARX, and content-addressed assets | Broader multimedia presentation belongs to v1.x |
+| v0.2 | Interactive TUI, keyboard/mouse navigation, themes, native Extension forms, styled Markdown/HTML text, and bundled external Wasm Artifact codecs with the clean Core cutover | Official macOS CI/binaries |
+| v0.3 | PNG/APNG/WebP cards, CCv3, CHARX, and content-addressed assets through the bundled codec seam | Broader multimedia presentation belongs to v1.x |
 | v0.4 | Flat Text Completion, instruct/context templates, and story strings | Live-provider validation remains unverified |
 | v0.5 | Not implemented | Group Roleplay |
 | v0.6 | Bounded STscript parser/evaluator, pipes, closures, variables, and recorded outcomes | Wider slash-command coverage and browser-dependent commands |
@@ -823,7 +823,7 @@ See the [parity matrix](docs/sillytavern-parity.md) for feature-level limits and
 - The Phase 0 fixture runner distinguishes exact, preserved-metadata, documented-fallback, and hard-unsupported outcomes.
 - The deterministic OpenAI-compatible HTTPS fixture server supports fixed non-streaming and SSE responses.
 - SQLite WAL stores the authoritative trace, exact JSON BLOBs, immutable Artifact Revisions, Session Configuration Revisions, and rebuildable projections.
-- Phase 1 built-in codecs cover Character Card V1/V2 JSON, embedded V2 character lore, standalone lorebooks, and Chat Completion prompt presets with duplicate-key rejection.
+- The bundled offline Artifact Codec Plugin owns Character Card V1/V2/V3 JSON, PNG/APNG/WebP, CHARX, embedded character books, standalone lorebooks, and Chat Completion presets. Core retains canonical JSON bootstrap, duplicate-key rejection, validation, hashing, and persistence.
 - The debug CLI imports/lists/shows/exports artifacts and creates/lists/shows/rebuilds Sessions using versioned JSON envelopes.
 - Phase 2 pins provider settings and explicit tiktoken IDs in Session Configuration Revisions, builds inspectable token-counted Prompt Plans, and persists Turn/Attempt/Candidate projections.
 - The OpenAI-compatible client supports HTTPS without URL userinfo, custom CA certificates, non-streaming JSON, split SSE, environment-referenced secrets, redacted error bodies and receipts, no automatic retries, and cooperative external cancellation with partial-text receipts.

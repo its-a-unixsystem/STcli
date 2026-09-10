@@ -241,7 +241,7 @@ The Plugin Host (`plugin.rs`) runs both runtimes. The Wasmtime path enforces fue
 
 ### External Artifact codec seam
 
-`EngineCommand::ImportArtifact` performs bounded `detect` and `decode` operations before Core creates an Artifact Revision. A codec proposes a flat payload and assets with declared sizes and hashes; Core independently validates the proposal and owns the atomic transaction. `EngineQuery::ArtifactSource` invokes the exact recorded codec for explicit export, while ordinary Artifact reads use stored flat data without executing code. Codecs are Wasm-only, receive no Session or live-effect handles, and are limited to the `artifact-codec` plus `inspect-artifact` capabilities. See [`docs/artifacts.md`](docs/artifacts.md) for the interface and limits.
+`EngineCommand::ImportArtifact` performs bounded `detect` and `decode` operations before Core creates an Artifact Revision. The bundled codec owns SillyTavern JSON interpretation, image metadata, and CHARX parsing. It proposes a flat payload and assets with declared sizes and hashes; Core independently validates the canonical proposal and owns hashing, content-addressed assets, provenance, and the atomic transaction. Core's only import parser is a recovery-only canonical JSON bootstrap. `EngineQuery::ArtifactSource` invokes the exact recorded codec for explicit export, while ordinary Artifact reads, Sessions, Capsules, and Replay use stored flat data without executing code. Codecs are Wasm-only, receive no Session or live-effect handles, and are limited to the `artifact-codec` plus `inspect-artifact` capabilities. See [`docs/artifacts.md`](docs/artifacts.md) for the interface and limits.
 
 ## Key patterns
 
@@ -284,7 +284,7 @@ These dependencies constrain how you write code. For the full dependency list, s
 - **New CLI command**: Add the `clap` variant to the appropriate `*Command` enum in `main.rs`, implement a `name()` match arm, and add the handler in `execute()`. The handler should call into `stcli-core` and format the result as a `CliEnvelope`.
 - **New compatibility behavior**: Implement the logic in the relevant `stcli-core` module, add fixtures to `compat/fixtures/`, and update the profile if needed.
 - **New state-changing operation**: It **must** append trace events and commit projections atomically. Follow the pattern in `turn.rs`.
-- **New artifact format**: Add a codec variant to `artifact.rs`, register the `ArtifactKind`, and handle it in import/export flows.
+- **New external Artifact format**: Implement it in a Wasm Artifact Codec Plugin for an existing `ArtifactKind`. Adding a new canonical kind also requires an explicit Core schema and validation change.
 
 For build commands and development checks, see the [README](README.md). For the output format reference, see the [usage guide](docs/guide.md#output-formats).
 

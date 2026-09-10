@@ -163,8 +163,8 @@ Group chat and vector lore remain outside the current implementation. STscript a
 
 | Version | Theme | Highlights |
 |---|---|---|
-| **v0.2** ⚠️ | Terminal UI & codecs | Rich chat interface, themes, keyboard/mouse, and bundled external Artifact codecs shipped; official macOS release support pending |
-| **v0.3** ✅ | Character containers | PNG/APNG/WebP card import, CHARX archives, asset store |
+| **v0.2** ⚠️ | Terminal UI & codecs | Rich chat interface, themes, keyboard/mouse, and bundled external Artifact codecs with a slim canonical Core shipped; official macOS release support pending |
+| **v0.3** ✅ | Character containers | PNG/APNG/WebP and CHARX support ships through the bundled codec with Core-owned asset storage |
 | **v0.4** ✅ | Text Completion | Instruct/context templates, story strings, flat-prompt mode |
 | **v0.5** | Group roleplay | Multiple characters, reply-order strategies, group lore and variables |
 | **v0.6** ✅ | STscript | Parser, commands, pipes, closures, scoped variables |

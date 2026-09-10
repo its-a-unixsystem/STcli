@@ -78,7 +78,7 @@ Codec Plugins must request and register exactly `artifact-codec` and `inspect-ar
 
 STcli materializes the embedded `org.stcli.sillytavern-codec` package offline and registers it automatically. It supports Character Card V1/V2/V3 JSON, PNG/APNG/WebP cards, CHARX archives, Lorebooks, and Chat Completion presets. Removal writes a persistent opt-out marker; `plugin restore-defaults` clears the marker and repairs the package. Embedded updates install a new content-addressed version and registration without rewriting existing Artifact provenance or Session Plugin Pins.
 
-Import records the exact Plugin ID, semantic version, component digest, interface version, external format, supplementary revisions, and compatibility items. `EngineQuery::ArtifactSource` uses that pin for `encode`; ordinary Artifact reads use the stored flat payload without running the codec. If no codec accepts an import, or the source exceeds 2 MiB, Core uses its built-in path. See the [Artifact codec reference](artifacts.md) for the complete contract and bounds.
+Import records the exact Plugin ID, semantic version, component digest, interface version, external format, supplementary revisions, and compatibility items. `EngineQuery::ArtifactSource` uses that pin for `encode`; ordinary Artifact reads use the stored flat payload without running the codec. If no codec accepts an input, Core attempts only its canonical JSON bootstrap. Image and archive inputs then fail with `plugin restore-defaults` repair guidance instead of silently changing format ownership. Sources above 2 MiB also skip codec execution and can succeed only through that JSON bootstrap. See the [Artifact codec reference](artifacts.md) for the complete contract and bounds.
 
 ## Choose a runtime
 

@@ -5,8 +5,9 @@ use flate2::{Compression, write::ZlibEncoder};
 
 use serde_json::json;
 use stcli_core::{
-    AttemptStatus, CapsuleKind, ContentHash, EntityId, HeaderSetting, OpenAiProvider,
-    ProviderError, Store, TurnError,
+    AttemptStatus, CapsuleKind, ContentHash, EngineCommand, EngineInspection, EngineQuery,
+    EngineResult, EntityId, HeaderSetting, OpenAiProvider, ProviderError, StcliEngine, Store,
+    TurnError,
 };
 use stcli_testkit::{EnvironmentGuard, configuration, fixtures};
 use tempfile::tempdir;
@@ -313,11 +314,21 @@ async fn provider_setup_failure_leaves_failed_attempt_without_candidate() {
 #[tokio::test]
 async fn capsules_replay_offline_import_isolated_and_recalculate_redaction_capabilities() {
     let directory = tempdir().unwrap();
-    let mut store = Store::open(directory.path().join("source.sqlite3")).unwrap();
-    // Regression test: portable capsules must preserve binary PNG artifact sources.
-    let character = store.import_artifact(&png_card()).unwrap();
+    let database = directory.path().join("source.sqlite3");
+    let engine = StcliEngine::new(&database);
+    // Regression test for issue #130: portable capsules preserve codec state without codec execution.
+    let EngineResult::ArtifactBundle {
+        primary: character, ..
+    } = engine
+        .execute(EngineCommand::ImportArtifact { source: png_card() }, |_| {})
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected Artifact import result");
+    };
+    let mut store = Store::open(&database).unwrap();
     let created = store
-        .create_session(configuration(character.revision_hash), 0)
+        .create_session(configuration(character.revision_hash.clone()), 0)
         .unwrap();
     store
         .send_message(
@@ -348,6 +359,12 @@ async fn capsules_replay_offline_import_isolated_and_recalculate_redaction_capab
             .iter()
             .all(|artifact| artifact.source.is_some())
     );
+    assert!(
+        portable
+            .artifacts
+            .iter()
+            .all(|artifact| artifact.codec.is_some())
+    );
     let schema =
         serde_json::from_str(include_str!("../../../schemas/turn-capsule.schema.json")).unwrap();
     jsonschema::validator_for(&schema)
@@ -360,7 +377,8 @@ async fn capsules_replay_offline_import_isolated_and_recalculate_redaction_capab
     assert_eq!(replay.plugin_executions, 0);
 
     let import_directory = tempdir().unwrap();
-    let mut imported_store = Store::open(import_directory.path().join("imported.sqlite3")).unwrap();
+    let imported_database = import_directory.path().join("imported.sqlite3");
+    let mut imported_store = Store::open(&imported_database).unwrap();
     let imported = imported_store.import_turn_capsule(&portable).unwrap();
     assert_ne!(imported.session_id, created.session.session_id);
     assert_eq!(
@@ -393,6 +411,30 @@ async fn capsules_replay_offline_import_isolated_and_recalculate_redaction_capab
             .status,
         AttemptStatus::Failed
     );
+    assert!(
+        imported_store
+            .artifact_codec_provenance(&character.revision_hash)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        imported_store
+            .asset_references("artifact-revision", &character.revision_hash.to_string())
+            .unwrap()
+            .len(),
+        1
+    );
+    drop(imported_store);
+    let imported_engine = StcliEngine::new(&imported_database);
+    let EngineInspection::ArtifactSource(exported) = imported_engine
+        .inspect(EngineQuery::ArtifactSource {
+            revision_hash: character.revision_hash.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("unexpected Artifact source inspection");
+    };
+    assert_eq!(exported, png_card());
 
     let thin = store
         .export_turn_capsule(attempt.attempt_id, CapsuleKind::Thin, false)
@@ -401,6 +443,11 @@ async fn capsules_replay_offline_import_isolated_and_recalculate_redaction_capab
         thin.artifacts
             .iter()
             .all(|artifact| artifact.source.is_none())
+    );
+    assert!(
+        thin.artifacts
+            .iter()
+            .all(|artifact| artifact.codec.is_none())
     );
     assert!(thin.capabilities.replay);
 

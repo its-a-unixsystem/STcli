@@ -374,6 +374,13 @@ impl StcliEngine {
             .map_err(EngineError::Plugin)
     }
 
+    fn codec_repair_error(id: &str, error: impl ToString) -> EngineError {
+        EngineError::ArtifactCodecRepairRequired {
+            id: id.to_owned(),
+            reason: error.to_string(),
+        }
+    }
+
     fn decode_artifact_with_codec(
         &self,
         store: &Store,
@@ -393,30 +400,39 @@ impl StcliEngine {
                     .contains(&PluginCapability::ArtifactCodec)
             })
         {
-            let (installed, grant) = self.codec_plugin(
-                &registration.id,
-                &registration.version.to_string(),
-                &registration.component_sha256,
-                &registration.capabilities,
-            )?;
-            let detection = self.execute_artifact_codec(
-                &installed,
-                &grant,
-                ArtifactCodecInput::Detect {
-                    interface_version: ARTIFACT_CODEC_INTERFACE_VERSION.to_owned(),
-                    source: encoded.clone(),
-                },
-            )?;
+            let (installed, grant) = self
+                .codec_plugin(
+                    &registration.id,
+                    &registration.version.to_string(),
+                    &registration.component_sha256,
+                    &registration.capabilities,
+                )
+                .map_err(|error| Self::codec_repair_error(&registration.id, error))?;
+            let detection = self
+                .execute_artifact_codec(
+                    &installed,
+                    &grant,
+                    ArtifactCodecInput::Detect {
+                        interface_version: ARTIFACT_CODEC_INTERFACE_VERSION.to_owned(),
+                        source: encoded.clone(),
+                    },
+                )
+                .map_err(|error| Self::codec_repair_error(&registration.id, error))?;
             let ArtifactCodecOutput::Detect {
                 interface_version,
                 compatible,
                 compatibility,
             } = detection
             else {
-                return Err(codec_operation_error("detect", &detection).into());
+                return Err(Self::codec_repair_error(
+                    &registration.id,
+                    codec_operation_error("detect", &detection),
+                ));
             };
-            validate_codec_interface(&interface_version)?;
-            validate_codec_compatibility(&compatibility)?;
+            validate_codec_interface(&interface_version)
+                .map_err(|error| Self::codec_repair_error(&registration.id, error))?;
+            validate_codec_compatibility(&compatibility)
+                .map_err(|error| Self::codec_repair_error(&registration.id, error))?;
             if compatible {
                 claims.push((installed, grant, compatibility));
             }
@@ -432,14 +448,16 @@ impl StcliEngine {
         let Some((installed, grant, mut compatibility)) = claims.pop() else {
             return Ok(None);
         };
-        let decoded = self.execute_artifact_codec(
-            &installed,
-            &grant,
-            ArtifactCodecInput::Decode {
-                interface_version: ARTIFACT_CODEC_INTERFACE_VERSION.to_owned(),
-                source: encoded,
-            },
-        )?;
+        let decoded = self
+            .execute_artifact_codec(
+                &installed,
+                &grant,
+                ArtifactCodecInput::Decode {
+                    interface_version: ARTIFACT_CODEC_INTERFACE_VERSION.to_owned(),
+                    source: encoded,
+                },
+            )
+            .map_err(|error| Self::codec_repair_error(&installed.manifest.id, error))?;
         let ArtifactCodecOutput::Decode {
             interface_version,
             format,
@@ -447,10 +465,15 @@ impl StcliEngine {
             compatibility: decoded_compatibility,
         } = decoded
         else {
-            return Err(codec_operation_error("decode", &decoded).into());
+            return Err(Self::codec_repair_error(
+                &installed.manifest.id,
+                codec_operation_error("decode", &decoded),
+            ));
         };
-        validate_codec_interface(&interface_version)?;
-        validate_codec_compatibility(&decoded_compatibility)?;
+        validate_codec_interface(&interface_version)
+            .map_err(|error| Self::codec_repair_error(&installed.manifest.id, error))?;
+        validate_codec_compatibility(&decoded_compatibility)
+            .map_err(|error| Self::codec_repair_error(&installed.manifest.id, error))?;
         if !installed
             .manifest
             .artifact_codec
@@ -493,44 +516,58 @@ impl StcliEngine {
         ]
         .into_iter()
         .collect::<BTreeSet<_>>();
-        let (installed, grant) = self.codec_plugin(
-            &provenance.plugin_id,
-            &provenance.version.to_string(),
-            &provenance.component_sha256,
-            &capabilities,
-        )?;
+        let (installed, grant) = self
+            .codec_plugin(
+                &provenance.plugin_id,
+                &provenance.version.to_string(),
+                &provenance.component_sha256,
+                &capabilities,
+            )
+            .map_err(|error| Self::codec_repair_error(&provenance.plugin_id, error))?;
         let bundle = store.artifact_codec_bundle(revision_hash, &provenance)?;
-        let output = self.execute_artifact_codec(
-            &installed,
-            &grant,
-            ArtifactCodecInput::Encode {
-                interface_version: ARTIFACT_CODEC_INTERFACE_VERSION.to_owned(),
-                format: provenance.format,
-                bundle,
-            },
-        )?;
+        let output = self
+            .execute_artifact_codec(
+                &installed,
+                &grant,
+                ArtifactCodecInput::Encode {
+                    interface_version: ARTIFACT_CODEC_INTERFACE_VERSION.to_owned(),
+                    format: provenance.format,
+                    bundle,
+                },
+            )
+            .map_err(|error| Self::codec_repair_error(&provenance.plugin_id, error))?;
         let ArtifactCodecOutput::Encode {
             interface_version,
             source,
             compatibility,
         } = output
         else {
-            return Err(codec_operation_error("encode", &output).into());
+            return Err(Self::codec_repair_error(
+                &provenance.plugin_id,
+                codec_operation_error("encode", &output),
+            ));
         };
-        validate_codec_interface(&interface_version)?;
-        validate_codec_compatibility(&compatibility)?;
-        let source = BASE64
-            .decode(source)
-            .map_err(|source| ArtifactCodecError::InvalidBase64 {
-                field: "encoded source",
-                source,
-            })?;
+        validate_codec_interface(&interface_version)
+            .map_err(|error| Self::codec_repair_error(&provenance.plugin_id, error))?;
+        validate_codec_compatibility(&compatibility)
+            .map_err(|error| Self::codec_repair_error(&provenance.plugin_id, error))?;
+        let source = BASE64.decode(source).map_err(|source| {
+            Self::codec_repair_error(
+                &provenance.plugin_id,
+                ArtifactCodecError::InvalidBase64 {
+                    field: "encoded source",
+                    source,
+                },
+            )
+        })?;
         if source.len() > MAX_CODEC_SOURCE_BYTES {
-            return Err(ArtifactCodecError::EncodedSourceSize {
-                actual: source.len(),
-                limit: MAX_CODEC_SOURCE_BYTES,
-            }
-            .into());
+            return Err(Self::codec_repair_error(
+                &provenance.plugin_id,
+                ArtifactCodecError::EncodedSourceSize {
+                    actual: source.len(),
+                    limit: MAX_CODEC_SOURCE_BYTES,
+                },
+            ));
         }
         Ok(source)
     }
@@ -1504,7 +1541,11 @@ impl StcliEngine {
                     Some((codec_bundle, provenance)) => {
                         store.import_artifact_from_codec(&source, &codec_bundle, &provenance)?
                     }
-                    None => store.import_artifact_bundle(&source)?,
+                    None => store.import_artifact_bundle(&source).map_err(|source| {
+                        EngineError::ArtifactCodecUnavailable {
+                            source: Box::new(source),
+                        }
+                    })?,
                 };
                 Ok(EngineResult::ArtifactBundle {
                     primary: bundle.primary,
@@ -2629,6 +2670,14 @@ pub enum EngineError {
     Artifact(#[from] ArtifactError),
     #[error(transparent)]
     ArtifactCodec(#[from] ArtifactCodecError),
+    #[error(
+        "no Artifact codec accepted the source and the canonical JSON bootstrap failed: {source}; run `stcli plugin restore-defaults` to repair bundled format support"
+    )]
+    ArtifactCodecUnavailable { source: Box<ArtifactError> },
+    #[error(
+        "Artifact codec Plugin '{id}' cannot run: {reason}; reinstall its exact version and digest, or run `stcli plugin restore-defaults` for bundled codecs"
+    )]
+    ArtifactCodecRepairRequired { id: String, reason: String },
     #[error(transparent)]
     State(#[from] StateError),
     #[error(transparent)]

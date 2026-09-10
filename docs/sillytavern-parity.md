@@ -41,14 +41,14 @@ The percentage counts fully implemented features (✅) against all tracked Silly
 
 | Feature / Format | Status | Remarks & Implementation Seam |
 | :--- | :---: | :--- |
-| **Character Card V1 JSON** | ✅ | Full import and export in [`crates/stcli-core/src/artifact.rs`](../crates/stcli-core/src/artifact.rs). |
-| **Character Card V2 JSON** | ✅ | Exact data model. Untouched content is re-exported byte for byte. |
-| **Character Card V3 (CCv3) JSON** | ✅ | Full import and export in [`crates/stcli-core/src/artifact.rs`](../crates/stcli-core/src/artifact.rs). |
-| **Character Book V2 (embedded)** | ✅ | The embedded lorebook is extracted and activated by the lore engine. |
-| **Standalone Lorebook JSON** | ✅ | The SillyTavern 1.18 format is imported as a versioned, immutable revision. |
-| **PNG / APNG image cards** | ✅ | `tEXt` and `iTXt` chunks are parsed. The image is stored as the avatar in the asset store. |
-| **WebP image cards** | ✅ | EXIF and XMP chunks are parsed for V2 and V3 cards. The image is stored as the avatar. |
-| **CHARX archive containers** | ✅ | Multi-file V3 archives with bundled assets and lorebooks. Asset references are validated on import. |
+| **Character Card V1 JSON** | ✅ | Imported and exported by the bundled `org.stcli.sillytavern-codec` Wasm Plugin. |
+| **Character Card V2 JSON** | ✅ | Exact data model through the bundled codec; untouched content exports byte for byte. |
+| **Character Card V3 (CCv3) JSON** | ✅ | Imported and exported through the bundled codec with Core validation. |
+| **Character Book V2 (embedded)** | ✅ | The bundled codec extracts it as a supplementary Artifact for the lore engine. |
+| **Standalone Lorebook JSON** | ✅ | The bundled codec imports it as a versioned, immutable revision. |
+| **PNG / APNG image cards** | ✅ | The bundled codec parses `tEXt` and `iTXt`; Core stores the image in the asset store. |
+| **WebP image cards** | ✅ | The bundled codec parses EXIF and XMP metadata for V2 and V3 cards. |
+| **CHARX archive containers** | ✅ | The bundled codec parses multi-file V3 archives; Core validates paths, assets, and atomic persistence. |
 | **Duplicate JSON keys** | 🛑 | Rejected on import with a path-aware validation error. |
 
 ## 2. Prompt building and presets
@@ -162,7 +162,7 @@ SillyTavern ships these bundled extensions. Each row is one of them.
 | **SillyTavern JS UI extensions** | ⚠️ | Headless Extensions run through sandboxed `st-bridge` QuickJS contexts. Browser APIs remain bounded, warned stubs; `$.ajax` uses the broker. Packages with declared interaction surfaces expose native TUI forms and actions. Summarize has a supported workflow; Stepped Thinking and Roadway demonstrate controlled fixtures, not full upstream compatibility. Arbitrary browser UI and graphical terminal rendering remain unsupported. See [workflow support evidence](plugins.md#declared-interaction-surfaces). |
 | **Extension settings and `localStorage`** | ✅ | The `st-bridge` maps `extension_settings[id]` to `local:extension.<id>.settings` and `localStorage[key]` to `local:extension.<id>.ls.<key>`. `saveSettingsDebounced()` writes through synchronously. Values persist across turns and disable/re-enable, and each Extension can access only its own namespace. |
 | **Server plugins** | 🛑 | An MVP non-goal. Trusted sidecars planned for **v1.x**. |
-| **External Wasm codecs** | ❌ | An extensible artifact-parsing interface planned for **v0.2**. |
+| **External Wasm codecs** | ✅ | Bundled, offline, digest-pinned codecs own supported external Artifact formats at the bounded Engine hook; Core validates flat proposals. |
 
 ---
 

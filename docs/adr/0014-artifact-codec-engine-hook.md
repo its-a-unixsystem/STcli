@@ -21,7 +21,7 @@ Import has two codec operations:
 
 Core independently decodes and validates the proposed Artifact kind and JSON, checks the format, hashes, asset media, logical paths, duplicate paths, counts, individual sizes, total size, and embedded CCv3 asset references. Core then writes the Artifact Revision, assets, references, and codec provenance in one SQLite transaction, with external asset cleanup if the transaction fails. A rejected proposal persists nothing.
 
-Export loads the recorded codec provenance and invokes the exact Plugin ID, semantic version, and component digest with an `encode` operation. Ordinary Artifact reads use the stored flat payload and never execute the codec. Built-in Core import and export remain the fallback for Artifacts without codec provenance and for import sources above the codec limit.
+Export loads the recorded codec provenance and invokes the exact Plugin ID, semantic version, and component digest with an `encode` operation. Ordinary Artifact reads use the stored flat payload and never execute the codec. Core retains only a canonical JSON bootstrap for recovery when codec packages are unavailable; external image and archive formats never fall back to native parsers.
 
 A codec registration is valid only when the Plugin:
 
@@ -37,5 +37,5 @@ The Wasmtime linker provides no WASI or host imports. Codec inputs contain no Se
 - Format parsers can ship independently without expanding Core's trusted parser set.
 - The bundled `plugins/ccv3-codec` package implements all SillyTavern Artifact formats currently supported by Core and is materialized through the default-package lifecycle.
 - Stored provenance makes codec selection deterministic and inspectable without executing code during ordinary reads.
-- Export of a codec-originated Artifact requires the exact recorded component to remain installed. Removing or changing the active registration does not silently select another encoder.
+- Export of a codec-originated Artifact requires the exact recorded component to remain installed. Removing a package still required by provenance is refused; missing or incompatible bundled support reports `plugin restore-defaults` repair guidance rather than selecting another owner.
 - The v1 protocol uses base64 JSON, which copies data. Strict source, bundle, and host-memory limits make that cost explicit. A future binary interface requires a new interface version.

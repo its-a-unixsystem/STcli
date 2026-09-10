@@ -173,16 +173,84 @@ fn lorebook() -> Vec<u8> {
     br#"{"entries":{"0":{"key":["harbor"],"content":"A quiet harbor."}}}"#.to_vec()
 }
 
+fn expected_flat_bundle(source: &[u8], format: &str) -> (Vec<u8>, usize, usize) {
+    match format {
+        "json" => (source.to_vec(), 0, 0),
+        "png" | "apng" => (character_card_v3(), 0, 1),
+        "webp"
+            if source == include_bytes!("fixtures/artifacts/card-v2-exif.webp").as_slice() =>
+        {
+            (
+                br#"{"spec":"chara_card_v2","spec_version":"2.0","data":{"name":"iTXt V2","first_mes":"Hello iTXt"}}"#.to_vec(),
+                0,
+                1,
+            )
+        }
+        "webp"
+            if source == include_bytes!("fixtures/artifacts/card-v3-xmp.webp").as_slice() =>
+        {
+            (
+                br#"{"spec":"chara_card_v3","spec_version":"3.0","data":{"name":"PNG V3","first_mes":"Hello V3"}}"#.to_vec(),
+                0,
+                1,
+            )
+        }
+        "charx" => {
+            let mut archive = ZipArchive::new(Cursor::new(source)).unwrap();
+            let mut payload = Vec::new();
+            archive
+                .by_name("card.json")
+                .unwrap()
+                .read_to_end(&mut payload)
+                .unwrap();
+            let file_lorebooks = (0..archive.len())
+                .filter(|index| {
+                    archive
+                        .by_index(*index)
+                        .unwrap()
+                        .name()
+                        .starts_with("lorebooks/")
+                })
+                .count();
+            let assets = (0..archive.len())
+                .filter(|index| {
+                    archive
+                        .by_index(*index)
+                        .unwrap()
+                        .name()
+                        .starts_with("assets/")
+                })
+                .count();
+            let embedded = usize::from(
+                serde_json::from_slice::<Value>(&payload)
+                    .unwrap()
+                    .pointer("/data/character_book")
+                    .is_some(),
+            );
+            (payload, file_lorebooks + embedded, assets)
+        }
+        _ => panic!("missing expected flat bundle for {format}"),
+    }
+}
+
 async fn assert_codec_parity(
     source: Vec<u8>,
     expected_format: &str,
     exact_export: bool,
 ) -> Vec<u8> {
-    let native_directory = tempdir().unwrap();
-    let native = Store::open(native_directory.path().join("native.sqlite3"))
-        .unwrap()
-        .import_artifact_bundle(&source)
-        .unwrap();
+    let (expected_payload, expected_supplementary, expected_assets) =
+        expected_flat_bundle(&source, expected_format);
+    let expected = stcli_core::decode_artifact(&expected_payload).unwrap();
+    let expected_source_format = match expected_format {
+        "png" | "apng" => "png",
+        "webp" => "webp",
+        _ => "json",
+    };
+    let revision_source = if expected_format == "charx" {
+        expected_payload.as_slice()
+    } else {
+        source.as_slice()
+    };
 
     let codec_directory = tempdir().unwrap();
     let database = codec_directory.path().join("codec.sqlite3");
@@ -203,26 +271,29 @@ async fn assert_codec_parity(
     else {
         panic!("unexpected import result");
     };
-    assert_eq!(primary.revision_hash, native.primary.revision_hash);
-    assert_eq!(primary.kind, native.primary.kind);
-    assert_eq!(primary.source_format, native.primary.source_format);
-    assert_eq!(primary.semantic_hash, native.primary.semantic_hash);
-    assert_eq!(primary.source_blob_hash, native.primary.source_blob_hash);
+    assert_eq!(primary.kind, expected.kind);
+    assert_eq!(primary.source_format, expected_source_format);
     assert_eq!(
-        supplementary_artifacts.len(),
-        native.supplementary_artifacts.len()
+        primary.revision_hash,
+        stcli_core::identity::artifact_revision_hash(
+            expected.kind.as_str(),
+            expected_source_format,
+            revision_source,
+        )
     );
-    for (actual, expected) in supplementary_artifacts
-        .iter()
-        .zip(&native.supplementary_artifacts)
-    {
-        assert_eq!(actual.revision_hash, expected.revision_hash);
-        assert_eq!(actual.kind, expected.kind);
-        assert_eq!(actual.source_format, expected.source_format);
-        assert_eq!(actual.semantic_hash, expected.semantic_hash);
-        assert_eq!(actual.source_blob_hash, expected.source_blob_hash);
-    }
-    assert_eq!(asset_count, native.asset_count);
+    assert_eq!(
+        primary.semantic_hash,
+        stcli_core::artifact_semantic_hash(&expected.semantic).unwrap()
+    );
+    assert_eq!(
+        primary.source_blob_hash,
+        stcli_core::content_blob_hash(&expected_payload)
+    );
+    assert_eq!(supplementary_artifacts.len(), expected_supplementary);
+    assert!(supplementary_artifacts.iter().all(
+        |artifact| artifact.kind == ArtifactKind::Lorebook && artifact.source_format == "json"
+    ));
+    assert_eq!(asset_count, expected_assets);
     let EngineInspection::ArtifactCodecProvenance(Some(provenance)) = engine
         .inspect(EngineQuery::ArtifactCodecProvenance {
             revision_hash: primary.revision_hash.clone(),
@@ -513,19 +584,24 @@ async fn wasm_codec_imports_and_exports_ccv3_with_recorded_provenance() {
 }
 
 #[tokio::test]
-async fn import_keeps_core_fallbacks_without_a_codec_and_above_the_codec_limit() {
+async fn core_bootstraps_json_but_requires_the_bundled_codec_for_external_containers() {
+    // Regression test for issue #130: migrated formats must not fall back to native Core parsers.
     let directory = tempdir().unwrap();
     let database = directory.path().join("stcli.sqlite3");
-    let source = preset(0);
     let engine = StcliEngine::new(&database);
 
-    let EngineResult::ArtifactBundle { primary, .. } = engine
+    engine
         .execute(
-            EngineCommand::ImportArtifact {
-                source: source.clone(),
+            EngineCommand::RemovePlugin {
+                plugin_id: "org.stcli.sillytavern-codec".to_owned(),
             },
             |_| {},
         )
+        .await
+        .unwrap();
+
+    let EngineResult::ArtifactBundle { primary, .. } = engine
+        .execute(EngineCommand::ImportArtifact { source: preset(0) }, |_| {})
         .await
         .unwrap()
     else {
@@ -533,10 +609,27 @@ async fn import_keeps_core_fallbacks_without_a_codec_and_above_the_codec_limit()
     };
     assert_eq!(primary.kind, ArtifactKind::ChatCompletionPreset);
 
-    install_and_register(&engine, &codec_directory()).await;
-    let oversized = preset(2 * 1024 * 1024);
+    let error = engine
+        .execute(
+            EngineCommand::ImportArtifact {
+                source: png_card(false),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("plugin restore-defaults"),
+        "expected an actionable codec repair diagnostic, got: {error}"
+    );
+
     let EngineResult::ArtifactBundle { primary, .. } = engine
-        .execute(EngineCommand::ImportArtifact { source: oversized }, |_| {})
+        .execute(
+            EngineCommand::ImportArtifact {
+                source: preset(2 * 1024 * 1024),
+            },
+            |_| {},
+        )
         .await
         .unwrap()
     else {
