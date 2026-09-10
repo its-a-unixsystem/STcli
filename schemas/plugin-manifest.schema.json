@@ -88,6 +88,25 @@
         ]
       }
     },
+    "artifact_codec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["interface_versions", "formats"],
+      "properties": {
+        "interface_versions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "formats": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "before": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
     "after": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
     "generate_interceptor": { "type": "string", "minLength": 1 },

@@ -34,12 +34,16 @@ use crate::{
 
 pub const DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID: &str = "org.stcli.nemo-directives";
 pub const DEFAULT_MEMORY_EXTENSION_ID: &str = "memory";
+pub const DEFAULT_SILLYTAVERN_CODEC_PLUGIN_ID: &str = "org.stcli.sillytavern-codec";
 const NEMO_PLUGIN_MANIFEST: &str = include_str!("../../../plugins/nemo-directives/manifest.json");
 const NEMO_PLUGIN_SCRIPT: &str = include_str!("../../../plugins/nemo-directives/script.js");
 const MEMORY_EXTENSION_MANIFEST: &str = include_str!("../../../extensions/memory/manifest.json");
 const MEMORY_EXTENSION_SCRIPT: &str = include_str!("../../../extensions/memory/index.js");
 const MEMORY_EXTENSION_SETTINGS_SCHEMA: &str =
     include_str!("../../../extensions/memory/settings.schema.json");
+const SILLYTAVERN_CODEC_MANIFEST: &str = include_str!("../../../plugins/ccv3-codec/manifest.json");
+const SILLYTAVERN_CODEC_COMPONENT: &[u8] =
+    include_bytes!("../../../plugins/ccv3-codec/component.wasm");
 
 fn validate_codec_interface(actual: &str) -> Result<(), ArtifactCodecError> {
     if actual != ARTIFACT_CODEC_INTERFACE_VERSION {
@@ -94,17 +98,17 @@ struct DefaultPackage {
     id: &'static str,
     manifest: &'static str,
     component_name: &'static str,
-    component: &'static str,
+    component: &'static [u8],
     settings_schema: Option<&'static str>,
     artifact_inspector: bool,
 }
 
-const DEFAULT_PACKAGES: [DefaultPackage; 2] = [
+const DEFAULT_PACKAGES: [DefaultPackage; 3] = [
     DefaultPackage {
         id: DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID,
         manifest: NEMO_PLUGIN_MANIFEST,
         component_name: "script.js",
-        component: NEMO_PLUGIN_SCRIPT,
+        component: NEMO_PLUGIN_SCRIPT.as_bytes(),
         settings_schema: None,
         artifact_inspector: true,
     },
@@ -112,9 +116,17 @@ const DEFAULT_PACKAGES: [DefaultPackage; 2] = [
         id: DEFAULT_MEMORY_EXTENSION_ID,
         manifest: MEMORY_EXTENSION_MANIFEST,
         component_name: "index.js",
-        component: MEMORY_EXTENSION_SCRIPT,
+        component: MEMORY_EXTENSION_SCRIPT.as_bytes(),
         settings_schema: Some(MEMORY_EXTENSION_SETTINGS_SCHEMA),
         artifact_inspector: false,
+    },
+    DefaultPackage {
+        id: DEFAULT_SILLYTAVERN_CODEC_PLUGIN_ID,
+        manifest: SILLYTAVERN_CODEC_MANIFEST,
+        component_name: "component.wasm",
+        component: SILLYTAVERN_CODEC_COMPONENT,
+        settings_schema: None,
+        artifact_inspector: true,
     },
 ];
 
@@ -208,7 +220,7 @@ impl StcliEngine {
                     id: manifest.id.clone(),
                     version: manifest.version.clone(),
                     component_sha256: manifest.component_sha256.clone(),
-                    capabilities: [PluginCapability::InspectArtifact].into_iter().collect(),
+                    capabilities: manifest.requested_capabilities.clone(),
                 });
             let registered = match &registration {
                 Some(registration) => {
@@ -233,7 +245,7 @@ impl StcliEngine {
                 source,
             })?;
             for (path, content) in [
-                (root.join("manifest.json"), package.manifest),
+                (root.join("manifest.json"), package.manifest.as_bytes()),
                 (root.join(package.component_name), package.component),
             ] {
                 fs::write(&path, content).map_err(|source| PluginError::Write { path, source })?;
@@ -298,6 +310,16 @@ impl StcliEngine {
             || !installed.manifest.commands.is_empty()
             || !installed.manifest.macros.is_empty()
             || installed.manifest.settings_schema.is_some()
+            || installed
+                .manifest
+                .artifact_codec
+                .as_ref()
+                .is_none_or(|codec| {
+                    codec.formats.is_empty()
+                        || !codec
+                            .interface_versions
+                            .contains(ARTIFACT_CODEC_INTERFACE_VERSION)
+                })
         {
             return Err(ArtifactCodecError::InvalidPluginContract(id.to_owned()).into());
         }
@@ -361,6 +383,7 @@ impl StcliEngine {
             return Ok(None);
         }
         let encoded = BASE64.encode(source);
+        let mut claims = Vec::new();
         for registration in store
             .artifact_inspectors()?
             .into_iter()
@@ -387,54 +410,73 @@ impl StcliEngine {
             let ArtifactCodecOutput::Detect {
                 interface_version,
                 compatible,
-                mut compatibility,
+                compatibility,
             } = detection
             else {
                 return Err(codec_operation_error("detect", &detection).into());
             };
             validate_codec_interface(&interface_version)?;
             validate_codec_compatibility(&compatibility)?;
-            if !compatible {
-                continue;
+            if compatible {
+                claims.push((installed, grant, compatibility));
             }
-            let decoded = self.execute_artifact_codec(
-                &installed,
-                &grant,
-                ArtifactCodecInput::Decode {
-                    interface_version: ARTIFACT_CODEC_INTERFACE_VERSION.to_owned(),
-                    source: encoded.clone(),
-                },
-            )?;
-            let ArtifactCodecOutput::Decode {
-                interface_version,
-                format,
-                bundle,
-                compatibility: decoded_compatibility,
-            } = decoded
-            else {
-                return Err(codec_operation_error("decode", &decoded).into());
-            };
-            validate_codec_interface(&interface_version)?;
-            validate_codec_compatibility(&decoded_compatibility)?;
-            if compatibility.len() + decoded_compatibility.len() > MAX_CODEC_COMPATIBILITY_ITEMS {
-                return Err(ArtifactCodecError::CompatibilityCount {
-                    actual: compatibility.len() + decoded_compatibility.len(),
-                    limit: MAX_CODEC_COMPATIBILITY_ITEMS,
-                }
-                .into());
-            }
-            compatibility.extend(decoded_compatibility);
-            let provenance = ArtifactCodecProvenance {
-                plugin_id: installed.manifest.id,
-                version: installed.manifest.version,
-                component_sha256: installed.manifest.component_sha256,
-                interface_version,
-                format,
-                compatibility,
-            };
-            return Ok(Some((bundle, provenance)));
         }
-        Ok(None)
+        if claims.len() > 1 {
+            let mut ids = claims
+                .iter()
+                .map(|(installed, _, _)| installed.manifest.id.clone())
+                .collect::<Vec<_>>();
+            ids.sort();
+            return Err(ArtifactCodecError::AmbiguousFormatClaims(ids).into());
+        }
+        let Some((installed, grant, mut compatibility)) = claims.pop() else {
+            return Ok(None);
+        };
+        let decoded = self.execute_artifact_codec(
+            &installed,
+            &grant,
+            ArtifactCodecInput::Decode {
+                interface_version: ARTIFACT_CODEC_INTERFACE_VERSION.to_owned(),
+                source: encoded,
+            },
+        )?;
+        let ArtifactCodecOutput::Decode {
+            interface_version,
+            format,
+            bundle,
+            compatibility: decoded_compatibility,
+        } = decoded
+        else {
+            return Err(codec_operation_error("decode", &decoded).into());
+        };
+        validate_codec_interface(&interface_version)?;
+        validate_codec_compatibility(&decoded_compatibility)?;
+        if !installed
+            .manifest
+            .artifact_codec
+            .as_ref()
+            .is_some_and(|codec| codec.formats.contains(&format))
+        {
+            return Err(ArtifactCodecError::InvalidFormat(format).into());
+        }
+        if compatibility.len() + decoded_compatibility.len() > MAX_CODEC_COMPATIBILITY_ITEMS {
+            return Err(ArtifactCodecError::CompatibilityCount {
+                actual: compatibility.len() + decoded_compatibility.len(),
+                limit: MAX_CODEC_COMPATIBILITY_ITEMS,
+            }
+            .into());
+        }
+        compatibility.extend(decoded_compatibility);
+        let provenance = ArtifactCodecProvenance {
+            plugin_id: installed.manifest.id,
+            version: installed.manifest.version,
+            component_sha256: installed.manifest.component_sha256,
+            interface_version,
+            format,
+            compatibility,
+            supplementary_artifacts: Vec::new(),
+        };
+        Ok(Some((bundle, provenance)))
     }
 
     fn export_artifact_with_codec(
@@ -457,13 +499,14 @@ impl StcliEngine {
             &provenance.component_sha256,
             &capabilities,
         )?;
+        let bundle = store.artifact_codec_bundle(revision_hash, &provenance)?;
         let output = self.execute_artifact_codec(
             &installed,
             &grant,
             ArtifactCodecInput::Encode {
                 interface_version: ARTIFACT_CODEC_INTERFACE_VERSION.to_owned(),
                 format: provenance.format,
-                bundle: store.artifact_codec_bundle(revision_hash)?,
+                bundle,
             },
         )?;
         let ArtifactCodecOutput::Encode {
@@ -1221,7 +1264,7 @@ impl StcliEngine {
                             id: installed.manifest.id.clone(),
                             version: installed.manifest.version.clone(),
                             component_sha256: installed.manifest.component_sha256.clone(),
-                            capabilities: [PluginCapability::InspectArtifact].into_iter().collect(),
+                            capabilities: installed.manifest.requested_capabilities.clone(),
                         })?;
                     }
                 }
@@ -1286,7 +1329,9 @@ impl StcliEngine {
                 Ok(EngineResult::InstalledPlugin(installed))
             }
             EngineCommand::RemovePlugin { plugin_id } => {
-                if store.plugin_in_use(&plugin_id)? {
+                if store.plugin_in_use(&plugin_id)?
+                    || store.artifact_codec_plugin_in_use(&plugin_id)?
+                {
                     return Err(EngineError::PluginInUse(plugin_id));
                 }
                 store.unregister_artifact_inspector(&plugin_id)?;
@@ -1457,7 +1502,7 @@ impl StcliEngine {
             EngineCommand::ImportArtifact { source } => {
                 let bundle = match self.decode_artifact_with_codec(&store, &source)? {
                     Some((codec_bundle, provenance)) => {
-                        store.import_artifact_from_codec(&codec_bundle, &provenance)?
+                        store.import_artifact_from_codec(&source, &codec_bundle, &provenance)?
                     }
                     None => store.import_artifact_bundle(&source)?,
                 };

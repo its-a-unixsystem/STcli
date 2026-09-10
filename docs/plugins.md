@@ -72,11 +72,13 @@ This path is read-only. The host rejects prompt contributions, state writes, abo
 
 ### Decode and encode an external Artifact format
 
-An Artifact codec is a restricted Wasm Artifact inspector with the versioned `stcli.artifact-codec/v1` protocol. During `EngineCommand::ImportArtifact`, the engine sends sources up to 2 MiB through `detect`, then asks the first compatible codec to `decode` a flat Artifact payload and assets. Each proposed byte sequence carries a size and SHA-256. Core recomputes those values, validates the Artifact kind, JSON, assets, logical paths, counts, and limits, and owns the atomic transaction.
+An Artifact codec is a restricted Wasm Artifact inspector with the versioned `stcli.artifact-codec/v1` protocol. During `EngineCommand::ImportArtifact`, the engine sends sources up to 2 MiB through `detect`. It rejects ambiguous sources claimed by multiple codecs and asks the sole compatible codec to `decode` a flat Artifact payload, supplementary Artifacts, and assets. Each proposed byte sequence carries a size and SHA-256. Core recomputes those values, validates the Artifact kinds, JSON, assets, logical paths, counts, and limits, and owns the atomic transaction.
 
-Codec Plugins must request and register exactly `artifact-codec` and `inspect-artifact`, subscribe only to `inspect-artifact`, and declare no settings, commands, macros, or prompt slots. Script and `st-bridge` runtimes are rejected. The Wasm linker has no WASI imports, and codec input contains no Session or live-effect handles.
+Codec Plugins must request and register exactly `artifact-codec` and `inspect-artifact`, subscribe only to `inspect-artifact`, declare supported interface versions and formats in `artifact_codec`, and declare no settings, commands, macros, or prompt slots. Script and `st-bridge` runtimes are rejected. The Wasm linker has no WASI imports, and codec input contains no Session or live-effect handles.
 
-Import records the exact Plugin ID, semantic version, component digest, interface version, external format, and compatibility items. `EngineQuery::ArtifactSource` uses that pin for `encode`; ordinary Artifact reads use the stored flat payload without running the codec. If no codec accepts an import, or the source exceeds 2 MiB, Core uses its built-in path. See the [Artifact codec reference](artifacts.md) for the complete contract and bounds.
+STcli materializes the embedded `org.stcli.sillytavern-codec` package offline and registers it automatically. It supports Character Card V1/V2/V3 JSON, PNG/APNG/WebP cards, CHARX archives, Lorebooks, and Chat Completion presets. Removal writes a persistent opt-out marker; `plugin restore-defaults` clears the marker and repairs the package. Embedded updates install a new content-addressed version and registration without rewriting existing Artifact provenance or Session Plugin Pins.
+
+Import records the exact Plugin ID, semantic version, component digest, interface version, external format, supplementary revisions, and compatibility items. `EngineQuery::ArtifactSource` uses that pin for `encode`; ordinary Artifact reads use the stored flat payload without running the codec. If no codec accepts an import, or the source exceeds 2 MiB, Core uses its built-in path. See the [Artifact codec reference](artifacts.md) for the complete contract and bounds.
 
 ## Choose a runtime
 

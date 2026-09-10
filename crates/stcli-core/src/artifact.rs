@@ -19,10 +19,11 @@ use thiserror::Error;
 
 use crate::{
     ArtifactCodecAsset, ArtifactCodecBundle, ArtifactCodecError, ArtifactCodecProvenance,
-    ContentHash, Store,
+    ArtifactCodecSupplementary, ArtifactCodecSupplementaryProvenance, ContentHash, Store,
     artifact_codec::{
         MAX_CODEC_ASSET_BYTES, MAX_CODEC_ASSETS, MAX_CODEC_LOGICAL_PATH_BYTES,
-        MAX_CODEC_PAYLOAD_BYTES, MAX_CODEC_TOTAL_ASSET_BYTES,
+        MAX_CODEC_PAYLOAD_BYTES, MAX_CODEC_SUPPLEMENTARY_ARTIFACTS, MAX_CODEC_TOTAL_ASSET_BYTES,
+        MAX_CODEC_TOTAL_SUPPLEMENTARY_BYTES,
     },
     identity::{artifact_revision_hash, canonical_json_hash, hash_parts},
     storage::{StorageError, append_event},
@@ -319,20 +320,33 @@ impl Store {
 
     pub fn import_artifact_from_codec(
         &mut self,
+        source: &[u8],
         bundle: &ArtifactCodecBundle,
         provenance: &ArtifactCodecProvenance,
     ) -> Result<ArtifactBundle, ArtifactCodecError> {
         validate_codec_format(&bundle.source_format)?;
-        if bundle.source_format != "json" {
+        validate_codec_format(&provenance.format)?;
+        let expected_source_format = match provenance.format.as_str() {
+            "json" | "charx" => Some("json"),
+            "png" | "apng" => Some("png"),
+            "webp" => Some("webp"),
+            _ => None,
+        };
+        if expected_source_format.is_some_and(|expected| bundle.source_format != expected) {
             return Err(ArtifactCodecError::InvalidFormat(
                 bundle.source_format.clone(),
             ));
         }
-        validate_codec_format(&provenance.format)?;
         if bundle.assets.len() > MAX_CODEC_ASSETS {
             return Err(ArtifactCodecError::AssetCount {
                 actual: bundle.assets.len(),
                 limit: MAX_CODEC_ASSETS,
+            });
+        }
+        if bundle.supplementary_artifacts.len() > MAX_CODEC_SUPPLEMENTARY_ARTIFACTS {
+            return Err(ArtifactCodecError::SupplementaryArtifactCount {
+                actual: bundle.supplementary_artifacts.len(),
+                limit: MAX_CODEC_SUPPLEMENTARY_ARTIFACTS,
             });
         }
         let payload =
@@ -413,14 +427,113 @@ impl Store {
         if provenance.format == "charx" {
             validate_embedded_asset_references(&decoded, &paths)?;
         }
+        let mut supplementary_paths = HashSet::with_capacity(bundle.supplementary_artifacts.len());
+        let mut decoded_supplementary = Vec::with_capacity(bundle.supplementary_artifacts.len());
+        let mut total_supplementary_bytes = 0usize;
+        for supplementary in &bundle.supplementary_artifacts {
+            validate_codec_logical_path(&supplementary.logical_path)?;
+            if !supplementary_paths.insert(supplementary.logical_path.as_str())
+                || paths.contains(supplementary.logical_path.as_str())
+            {
+                return Err(ArtifactCodecError::DuplicateLogicalPath(
+                    supplementary.logical_path.clone(),
+                ));
+            }
+            if supplementary.source_format != "json" {
+                return Err(ArtifactCodecError::InvalidFormat(
+                    supplementary.source_format.clone(),
+                ));
+            }
+            let bytes = BASE64.decode(&supplementary.payload).map_err(|source| {
+                ArtifactCodecError::InvalidBase64 {
+                    field: "supplementary artifact",
+                    source,
+                }
+            })?;
+            if bytes.len() > MAX_CODEC_PAYLOAD_BYTES {
+                return Err(ArtifactCodecError::PayloadSize {
+                    actual: bytes.len(),
+                    limit: MAX_CODEC_PAYLOAD_BYTES,
+                });
+            }
+            if bytes.len() != supplementary.byte_size {
+                return Err(ArtifactCodecError::ByteSizeMismatch {
+                    path: supplementary.logical_path.clone(),
+                    proposed: supplementary.byte_size,
+                    actual: bytes.len(),
+                });
+            }
+            if ContentHash::new(Sha256::digest(&bytes).into()) != supplementary.payload_sha256 {
+                return Err(ArtifactCodecError::HashMismatch {
+                    field: "supplementary artifact",
+                });
+            }
+            total_supplementary_bytes = total_supplementary_bytes.checked_add(bytes.len()).ok_or(
+                ArtifactCodecError::TotalSupplementarySize {
+                    actual: usize::MAX,
+                    limit: MAX_CODEC_TOTAL_SUPPLEMENTARY_BYTES,
+                },
+            )?;
+            if total_supplementary_bytes > MAX_CODEC_TOTAL_SUPPLEMENTARY_BYTES {
+                return Err(ArtifactCodecError::TotalSupplementarySize {
+                    actual: total_supplementary_bytes,
+                    limit: MAX_CODEC_TOTAL_SUPPLEMENTARY_BYTES,
+                });
+            }
+            let decoded = decode_artifact_payload(&bytes)?;
+            if decoded.kind != supplementary.artifact_kind {
+                return Err(ArtifactCodecError::ArtifactKindMismatch {
+                    proposed: supplementary.artifact_kind,
+                    actual: decoded.kind,
+                });
+            }
+            if provenance.format == "charx" {
+                validate_lorebook(&decoded)?;
+            }
+            decoded_supplementary.push((
+                supplementary.logical_path.clone(),
+                supplementary.source_format.clone(),
+                bytes,
+                decoded,
+            ));
+        }
+        if provenance.format == "charx" {
+            let embedded_payload = decoded
+                .semantic
+                .get("data")
+                .and_then(|data| data.get("character_book"))
+                .map(serde_json::to_vec)
+                .transpose()
+                .map_err(ArtifactError::Canonicalize)?;
+            let claimed = bundle
+                .supplementary_artifacts
+                .iter()
+                .enumerate()
+                .filter(|(_, supplementary)| supplementary.embedded)
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            match (embedded_payload, claimed.as_slice()) {
+                (Some(embedded), [index]) if decoded_supplementary[*index].2 == embedded => {}
+                (None, []) => {}
+                _ => return Err(ArtifactCodecError::InvalidEmbeddedSupplementary),
+            }
+        }
         let assets_root = self.assets_root().to_owned();
         let transaction = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(StorageError::Sqlite)
             .map_err(ArtifactError::Storage)?;
-        let revision_hash =
-            artifact_revision_hash(decoded.kind.as_str(), &bundle.source_format, &payload);
+        let revision_source = if provenance.format == "charx" {
+            payload.as_slice()
+        } else {
+            source
+        };
+        let revision_hash = artifact_revision_hash(
+            decoded.kind.as_str(),
+            &bundle.source_format,
+            revision_source,
+        );
         let revision_exists = transaction
             .query_row(
                 "SELECT 1 FROM artifact_revisions WHERE revision_hash = ?1",
@@ -438,11 +551,17 @@ impl Store {
         let result: Result<ArtifactBundle, ArtifactError> = (|| {
             let primary = insert_artifact_revision(
                 &transaction,
-                &payload,
+                revision_source,
                 &payload,
                 &decoded,
                 &bundle.source_format,
             )?;
+            let supplementary_artifacts = decoded_supplementary
+                .iter()
+                .map(|(_, source_format, bytes, decoded)| {
+                    insert_artifact_revision(&transaction, bytes, bytes, decoded, source_format)
+                })
+                .collect::<Result<Vec<_>, ArtifactError>>()?;
             for (logical_path, bytes) in &decoded_assets {
                 let hash = ContentHash::new(Sha256::digest(bytes).into());
                 if !Store::asset_file_exists(&assets_root, &hash) {
@@ -457,8 +576,21 @@ impl Store {
                     logical_path,
                 )?;
             }
+            let mut stored_provenance = provenance.clone();
+            stored_provenance.supplementary_artifacts = decoded_supplementary
+                .iter()
+                .zip(&supplementary_artifacts)
+                .zip(&bundle.supplementary_artifacts)
+                .map(|(((logical_path, _, _, _), record), proposed)| {
+                    ArtifactCodecSupplementaryProvenance {
+                        logical_path: logical_path.clone(),
+                        embedded: proposed.embedded,
+                        revision_hash: record.revision_hash.clone(),
+                    }
+                })
+                .collect();
             let provenance_body =
-                serde_json::to_vec(provenance).map_err(ArtifactError::Canonicalize)?;
+                serde_json::to_vec(&stored_provenance).map_err(ArtifactError::Canonicalize)?;
             transaction
                 .execute(
                     "INSERT OR IGNORE INTO artifact_codec_provenance(revision_hash, body) VALUES (?1, ?2)",
@@ -471,12 +603,12 @@ impl Store {
                 "artifact.codec-imported",
                 &serde_json::json!({
                     "revision_hash": primary.revision_hash,
-                    "provenance": provenance,
+                    "provenance": stored_provenance,
                 }),
             )?;
             Ok(ArtifactBundle {
                 primary,
-                supplementary_artifacts: Vec::new(),
+                supplementary_artifacts,
                 asset_count: decoded_assets.len(),
             })
         })();
@@ -514,10 +646,30 @@ impl Store {
             .transpose()
             .map_err(ArtifactError::Storage)
     }
+    pub fn artifact_codec_plugin_in_use(&self, id: &str) -> Result<bool, ArtifactError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT body FROM artifact_codec_provenance")
+            .map_err(StorageError::Sqlite)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))
+            .map_err(StorageError::Sqlite)?;
+        for row in rows {
+            let provenance = serde_json::from_slice::<ArtifactCodecProvenance>(
+                &row.map_err(StorageError::Sqlite)?,
+            )
+            .map_err(StorageError::Json)?;
+            if provenance.plugin_id == id {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 
     pub(crate) fn artifact_codec_bundle(
         &self,
         revision_hash: &ContentHash,
+        provenance: &ArtifactCodecProvenance,
     ) -> Result<ArtifactCodecBundle, ArtifactCodecError> {
         let artifact = self
             .artifact(revision_hash)?
@@ -540,12 +692,32 @@ impl Store {
             })
             .collect::<Result<Vec<_>, StorageError>>()
             .map_err(ArtifactError::Storage)?;
+        let supplementary_artifacts = provenance
+            .supplementary_artifacts
+            .iter()
+            .map(|supplementary| {
+                let artifact = self
+                    .artifact(&supplementary.revision_hash)?
+                    .ok_or_else(|| ArtifactError::NotFound(supplementary.revision_hash.clone()))?;
+                let payload = self.export_artifact(&supplementary.revision_hash)?;
+                Ok(ArtifactCodecSupplementary {
+                    logical_path: supplementary.logical_path.clone(),
+                    embedded: supplementary.embedded,
+                    artifact_kind: artifact.kind,
+                    source_format: artifact.source_format,
+                    byte_size: payload.len(),
+                    payload_sha256: ContentHash::new(Sha256::digest(&payload).into()),
+                    payload: BASE64.encode(payload),
+                })
+            })
+            .collect::<Result<Vec<_>, ArtifactError>>()?;
         Ok(ArtifactCodecBundle {
             artifact_kind: artifact.kind,
             source_format: artifact.source_format,
             payload_sha256: ContentHash::new(Sha256::digest(&payload).into()),
             payload: BASE64.encode(payload),
             assets,
+            supplementary_artifacts,
         })
     }
 

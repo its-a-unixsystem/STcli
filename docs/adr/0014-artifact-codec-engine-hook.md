@@ -35,7 +35,7 @@ The Wasmtime linker provides no WASI or host imports. Codec inputs contain no Se
 ## Consequences
 
 - Format parsers can ship independently without expanding Core's trusted parser set.
-- The separate `plugins/ccv3-codec` proof component demonstrates CCv3 CHARX detection, decode, and encode through the public Engine interface.
+- The bundled `plugins/ccv3-codec` package implements all SillyTavern Artifact formats currently supported by Core and is materialized through the default-package lifecycle.
 - Stored provenance makes codec selection deterministic and inspectable without executing code during ordinary reads.
 - Export of a codec-originated Artifact requires the exact recorded component to remain installed. Removing or changing the active registration does not silently select another encoder.
 - The v1 protocol uses base64 JSON, which copies data. Strict source, bundle, and host-memory limits make that cost explicit. A future binary interface requires a new interface version.

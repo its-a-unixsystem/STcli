@@ -6,6 +6,7 @@ use tempfile::tempdir;
 
 const NEMO_ID: &str = "org.stcli.nemo-directives";
 const MEMORY_ID: &str = "memory";
+const SILLYTAVERN_CODEC_ID: &str = "org.stcli.sillytavern-codec";
 
 #[test]
 fn default_packages_materialize_offline_and_idempotently() {
@@ -27,10 +28,33 @@ fn default_packages_materialize_offline_and_idempotently() {
         .iter()
         .find(|plugin| plugin.manifest.id == MEMORY_ID)
         .unwrap();
+    let codec = first
+        .iter()
+        .find(|plugin| plugin.manifest.id == SILLYTAVERN_CODEC_ID)
+        .unwrap();
     assert!(nemo.inspection_enabled);
     assert!(!memory.inspection_enabled);
+    assert!(codec.inspection_enabled);
     assert_eq!(nemo.manifest.version.to_string(), "1.0.0");
     assert_eq!(memory.manifest.version.to_string(), "1.1.0");
+    assert_eq!(codec.manifest.version.to_string(), "1.0.0");
+    let codec_declaration = codec.manifest.artifact_codec.as_ref().unwrap();
+    assert_eq!(
+        codec_declaration
+            .interface_versions
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["stcli.artifact-codec/v1"]
+    );
+    assert_eq!(
+        codec_declaration
+            .formats
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["apng", "charx", "json", "png", "webp"]
+    );
     assert_eq!(
         memory.manifest.settings_schema.as_deref(),
         Some("settings.schema.json")
@@ -42,7 +66,7 @@ fn default_packages_materialize_offline_and_idempotently() {
     else {
         panic!("unexpected inspection");
     };
-    for id in [NEMO_ID, MEMORY_ID] {
+    for id in [NEMO_ID, MEMORY_ID, SILLYTAVERN_CODEC_ID] {
         assert_eq!(
             second
                 .iter()
@@ -95,12 +119,69 @@ async fn removing_default_plugin_persists_until_explicit_reinstall() {
     else {
         panic!("unexpected inspection");
     };
+
     assert!(
         plugins
             .iter()
             .any(|plugin| plugin.manifest.id == NEMO_ID && plugin.inspection_enabled)
     );
     assert!(plugins.iter().any(|plugin| plugin.manifest.id == MEMORY_ID));
+}
+#[tokio::test]
+async fn removing_bundled_codec_persists_opt_out_until_restore_defaults() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let engine = StcliEngine::new(&database);
+    let EngineInspection::Plugins(plugins) = engine
+        .inspect(EngineQuery::Plugins { plugin_id: None })
+        .unwrap()
+    else {
+        panic!("unexpected inspection");
+    };
+    assert!(
+        plugins
+            .iter()
+            .any(|plugin| plugin.manifest.id == SILLYTAVERN_CODEC_ID)
+    );
+
+    engine
+        .execute(
+            EngineCommand::RemovePlugin {
+                plugin_id: SILLYTAVERN_CODEC_ID.to_owned(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        let EngineInspection::Plugins(plugins) = engine
+            .inspect(EngineQuery::Plugins { plugin_id: None })
+            .unwrap()
+        else {
+            panic!("unexpected inspection");
+        };
+        assert!(
+            plugins
+                .iter()
+                .all(|plugin| plugin.manifest.id != SILLYTAVERN_CODEC_ID)
+        );
+    }
+
+    engine
+        .execute(EngineCommand::RestoreDefaultPlugins, |_| {})
+        .await
+        .unwrap();
+    let EngineInspection::Plugins(plugins) = engine
+        .inspect(EngineQuery::Plugins { plugin_id: None })
+        .unwrap()
+    else {
+        panic!("unexpected inspection");
+    };
+    assert!(
+        plugins.iter().any(|plugin| {
+            plugin.manifest.id == SILLYTAVERN_CODEC_ID && plugin.inspection_enabled
+        })
+    );
 }
 
 #[tokio::test]

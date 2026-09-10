@@ -1,12 +1,12 @@
 {
   "schema": "stcli.plugin-manifest/v1",
-  "id": "org.stcli.ccv3-codec",
+  "id": "org.stcli.sillytavern-codec",
   "version": "1.0.0",
   "engine": ">=0.1.0, <0.2.0",
   "component": "component.wasm",
-  "component_sha256": "sha256:8743490d2f68f6add027dbc12a829ac71d2eb39c8c0505e95669730632bdea34",
+  "component_sha256": "sha256:55fa2334bcd946d11568c7216f2ddb09242e7a2c6299b3149939e1551ee30da7",
   "dependencies": [],
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "subscriptions": [
     "inspect-artifact"
   ],
@@ -18,6 +18,12 @@
     "artifact-codec",
     "inspect-artifact"
   ],
+  "artifact_codec": {
+    "interface_versions": ["stcli.artifact-codec/v1"],
+    "formats": ["apng", "charx", "json", "png", "webp"]
+  },
   "before": [],
+  "display_name": "Bundled SillyTavern Artifact Codec",
+  "author": "STcli contributors",
   "after": []
 }

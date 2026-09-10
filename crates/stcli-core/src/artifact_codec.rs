@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -11,6 +13,8 @@ pub(crate) const MAX_CODEC_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const MAX_CODEC_ASSET_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_CODEC_TOTAL_ASSET_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_CODEC_ASSETS: usize = 64;
+pub(crate) const MAX_CODEC_SUPPLEMENTARY_ARTIFACTS: usize = 64;
+pub(crate) const MAX_CODEC_TOTAL_SUPPLEMENTARY_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_CODEC_COMPATIBILITY_ITEMS: usize = 32;
 pub(crate) const MAX_CODEC_COMPATIBILITY_MESSAGE_BYTES: usize = 1024;
 pub(crate) const MAX_CODEC_LOGICAL_PATH_BYTES: usize = 512;
@@ -41,6 +45,18 @@ pub struct ArtifactCodecAsset {
     pub byte_size: usize,
     pub sha256: ContentHash,
 }
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ArtifactCodecSupplementary {
+    pub logical_path: String,
+    pub artifact_kind: ArtifactKind,
+    pub source_format: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub embedded: bool,
+    /// Decoded supplementary Artifact payload encoded as base64.
+    pub payload: String,
+    pub byte_size: usize,
+    pub payload_sha256: ContentHash,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArtifactCodecBundle {
@@ -51,12 +67,27 @@ pub struct ArtifactCodecBundle {
     pub payload_sha256: ContentHash,
     #[serde(default)]
     pub assets: Vec<ArtifactCodecAsset>,
+    #[serde(default)]
+    pub supplementary_artifacts: Vec<ArtifactCodecSupplementary>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArtifactCodecCompatibility {
     pub code: String,
     pub message: String,
+}
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ArtifactCodecDeclaration {
+    pub interface_versions: BTreeSet<String>,
+    pub formats: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ArtifactCodecSupplementaryProvenance {
+    pub logical_path: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub embedded: bool,
+    pub revision_hash: ContentHash,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -93,6 +124,8 @@ pub struct ArtifactCodecProvenance {
     pub format: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compatibility: Vec<ArtifactCodecCompatibility>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supplementary_artifacts: Vec<ArtifactCodecSupplementaryProvenance>,
 }
 
 #[derive(Debug, Error)]
@@ -101,6 +134,8 @@ pub enum ArtifactCodecError {
     Artifact(#[from] crate::ArtifactError),
     #[error("artifact codec Plugin contract is invalid: {0}")]
     InvalidPluginContract(String),
+    #[error("artifact codecs ambiguously claimed the source: {0:?}")]
+    AmbiguousFormatClaims(Vec<String>),
     #[error("artifact codec interface version '{actual}' is incompatible; expected '{expected}'")]
     InterfaceVersion { expected: String, actual: String },
     #[error("artifact codec returned '{actual}' for a '{expected}' operation")]
@@ -122,10 +157,16 @@ pub enum ArtifactCodecError {
     },
     #[error("artifact codec format '{0}' is invalid")]
     InvalidFormat(String),
+    #[error(
+        "artifact codec embedded supplementary Artifact claims do not match the primary Artifact"
+    )]
+    InvalidEmbeddedSupplementary,
     #[error("artifact codec import conflicts with existing Artifact Revision {0}")]
     RevisionConflict(ContentHash),
     #[error("artifact codec proposed {actual} assets; limit is {limit}")]
     AssetCount { actual: usize, limit: usize },
+    #[error("artifact codec proposed {actual} supplementary Artifacts; limit is {limit}")]
+    SupplementaryArtifactCount { actual: usize, limit: usize },
     #[error("artifact codec payload has {actual} bytes; limit is {limit}")]
     PayloadSize { actual: usize, limit: usize },
     #[error("artifact codec asset '{path}' has {actual} bytes; limit is {limit}")]
@@ -134,6 +175,8 @@ pub enum ArtifactCodecError {
         actual: usize,
         limit: usize,
     },
+    #[error("artifact codec supplementary Artifacts have {actual} total bytes; limit is {limit}")]
+    TotalSupplementarySize { actual: usize, limit: usize },
     #[error("artifact codec asset '{path}' declares {proposed} bytes but contains {actual} bytes")]
     ByteSizeMismatch {
         path: String,

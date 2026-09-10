@@ -574,10 +574,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
-name = "stcli-ccv3-codec-plugin"
+name = "stcli-sillytavern-codec-plugin"
 version = "1.0.0"
 dependencies = [
  "base64",
+ "crc32fast",
+ "flate2",
  "serde",
  "serde_json",
  "sha2",
@@ -913,6 +915,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c42e33efc22a0650c311c2ef19115ce232583abbe80850bc8b66509ebef02de0"
 dependencies = [
  "crc32fast",
+ "flate2",
  "indexmap",
  "memchr",
  "typed-path",

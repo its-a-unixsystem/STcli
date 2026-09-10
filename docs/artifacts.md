@@ -20,19 +20,19 @@ An external codec is a Wasm Plugin registered as an Artifact inspector. Its mani
 - `artifact-codec`
 - `inspect-artifact`
 
-It must subscribe only to `inspect-artifact` and must not declare settings, commands, macros, or prompt slots. Script and `st-bridge` runtimes cannot register as codecs.
+It must subscribe only to `inspect-artifact`, declare an `artifact_codec` block containing its interface versions and external formats, and must not declare settings, commands, macros, or prompt slots. Script and `st-bridge` runtimes cannot register as codecs.
 
-The proof package at [`plugins/ccv3-codec`](../plugins/ccv3-codec/) detects, decodes, and encodes CCv3 CHARX archives without a Core rebuild.
+STcli bundles `org.stcli.sillytavern-codec` 1.0.0 and installs it from embedded bytes without network access. It handles Character Card V1/V2/V3 JSON, PNG/APNG/WebP cards, CHARX archives, Lorebooks, and Chat Completion presets. Removing it creates a persistent opt-out; `stcli plugin restore-defaults` clears that marker and repairs the package and registration.
 
 ## Versioned operations
 
 Every codec request and response carries `interface_version: "stcli.artifact-codec/v1"` and an `operation` discriminator.
 
-- `detect`: receives base64 external source bytes and returns `compatible` plus compatibility items.
+- `detect`: receives base64 external source bytes and returns `compatible` plus compatibility items. The engine evaluates every registered codec and rejects an import when more than one claims it.
 - `decode`: receives the same source and returns the external `format`, a flat Artifact bundle, and compatibility items.
-- `encode`: receives the recorded external format and the stored flat bundle, then returns base64 external source bytes.
+- `encode`: receives the recorded external format and stored flat bundle, including supplementary Artifacts, then returns base64 external source bytes.
 
-A decoded bundle declares the Artifact kind, `json` as its flat source format, base64 payload, payload SHA-256, and assets. Each asset declares its logical path, base64 bytes, byte size, and SHA-256. Core recomputes rather than trusts all declared values.
+A decoded bundle declares the Artifact kind, stored source format, base64 payload, payload SHA-256, assets, and supplementary Artifacts. Each asset declares its logical path, base64 bytes, byte size, and SHA-256. Each supplementary Artifact declares its logical path, kind, source format, payload, byte size, SHA-256, and whether it originated from data embedded in the primary Artifact. Core recomputes declared values and validates embedded ownership rather than trusting them.
 
 Compatibility items contain a stable lowercase `code` and a human-readable `message`. Import provenance retains accepted detection and decode items.
 
@@ -43,6 +43,8 @@ Compatibility items contain a stable lowercase `code` and a human-readable `mess
 | External import or encoded export | 2 MiB |
 | Decoded Artifact payload | 2 MiB |
 | Assets per bundle | 64 |
+| Supplementary Artifacts per bundle | 64 |
+| All supplementary Artifact payloads | 8 MiB |
 | One decoded asset | 4 MiB |
 | All decoded assets | 8 MiB |
 | Logical path | 512 bytes |

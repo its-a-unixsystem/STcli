@@ -51,10 +51,10 @@ Clap also generates `-h`/`--help` at each command level. The top-level command p
 
 | Command | Canonical syntax | Argument behavior |
 | --- | --- | --- |
-| `artifact import` | `artifact import <path>` | Imports the path as a new immutable Artifact Revision. The command reads the format from the file content. It accepts JSON cards (V1, V2, V3), PNG cards, WebP cards (V2 or V3), and CHARX archives. It returns a bundle with the primary revision, any supplementary revisions (such as bundled lorebooks), and the count of stored media assets. See [Import character cards](guide.md#import-character-cards-from-images-and-archives). |
+| `artifact import` | `artifact import <path>` | Imports the path as a new immutable Artifact Revision through the bundled offline codec when eligible. The command reads the format from the file content. It accepts JSON cards (V1, V2, V3), Lorebooks, Chat Completion presets, PNG/APNG cards, WebP cards (V2 or V3), and CHARX archives. It returns a bundle with the primary revision, any supplementary revisions, and the count of stored media assets. See [Import character cards](guide.md#import-character-cards-from-images-and-archives). |
 | `artifact list` | `artifact list` | No command arguments. |
 | `artifact show` | `artifact show <revision>` | Targets one Artifact Revision. |
-| `artifact export` | `artifact export <revision> <destination>` | Targets one Artifact Revision and writes its exact imported bytes to the required destination path. |
+| `artifact export` | `artifact export <revision> <destination>` | Targets one Artifact Revision. Codec imports use their recorded exact Plugin pin to encode the original external format; Core imports return their stored source. |
 
 ## Provider profile commands
 

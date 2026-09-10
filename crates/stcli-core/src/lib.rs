@@ -42,8 +42,9 @@ pub use artifact::{
 };
 pub use artifact_codec::{
     ARTIFACT_CODEC_INTERFACE_VERSION, ArtifactCodecAsset, ArtifactCodecBundle,
-    ArtifactCodecCompatibility, ArtifactCodecError, ArtifactCodecInput, ArtifactCodecOutput,
-    ArtifactCodecProvenance,
+    ArtifactCodecCompatibility, ArtifactCodecDeclaration, ArtifactCodecError, ArtifactCodecInput,
+    ArtifactCodecOutput, ArtifactCodecProvenance, ArtifactCodecSupplementary,
+    ArtifactCodecSupplementaryProvenance,
 };
 pub use capsule::{
     CapsuleArtifact, CapsuleArtifactSource, CapsuleBaseline, CapsuleCapabilities,
@@ -66,10 +67,11 @@ pub use egress::{
     EgressSecretInjection, EgressTransport, EgressTransportError, ReqwestTransport, StubTransport,
 };
 pub use engine::{
-    BranchHistory, DEFAULT_MEMORY_EXTENSION_ID, DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID, DeletionReceipt,
-    EngineCommand, EngineError, EngineInspection, EngineQuery, EngineResult, EngineTurn,
-    GreetingProjection, PluginArtifactOutput, PluginRemovalReceipt, PurgeReport, RebuildReport,
-    SessionDetails, SessionSummary, StcliEngine, TurnDetails,
+    BranchHistory, DEFAULT_MEMORY_EXTENSION_ID, DEFAULT_NEMO_DIRECTIVES_PLUGIN_ID,
+    DEFAULT_SILLYTAVERN_CODEC_PLUGIN_ID, DeletionReceipt, EngineCommand, EngineError,
+    EngineInspection, EngineQuery, EngineResult, EngineTurn, GreetingProjection,
+    PluginArtifactOutput, PluginRemovalReceipt, PurgeReport, RebuildReport, SessionDetails,
+    SessionSummary, StcliEngine, TurnDetails,
 };
 pub use fixture::{
     ExternalFixtureSource, FixtureCase, FixtureCaseReport, FixtureHistoryTurn, FixtureReport,

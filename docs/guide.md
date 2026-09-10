@@ -48,12 +48,12 @@ For a field-by-field breakdown of each sample artifact, see [`examples/README.md
 
 ### Import character cards from images and archives
 
-The `artifact import` command reads the card format from the file content, not the file name. It accepts these formats:
+The `artifact import` command reads the card format from the file content, not the file name. STcli installs its bundled codec offline on first use. It accepts these formats:
 
-- **JSON**: Character Card V1, V2, and V3.
-- **PNG**: A character card embedded in a PNG image. The image becomes the card avatar.
+- **JSON**: Character Card V1, V2, and V3, Lorebooks, and Chat Completion presets.
+- **PNG/APNG**: A character card embedded in a PNG image. The image becomes the card avatar.
 - **WebP**: A character card embedded in a WebP image (V2 or V3 only). The image becomes the avatar.
-- **CHARX**: A character card archive (V3) with bundled assets and lorebooks.
+- **CHARX**: A Character Card V3 archive with bundled assets and lorebooks.
 
 The command works the same for every format:
 
@@ -70,7 +70,7 @@ Import returns a bundle with three parts:
 
 STcli stores media files in a content-addressed asset store, apart from the main database. For the reason, see [ADR 0007](adr/0007-external-content-addressed-asset-storage.md).
 
-Installed external Artifact codecs use this same command and bundle result. A codec may recognize sources up to 2 MiB, but Core still validates every proposed Artifact and asset before an atomic import. Explicit export uses the exact codec version and digest recorded at import. See [Artifacts and external codecs](artifacts.md).
+The bundled Artifact codec uses this command and bundle result automatically for sources up to 2 MiB. Core still validates every proposed Artifact and asset before one atomic import. Export uses the exact codec version and digest recorded at import. Remove `org.stcli.sillytavern-codec` to opt out and use Core fallbacks; run `stcli plugin restore-defaults` to restore it. See [Artifacts and external codecs](artifacts.md).
 
 ## Import and inspect presets in the TUI
 

@@ -11,7 +11,7 @@ STcli also runs plugins written in JavaScript through a sandboxed QuickJS runtim
 | Plugin | Identifier | Purpose |
 |---|---|---|
 | [`proof/`](proof/) | `org.stcli.proof` | Reference implementation and test harness proving the pure Wasm plugin architecture. |
-| [`ccv3-codec/`](ccv3-codec/) | `org.stcli.ccv3-codec` | Proof Wasm codec for CCv3 CHARX detection, decode, and encode. |
+| [`ccv3-codec/`](ccv3-codec/) | `org.stcli.sillytavern-codec` | Bundled codec for Character Card JSON, PNG/APNG/WebP cards, CHARX, Lorebooks, and Chat Completion presets. |
 | [`turn-counter/`](turn-counter/) | `org.stcli.turn-counter` | Reference script plugin for the [Writing plugins](../docs/plugins.md#tutorial-a-script-plugin) tutorial. Counts turns and injects one prompt line. |
 | [`nemo-directives/`](nemo-directives/) | `org.stcli.nemo-directives` | Default read-only evaluator for the supported NemoPresetExt prompt-directive subset. |
 
@@ -23,9 +23,9 @@ STcli also runs plugins written in JavaScript through a sandboxed QuickJS runtim
 - **Architectural role**: Proves that an out-of-tree plugin builds against the public WIT world, installs without host recompilation, and runs within strict sandbox boundaries.
 - **Test harness**: Implements declarative effects (macros, commands, prompt contributions, namespaced state) and controllable test modes in [`proof/src/lib.rs`](proof/src/lib.rs) to exercise host limits, error handling, timeouts, and unauthorized state rejection in [`crates/stcli-core/tests/plugins.rs`](../crates/stcli-core/tests/plugins.rs) and [`crates/stcli-cli/tests/plugins.rs`](../crates/stcli-cli/tests/plugins.rs).
 
-## The `ccv3-codec` plugin
+## The bundled SillyTavern codec
 
-[`plugins/ccv3-codec`](ccv3-codec/) is a separately built proof package for the bounded [`stcli.artifact-codec/v1`](../docs/artifacts.md) Engine Hook. It reads and writes CCv3 CHARX with no Core recompilation. It is not bundled or enabled by default. Core tests install and register its checked-in Component, import a card and asset, inspect recorded provenance and compatibility items, and export through the same exact Plugin pin.
+[`plugins/ccv3-codec`](ccv3-codec/) is the source package for the bundled `stcli.artifact-codec/v1` implementation. It handles every SillyTavern Artifact format currently supported by Core: Character Card V1/V2/V3 JSON, PNG/APNG/WebP cards, CHARX archives, Lorebooks, and Chat Completion presets. Core tests compare its public Engine results with the retained native import paths.
 
 ## The `turn-counter` plugin
 
@@ -44,9 +44,9 @@ An Artifact codec is the stricter Wasm-only form. It requests exactly `artifact-
 
 ## Default plugin lifecycle
 
-STcli embeds the Nemo directives Plugin and materializes its manifest and script into the local content-addressed Plugin store without network access. First run and embedded version changes update its Store-level Artifact-inspector registration. Existing Session PluginPins are never rewritten.
+STcli embeds the Nemo directives Plugin and the SillyTavern codec, then materializes their packages into the local content-addressed Plugin store without network access. First run and embedded version changes update their Store-level Artifact-inspector registrations. Existing Artifact provenance and Session Plugin Pins are never rewritten.
 
-`stcli plugin list` reports `inspection_enabled: true` for the active default registration. `stcli plugin remove org.stcli.nemo-directives` writes a persistent opt-out marker, so later runs do not reinstall it. Run `stcli plugin restore-defaults` to clear the marker and materialize the embedded default again.
+`stcli plugin list` reports `inspection_enabled: true` and includes the codec's `artifact_codec` interface-version and format declaration. Removing a default Plugin writes a persistent opt-out marker, so later runs do not reinstall it. Run `stcli plugin restore-defaults` to clear the markers and materialize the embedded defaults again.
 
 ## Further documentation
 

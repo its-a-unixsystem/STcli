@@ -5,12 +5,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use flate2::{Compression, write::ZlibEncoder};
+
 use serde_json::{Value, json};
 use stcli_core::{
     ARTIFACT_CODEC_INTERFACE_VERSION, ArtifactCodecError, ArtifactKind, EngineCommand,
     EngineInspection, EngineQuery, EngineResult, PluginCapability, StcliEngine, Store,
     plugin_digest,
 };
+use stcli_testkit::configuration;
 use tempfile::tempdir;
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
@@ -60,6 +64,192 @@ fn charx() -> Vec<u8> {
         .unwrap();
     archive.finish().unwrap().into_inner()
 }
+fn charx_with_lorebook() -> Vec<u8> {
+    let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    archive.start_file("card.json", options).unwrap();
+    archive.write_all(&character_card_v3()).unwrap();
+    archive
+        .start_file("lorebooks/world/lorebook.json", options)
+        .unwrap();
+    archive
+        .write_all(br#"{"entries":{"0":{"key":["harbor"],"content":"A quiet harbor."}}}"#)
+        .unwrap();
+    archive.start_file("assets/avatar.png", options).unwrap();
+    archive
+        .write_all(b"\x89PNG\r\n\x1a\ncodec fixture")
+        .unwrap();
+    archive.finish().unwrap().into_inner()
+}
+fn charx_with_identical_embedded_and_file_lorebooks() -> Vec<u8> {
+    let lorebook: Value = serde_json::from_slice(&lorebook()).unwrap();
+    let mut card: Value = serde_json::from_slice(&character_card_v3()).unwrap();
+    card["data"]["character_book"] = lorebook.clone();
+    let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    archive.start_file("card.json", options).unwrap();
+    archive
+        .write_all(&serde_json::to_vec(&card).unwrap())
+        .unwrap();
+    archive
+        .start_file("lorebooks/world/lorebook.json", options)
+        .unwrap();
+    archive
+        .write_all(&serde_json::to_vec(&lorebook).unwrap())
+        .unwrap();
+    archive.start_file("assets/avatar.png", options).unwrap();
+    archive
+        .write_all(b"\x89PNG\r\n\x1a\ncodec fixture")
+        .unwrap();
+    archive.finish().unwrap().into_inner()
+}
+fn charx_with_invalid_asset() -> Vec<u8> {
+    let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    archive.start_file("card.json", options).unwrap();
+    archive.write_all(&character_card_v3()).unwrap();
+    archive.start_file("assets/avatar.png", options).unwrap();
+    archive.write_all(b"not an image").unwrap();
+    archive.finish().unwrap().into_inner()
+}
+
+fn append_png_chunk(png: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    png.extend_from_slice(kind);
+    png.extend_from_slice(data);
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(kind);
+    hasher.update(data);
+    png.extend_from_slice(&hasher.finalize().to_be_bytes());
+}
+
+fn png_card(animated: bool) -> Vec<u8> {
+    let mut metadata = b"chara\0".to_vec();
+    metadata.extend_from_slice(STANDARD.encode(character_card_v3()).as_bytes());
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    append_png_chunk(&mut png, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    if animated {
+        append_png_chunk(&mut png, b"acTL", &[0, 0, 0, 1, 0, 0, 0, 0]);
+    }
+    append_png_chunk(&mut png, b"tEXt", &metadata);
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&[0, 0, 0, 0, 0]).unwrap();
+    append_png_chunk(&mut png, b"IDAT", &encoder.finish().unwrap());
+    append_png_chunk(&mut png, b"IEND", &[]);
+    png
+}
+
+fn character_card_v1() -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "name": "V1 fixture",
+        "description": "",
+        "personality": "",
+        "scenario": "",
+        "first_mes": "Hello",
+        "mes_example": ""
+    }))
+    .unwrap()
+}
+
+fn character_card_v2() -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "spec": "chara_card_v2",
+        "spec_version": "2.0",
+        "data": {
+            "name": "V2 fixture",
+            "description": "",
+            "personality": "",
+            "scenario": "",
+            "first_mes": "Hello",
+            "mes_example": "",
+            "alternate_greetings": [],
+            "extensions": {}
+        }
+    }))
+    .unwrap()
+}
+
+fn lorebook() -> Vec<u8> {
+    br#"{"entries":{"0":{"key":["harbor"],"content":"A quiet harbor."}}}"#.to_vec()
+}
+
+async fn assert_codec_parity(
+    source: Vec<u8>,
+    expected_format: &str,
+    exact_export: bool,
+) -> Vec<u8> {
+    let native_directory = tempdir().unwrap();
+    let native = Store::open(native_directory.path().join("native.sqlite3"))
+        .unwrap()
+        .import_artifact_bundle(&source)
+        .unwrap();
+
+    let codec_directory = tempdir().unwrap();
+    let database = codec_directory.path().join("codec.sqlite3");
+    let engine = StcliEngine::new(&database);
+    let EngineResult::ArtifactBundle {
+        primary,
+        supplementary_artifacts,
+        asset_count,
+    } = engine
+        .execute(
+            EngineCommand::ImportArtifact {
+                source: source.clone(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected import result");
+    };
+    assert_eq!(primary.revision_hash, native.primary.revision_hash);
+    assert_eq!(primary.kind, native.primary.kind);
+    assert_eq!(primary.source_format, native.primary.source_format);
+    assert_eq!(primary.semantic_hash, native.primary.semantic_hash);
+    assert_eq!(primary.source_blob_hash, native.primary.source_blob_hash);
+    assert_eq!(
+        supplementary_artifacts.len(),
+        native.supplementary_artifacts.len()
+    );
+    for (actual, expected) in supplementary_artifacts
+        .iter()
+        .zip(&native.supplementary_artifacts)
+    {
+        assert_eq!(actual.revision_hash, expected.revision_hash);
+        assert_eq!(actual.kind, expected.kind);
+        assert_eq!(actual.source_format, expected.source_format);
+        assert_eq!(actual.semantic_hash, expected.semantic_hash);
+        assert_eq!(actual.source_blob_hash, expected.source_blob_hash);
+    }
+    assert_eq!(asset_count, native.asset_count);
+    let EngineInspection::ArtifactCodecProvenance(Some(provenance)) = engine
+        .inspect(EngineQuery::ArtifactCodecProvenance {
+            revision_hash: primary.revision_hash.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("codec provenance was not recorded");
+    };
+    assert_eq!(provenance.plugin_id, "org.stcli.sillytavern-codec");
+    assert_eq!(provenance.format, expected_format);
+    assert_eq!(
+        provenance.supplementary_artifacts.len(),
+        supplementary_artifacts.len()
+    );
+    let EngineInspection::ArtifactSource(exported) = engine
+        .inspect(EngineQuery::ArtifactSource {
+            revision_hash: primary.revision_hash,
+        })
+        .unwrap()
+    else {
+        panic!("unexpected export result");
+    };
+    if exact_export {
+        assert_eq!(exported, source);
+    }
+    exported
+}
 
 fn preset(description_bytes: usize) -> Vec<u8> {
     serde_json::to_vec(&json!({
@@ -69,6 +259,123 @@ fn preset(description_bytes: usize) -> Vec<u8> {
         "prompt_order": [{"character_id": 100001, "order": [{"identifier": "main", "enabled": true}]}]
     }))
     .unwrap()
+}
+
+#[tokio::test]
+async fn bundled_codec_preserves_json_artifact_parity() {
+    assert_codec_parity(character_card_v1(), "json", true).await;
+    assert_codec_parity(character_card_v2(), "json", true).await;
+    assert_codec_parity(character_card_v3(), "json", true).await;
+    assert_codec_parity(lorebook(), "json", true).await;
+    assert_codec_parity(preset(0), "json", true).await;
+}
+
+#[tokio::test]
+async fn bundled_codec_preserves_png_apng_and_webp_parity() {
+    assert_codec_parity(png_card(false), "png", true).await;
+    assert_codec_parity(png_card(true), "apng", true).await;
+    assert_codec_parity(
+        include_bytes!("fixtures/artifacts/card-v2-exif.webp").to_vec(),
+        "webp",
+        true,
+    )
+    .await;
+    assert_codec_parity(
+        include_bytes!("fixtures/artifacts/card-v3-xmp.webp").to_vec(),
+        "webp",
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn bundled_codec_preserves_charx_assets_and_supplementary_artifacts() {
+    let exported = assert_codec_parity(charx_with_lorebook(), "charx", false).await;
+    let mut archive = ZipArchive::new(Cursor::new(exported)).unwrap();
+    assert!(archive.by_name("card.json").is_ok());
+    assert!(archive.by_name("lorebooks/world/lorebook.json").is_ok());
+    assert!(archive.by_name("assets/avatar.png").is_ok());
+}
+
+#[tokio::test]
+async fn charx_allows_identical_embedded_and_file_lorebooks() {
+    // Regression: embedded ownership is explicit and does not require globally unique bytes.
+    assert_codec_parity(
+        charx_with_identical_embedded_and_file_lorebooks(),
+        "charx",
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn purge_retains_and_then_removes_codec_supplementary_revisions() {
+    // Regression: provenance retains supplementary revisions only while its primary is reachable.
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let engine = StcliEngine::new(&database);
+    let EngineResult::ArtifactBundle {
+        primary,
+        supplementary_artifacts,
+        ..
+    } = engine
+        .execute(
+            EngineCommand::ImportArtifact {
+                source: charx_with_lorebook(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected import result");
+    };
+    let supplementary_hashes = supplementary_artifacts
+        .iter()
+        .map(|artifact| artifact.revision_hash.clone())
+        .collect::<Vec<_>>();
+    let mut store = Store::open(&database).unwrap();
+    let first = store
+        .create_session(configuration(primary.revision_hash.clone()), 0)
+        .unwrap();
+    let second = store
+        .create_session(configuration(primary.revision_hash.clone()), 0)
+        .unwrap();
+
+    store.purge_session(first.session.session_id).unwrap();
+    for hash in &supplementary_hashes {
+        assert!(store.artifact(hash).unwrap().is_some());
+    }
+    store.purge_session(second.session.session_id).unwrap();
+    assert!(store.artifact(&primary.revision_hash).unwrap().is_none());
+    for hash in &supplementary_hashes {
+        assert!(store.artifact(hash).unwrap().is_none());
+    }
+}
+
+#[tokio::test]
+async fn rejected_codec_asset_commits_no_artifact_state() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let engine = StcliEngine::new(&database);
+
+    engine
+        .execute(
+            EngineCommand::ImportArtifact {
+                source: charx_with_invalid_asset(),
+            },
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        Store::open(&database)
+            .unwrap()
+            .artifacts()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 async fn install_and_register(engine: &StcliEngine, directory: &Path) {
@@ -141,7 +448,7 @@ async fn wasm_codec_imports_and_exports_ccv3_with_recorded_provenance() {
     else {
         panic!("codec provenance was not recorded");
     };
-    assert_eq!(provenance.plugin_id, "org.stcli.ccv3-codec");
+    assert_eq!(provenance.plugin_id, "org.stcli.sillytavern-codec");
     assert_eq!(
         provenance.interface_version,
         ARTIFACT_CODEC_INTERFACE_VERSION
@@ -153,7 +460,7 @@ async fn wasm_codec_imports_and_exports_ccv3_with_recorded_provenance() {
             .iter()
             .map(|item| item.code.as_str())
             .collect::<Vec<_>>(),
-        ["ccv3-charx", "ccv3-decoded"]
+        ["sillytavern-charx", "sillytavern-charx-decoded"]
     );
 
     let EngineInspection::ArtifactSource(exported) = engine
@@ -183,7 +490,8 @@ async fn wasm_codec_imports_and_exports_ccv3_with_recorded_provenance() {
         .unwrap();
     assert_eq!(avatar, b"\x89PNG\r\n\x1a\ncodec fixture");
 
-    engine
+    // Regression test for issue #129: imported Artifact provenance pins its exact codec package.
+    let error = engine
         .execute(
             EngineCommand::RemovePlugin {
                 plugin_id: provenance.plugin_id,
@@ -191,16 +499,17 @@ async fn wasm_codec_imports_and_exports_ccv3_with_recorded_provenance() {
             |_| {},
         )
         .await
-        .unwrap();
-    let EngineInspection::Artifact(stored) = engine
-        .inspect(EngineQuery::Artifact {
+        .unwrap_err();
+    assert!(matches!(error, stcli_core::EngineError::PluginInUse(_)));
+    let EngineInspection::ArtifactSource(exported) = engine
+        .inspect(EngineQuery::ArtifactSource {
             revision_hash: primary.revision_hash,
         })
         .unwrap()
     else {
-        panic!("unexpected artifact inspection");
+        panic!("unexpected artifact export");
     };
-    assert_eq!(stored.kind, ArtifactKind::CharacterCardV3);
+    assert!(!exported.is_empty());
 }
 
 #[tokio::test]
@@ -348,6 +657,7 @@ async fn codec_registration_rejects_non_wasm_and_additional_capabilities() {
     let mut manifest: Value =
         serde_json::from_slice(&fs::read(codec_directory().join("manifest.json")).unwrap())
             .unwrap();
+    manifest["id"] = json!("org.example.extra-capability-codec");
     manifest["requested_capabilities"]
         .as_array_mut()
         .unwrap()
@@ -384,5 +694,40 @@ async fn codec_registration_rejects_non_wasm_and_additional_capabilities() {
     assert!(matches!(
         error,
         stcli_core::EngineError::ArtifactCodec(ArtifactCodecError::InvalidPluginContract(_))
+    ));
+}
+
+#[tokio::test]
+async fn import_rejects_ambiguous_codec_claims() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("stcli.sqlite3");
+    let competing = directory.path().join("competing-codec");
+    fs::create_dir(&competing).unwrap();
+    fs::copy(
+        codec_directory().join("component.wasm"),
+        competing.join("component.wasm"),
+    )
+    .unwrap();
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(codec_directory().join("manifest.json")).unwrap())
+            .unwrap();
+    manifest["id"] = json!("org.example.competing-codec");
+    fs::write(
+        competing.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let engine = StcliEngine::new(&database);
+    install_and_register(&engine, &competing).await;
+    let error = engine
+        .execute(EngineCommand::ImportArtifact { source: charx() }, |_| {})
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        stcli_core::EngineError::ArtifactCodec(ArtifactCodecError::AmbiguousFormatClaims(ids))
+            if ids == ["org.example.competing-codec", "org.stcli.sillytavern-codec"]
     ));
 }

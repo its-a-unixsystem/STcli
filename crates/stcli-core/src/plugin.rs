@@ -19,7 +19,7 @@ use thiserror::Error;
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 
-use crate::{ChatRole, ContentHash, StateKey, decode_unique_json};
+use crate::{ArtifactCodecDeclaration, ChatRole, ContentHash, StateKey, decode_unique_json};
 
 const MANIFEST_SCHEMA: &str = "stcli.plugin-manifest/v1";
 const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -129,6 +129,8 @@ pub struct PluginManifest {
     pub macros: BTreeSet<String>,
     pub settings_schema: Option<String>,
     pub requested_capabilities: BTreeSet<PluginCapability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_codec: Option<ArtifactCodecDeclaration>,
     #[serde(default)]
     pub before: BTreeSet<String>,
     #[serde(default)]
@@ -836,6 +838,7 @@ impl PluginRegistry {
             requested_capabilities,
             before: BTreeSet::new(),
             after: BTreeSet::new(),
+            artifact_codec: None,
             generate_interceptor: native.generate_interceptor,
             display_name: native.display_name,
             author: native.author,

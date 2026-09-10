@@ -1107,7 +1107,7 @@ impl Store {
             .map_err(StorageError::Sqlite)?;
         transaction
             .execute(
-                "DELETE FROM artifact_revisions WHERE NOT EXISTS (SELECT 1 FROM branches WHERE branches.greeting_revision_hash = artifact_revisions.revision_hash) AND NOT EXISTS (SELECT 1 FROM session_config_revisions WHERE CAST(session_config_revisions.body AS TEXT) LIKE '%' || artifact_revisions.revision_hash || '%') AND NOT EXISTS (SELECT 1 FROM capsule_artifacts WHERE capsule_artifacts.revision_hash = artifact_revisions.revision_hash)",
+                "DELETE FROM artifact_revisions WHERE NOT EXISTS (SELECT 1 FROM branches WHERE branches.greeting_revision_hash = artifact_revisions.revision_hash) AND NOT EXISTS (SELECT 1 FROM session_config_revisions WHERE CAST(session_config_revisions.body AS TEXT) LIKE '%' || artifact_revisions.revision_hash || '%') AND NOT EXISTS (SELECT 1 FROM capsule_artifacts WHERE capsule_artifacts.revision_hash = artifact_revisions.revision_hash) AND NOT EXISTS (SELECT 1 FROM artifact_codec_provenance AS provenance WHERE CAST(provenance.body AS TEXT) LIKE '%' || artifact_revisions.revision_hash || '%' AND (EXISTS (SELECT 1 FROM branches WHERE branches.greeting_revision_hash = provenance.revision_hash) OR EXISTS (SELECT 1 FROM session_config_revisions WHERE CAST(session_config_revisions.body AS TEXT) LIKE '%' || provenance.revision_hash || '%') OR EXISTS (SELECT 1 FROM capsule_artifacts WHERE capsule_artifacts.revision_hash = provenance.revision_hash)))",
                 [],
             )
             .map_err(StorageError::Sqlite)?;

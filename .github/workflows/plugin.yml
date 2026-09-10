@@ -33,7 +33,7 @@ jobs:
           - directory: proof
             crate: stcli_proof_plugin
           - directory: ccv3-codec
-            crate: stcli_ccv3_codec_plugin
+            crate: stcli_sillytavern_codec_plugin
 
     env:
       CARGO_TERM_COLOR: always
