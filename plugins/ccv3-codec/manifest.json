@@ -4,15 +4,20 @@
   "version": "1.0.0",
   "engine": ">=0.1.0, <0.2.0",
   "component": "component.wasm",
-  "component_sha256": "sha256:76863efa62615158130019685c17dfd0d714da932c4ee0da93e25a7417afb434",
+  "component_sha256": "sha256:2fc75988c8bc08930db7066fcc45af42de63d435d14f6ba8c55c07244820d4c8",
   "dependencies": [],
   "license": "MIT",
-  "subscriptions": ["inspect-artifact"],
+  "subscriptions": [
+    "inspect-artifact"
+  ],
   "prompt_slots": [],
   "commands": [],
   "macros": [],
   "settings_schema": null,
-  "requested_capabilities": ["artifact-codec", "inspect-artifact"],
+  "requested_capabilities": [
+    "artifact-codec",
+    "inspect-artifact"
+  ],
   "before": [],
   "after": []
 }

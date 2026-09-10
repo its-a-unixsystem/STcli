@@ -12,6 +12,8 @@ wit_bindgen::generate!({
 });
 
 const INTERFACE_VERSION: &str = "stcli.artifact-codec/v1";
+const MAX_SOURCE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_ENTRY_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Deserialize)]
 #[serde(tag = "operation", rename_all = "kebab-case")]
@@ -80,6 +82,9 @@ impl Guest for Ccv3Codec {
 fn detect(interface_version: &str, source: &str) -> Result<serde_json::Value, String> {
     require_interface(interface_version)?;
     let source = decode_base64(source)?;
+    if source.len() > MAX_SOURCE_BYTES {
+        return Err("codec source exceeds maximum size".to_owned());
+    }
     if source == b"bad-interface" {
         return Ok(json!({
             "operation": "detect",
@@ -104,23 +109,36 @@ fn detect(interface_version: &str, source: &str) -> Result<serde_json::Value, St
 fn decode(interface_version: &str, source: &str) -> Result<serde_json::Value, String> {
     require_interface(interface_version)?;
     let source = decode_base64(source)?;
+    if source.len() > MAX_SOURCE_BYTES {
+        return Err("codec source exceeds maximum size".to_owned());
+    }
     let mut archive = ZipArchive::new(Cursor::new(source)).map_err(|e| e.to_string())?;
     let malformed_hash = archive.by_name("malformed-hash").is_ok();
     let mut payload = Vec::new();
     archive
         .by_name("card.json")
         .map_err(|e| e.to_string())?
+        .take((MAX_ENTRY_BYTES + 1) as u64)
         .read_to_end(&mut payload)
         .map_err(|e| e.to_string())?;
+    if payload.len() > MAX_ENTRY_BYTES {
+        return Err("card.json exceeds maximum size".to_owned());
+    }
     let mut assets = Vec::new();
     for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
+        let entry = archive.by_index(index).map_err(|e| e.to_string())?;
         let path = entry.name().to_owned();
         if entry.is_dir() || !path.starts_with("assets/") {
             continue;
         }
         let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        entry
+            .take((MAX_ENTRY_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > MAX_ENTRY_BYTES {
+            return Err("asset exceeds maximum size".to_owned());
+        }
         assets.push(Asset {
             logical_path: path,
             byte_size: bytes.len(),
@@ -160,21 +178,28 @@ fn encode(
     }
     let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let payload = decode_base64(&bundle.payload)?;
+    if payload.len() > MAX_ENTRY_BYTES {
+        return Err("card.json exceeds maximum size".to_owned());
+    }
     archive
         .start_file("card.json", options)
         .map_err(|e| e.to_string())?;
-    archive
-        .write_all(&decode_base64(&bundle.payload)?)
-        .map_err(|e| e.to_string())?;
+    archive.write_all(&payload).map_err(|e| e.to_string())?;
     for asset in bundle.assets {
+        let bytes = decode_base64(&asset.bytes)?;
+        if bytes.len() > MAX_ENTRY_BYTES {
+            return Err("asset exceeds maximum size".to_owned());
+        }
         archive
             .start_file(asset.logical_path, options)
             .map_err(|e| e.to_string())?;
-        archive
-            .write_all(&decode_base64(&asset.bytes)?)
-            .map_err(|e| e.to_string())?;
+        archive.write_all(&bytes).map_err(|e| e.to_string())?;
     }
     let source = archive.finish().map_err(|e| e.to_string())?.into_inner();
+    if source.len() > MAX_SOURCE_BYTES {
+        return Err("encoded source exceeds maximum size".to_owned());
+    }
     Ok(json!({
         "operation": "encode",
         "interface_version": INTERFACE_VERSION,
