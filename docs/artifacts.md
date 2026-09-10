@@ -57,6 +57,6 @@ The Plugin host also applies its component, fuel, and wall-clock limits. Oversiz
 
 Core validates JSON with duplicate-key rejection, derives the Artifact kind, compares the proposed kind and hashes, validates supported media, rejects unsafe or duplicate logical paths, checks CCv3 embedded asset references, and enforces every bound above.
 
-Only after validation does Core open the transaction that inserts the Artifact Revision, asset rows, references, provenance, and import events. If any database operation or commit fails, the transaction rolls back and newly created external asset files are removed.
+Only after validation does Core open the transaction that inserts the Artifact Revision, asset rows, references, provenance, and import events. If the flat payload already identifies an existing Artifact Revision, codec import rejects the collision rather than attaching provenance or assets to an immutable revision. If any database operation or commit fails, the transaction rolls back and newly created external asset files are removed.
 
 See [ADR 0014](adr/0014-artifact-codec-engine-hook.md) for the design decision and [Security](security.md#artifact-codecs) for the trust model.

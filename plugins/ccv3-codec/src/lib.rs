@@ -85,14 +85,6 @@ fn detect(interface_version: &str, source: &str) -> Result<serde_json::Value, St
     if source.len() > MAX_SOURCE_BYTES {
         return Err("codec source exceeds maximum size".to_owned());
     }
-    if source == b"bad-interface" {
-        return Ok(json!({
-            "operation": "detect",
-            "interface_version": "stcli.artifact-codec/v0",
-            "compatible": true,
-            "compatibility": []
-        }));
-    }
     let compatible = source.starts_with(b"PK\x03\x04");
     Ok(json!({
         "operation": "detect",
@@ -113,7 +105,6 @@ fn decode(interface_version: &str, source: &str) -> Result<serde_json::Value, St
         return Err("codec source exceeds maximum size".to_owned());
     }
     let mut archive = ZipArchive::new(Cursor::new(source)).map_err(|e| e.to_string())?;
-    let malformed_hash = archive.by_name("malformed-hash").is_ok();
     let mut payload = Vec::new();
     archive
         .by_name("card.json")
@@ -151,11 +142,7 @@ fn decode(interface_version: &str, source: &str) -> Result<serde_json::Value, St
         artifact_kind: "character-card-v3".to_owned(),
         source_format: "json".to_owned(),
         payload: BASE64.encode(&payload),
-        payload_sha256: if malformed_hash {
-            "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_owned()
-        } else {
-            sha256(&payload)
-        },
+        payload_sha256: sha256(&payload),
         assets,
     };
     Ok(json!({

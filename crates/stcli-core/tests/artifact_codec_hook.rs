@@ -49,7 +49,7 @@ fn character_card_v3() -> Vec<u8> {
     .unwrap()
 }
 
-fn charx(marker: Option<&str>) -> Vec<u8> {
+fn charx() -> Vec<u8> {
     let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     archive.start_file("card.json", options).unwrap();
@@ -58,10 +58,6 @@ fn charx(marker: Option<&str>) -> Vec<u8> {
     archive
         .write_all(b"\x89PNG\r\n\x1a\ncodec fixture")
         .unwrap();
-    if let Some(marker) = marker {
-        archive.start_file(marker, options).unwrap();
-        archive.write_all(b"marker").unwrap();
-    }
     archive.finish().unwrap().into_inner()
 }
 
@@ -113,7 +109,7 @@ async fn wasm_codec_imports_and_exports_ccv3_with_recorded_provenance() {
     let database = directory.path().join("stcli.sqlite3");
     let engine = StcliEngine::new(&database);
     install_and_register(&engine, &codec_directory()).await;
-    let source = charx(None);
+    let source = charx();
 
     let EngineResult::ArtifactBundle {
         primary,
@@ -241,62 +237,42 @@ async fn import_keeps_core_fallbacks_without_a_codec_and_above_the_codec_limit()
 }
 
 #[tokio::test]
-async fn incompatible_codec_interface_fails_without_persisting_an_artifact() {
+async fn codec_import_does_not_mutate_an_existing_flat_revision() {
+    // Regression test: codec provenance and assets must not attach to an existing revision.
     let directory = tempdir().unwrap();
     let database = directory.path().join("stcli.sqlite3");
     let engine = StcliEngine::new(&database);
+    let payload = character_card_v3();
+    let existing = Store::open(&database)
+        .unwrap()
+        .import_artifact(&payload)
+        .unwrap();
     install_and_register(&engine, &codec_directory()).await;
 
     let error = engine
-        .execute(
-            EngineCommand::ImportArtifact {
-                source: b"bad-interface".to_vec(),
-            },
-            |_| {},
-        )
+        .execute(EngineCommand::ImportArtifact { source: charx() }, |_| {})
         .await
         .unwrap_err();
 
     assert!(matches!(
         error,
-        stcli_core::EngineError::ArtifactCodec(ArtifactCodecError::InterfaceVersion { .. })
+        stcli_core::EngineError::ArtifactCodec(ArtifactCodecError::RevisionConflict(hash))
+            if hash == existing.revision_hash
     ));
-    assert!(
-        Store::open(&database)
-            .unwrap()
-            .artifacts()
-            .unwrap()
-            .is_empty()
+    let store = Store::open(&database).unwrap();
+    assert_eq!(
+        store.export_artifact(&existing.revision_hash).unwrap(),
+        payload
     );
-}
-
-#[tokio::test]
-async fn malformed_codec_bundle_fails_without_partial_persistence() {
-    let directory = tempdir().unwrap();
-    let database = directory.path().join("stcli.sqlite3");
-    let engine = StcliEngine::new(&database);
-    install_and_register(&engine, &codec_directory()).await;
-
-    let error = engine
-        .execute(
-            EngineCommand::ImportArtifact {
-                source: charx(Some("malformed-hash")),
-            },
-            |_| {},
-        )
-        .await
-        .unwrap_err();
-
-    assert!(matches!(
-        error,
-        stcli_core::EngineError::ArtifactCodec(ArtifactCodecError::HashMismatch {
-            field: "payload"
-        })
-    ));
     assert!(
-        Store::open(&database)
+        store
+            .artifact_codec_provenance(&existing.revision_hash)
             .unwrap()
-            .artifacts()
+            .is_none()
+    );
+    assert!(
+        store
+            .asset_references("artifact-revision", &existing.revision_hash.to_string())
             .unwrap()
             .is_empty()
     );

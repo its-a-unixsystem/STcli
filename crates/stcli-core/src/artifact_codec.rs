@@ -122,6 +122,8 @@ pub enum ArtifactCodecError {
     },
     #[error("artifact codec format '{0}' is invalid")]
     InvalidFormat(String),
+    #[error("artifact codec import conflicts with existing Artifact Revision {0}")]
+    RevisionConflict(ContentHash),
     #[error("artifact codec proposed {actual} assets; limit is {limit}")]
     AssetCount { actual: usize, limit: usize },
     #[error("artifact codec payload has {actual} bytes; limit is {limit}")]

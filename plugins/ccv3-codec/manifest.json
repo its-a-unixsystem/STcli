@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "engine": ">=0.1.0, <0.2.0",
   "component": "component.wasm",
-  "component_sha256": "sha256:2fc75988c8bc08930db7066fcc45af42de63d435d14f6ba8c55c07244820d4c8",
+  "component_sha256": "sha256:8743490d2f68f6add027dbc12a829ac71d2eb39c8c0505e95669730632bdea34",
   "dependencies": [],
   "license": "MIT",
   "subscriptions": [

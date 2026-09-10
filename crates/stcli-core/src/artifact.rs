@@ -413,13 +413,27 @@ impl Store {
         if provenance.format == "charx" {
             validate_embedded_asset_references(&decoded, &paths)?;
         }
-
         let assets_root = self.assets_root().to_owned();
         let transaction = self
             .connection
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(StorageError::Sqlite)
             .map_err(ArtifactError::Storage)?;
+        let revision_hash =
+            artifact_revision_hash(decoded.kind.as_str(), &bundle.source_format, &payload);
+        let revision_exists = transaction
+            .query_row(
+                "SELECT 1 FROM artifact_revisions WHERE revision_hash = ?1",
+                [revision_hash.to_string()],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(StorageError::Sqlite)
+            .map_err(ArtifactError::Storage)?
+            .is_some();
+        if revision_exists {
+            return Err(ArtifactCodecError::RevisionConflict(revision_hash));
+        }
         let mut created_assets = HashSet::new();
         let result: Result<ArtifactBundle, ArtifactError> = (|| {
             let primary = insert_artifact_revision(
