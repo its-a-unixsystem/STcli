@@ -14,22 +14,22 @@ This document defines how STcli is tested: the layers, where a new test belongs,
 |---|---|---|
 | 0001 | Trace is authority; projections rebuild exactly | Replay/rebuild tests in `turn_transactions.rs`, migration harness, e2e loop replay assertion, and STscript outcome/state tests in `stscript.rs` |
 | 0002 | Revision identity includes source bytes; profile bounds compatibility claims | `artifact.rs` unit tests, `compat verify` corpus |
-| 0003 | Plugins are pure Wasm declarative effects, digest-pinned | `stcli-core/tests/plugins.rs`, `stcli-cli/tests/plugins.rs`, `plugin-wasm` CI job |
+| 0003 | Plugins are pure Wasm declarative effects, digest-pinned | `stcli-core/tests/integration/plugins.rs`, `stcli-cli/tests/integration/plugins.rs`, `plugin-wasm` CI job |
 | 0004 | Preset settings precedence; embedded scripts execute only under grants | Preset settings/grant tests in `turn_transactions.rs`, `regex_scripts.rs` |
 | 0005 | Deletion is tombstones; compaction is reference-safe | Compaction tests in `turn_transactions.rs`, migration fixtures reproducing the 20a7fa1 ancestry shape |
 | 0009 | Extensions are imported and digest-pinned per Session; live JavaScript effects are recorded and Replay does not execute the Extension | `st_bridge.rs`: `imports_native_extension_and_adopts_fixed_bridge_grant`, `mid_session_extension_adoption_is_nonretroactive_and_resets_transient_state`, and `real_extension_complete_session_workflow_replays_offline` |
 | 0010 | Egress and Secondary Inference cross brokered, receipt-producing boundaries and replay offline | `st_bridge.rs`: `allowed_fetch_records_receipt_and_replays_offline`, `real_extension_egress_uses_local_tls_wire_path`, `secondary_inference_replay_uses_recorded_text_with_zero_calls`, and `real_extension_complete_session_workflow_replays_offline` |
 | 0013 | Candidate presentation suppresses Concealed Content and terminal controls without changing source | `stcli-tui/src/content.rs`: `renders_mixed_candidate_content_as_styled_text` and `suppresses_concealed_content_and_neutralizes_terminal_controls` |
 
-Native Extension controls are covered by `crates/stcli-tui/tests/extension_interactions.rs` and the interaction cases in `crates/stcli-core/tests/engine_seam.rs`. The [workflow evidence table](plugins.md#workflow-support-evidence) distinguishes supported Summarize behavior from controlled Stepped Thinking and Roadway fixtures. ADR 0012 is retired; graphical renderer probes are historical evidence, not current test targets.
+Native Extension controls are covered by `crates/stcli-tui/tests/integration/extension_interactions.rs` and the interaction cases in `crates/stcli-core/tests/integration/engine_seam.rs`. The [workflow evidence table](plugins.md#workflow-support-evidence) distinguishes supported Summarize behavior from controlled Stepped Thinking and Roadway fixtures. ADR 0012 is retired; graphical renderer probes are historical evidence, not current test targets.
 
 ## 2. The five layers
 
 | Layer | Location | Scope | Conventions |
 |---|---|---|---|
 | **L1 — Inline unit** | `#[cfg(test)]` in `crates/stcli-core/src/*.rs` | Pure functions: macro parsing, canonical JSON and hash invariants, regex-script parsing, lore arithmetic, tokenizer counts. No SQLite; no tokio unless the unit under test is async. | `fn <behavior>_<condition>()`, e.g. `setvar_nested_braces_parse` |
-| **L2 — Core integration** | `crates/stcli-core/tests/*.rs` | Engine flows through the public `stcli_core` API with a real SQLite store (tempdir) and real wasmtime: turns, capsules, compaction, migrations, provider failures, lore. | One file per subsystem: `turn_transactions.rs`, `plugins.rs`, `storage_migrations.rs`, `provider_failures.rs`, `capsule.rs`, `lore.rs` |
-| **L3 — Binary e2e** | `crates/stcli-cli/tests/*.rs` via `CARGO_BIN_EXE_stcli` + `STCLI_HOME` tempdir | clap parsing, exit codes, JSON envelopes, JSONL event streams, multi-process behavior (`provider-test serve`, the regex worker). | One file per user-visible workflow: `cli_session_loop.rs`, `protocol_contracts.rs`, `protocol_samples.rs` |
+| **L2 — Core integration** | `crates/stcli-core/tests/integration/*.rs` | Engine flows through the public `stcli_core` API with a real SQLite store (tempdir) and real wasmtime: turns, capsules, compaction, migrations, provider failures, lore. | One module per subsystem in the crate's shared `integration` binary: `turn_transactions.rs`, `plugins.rs`, `storage_migrations.rs`, `provider_failures.rs` |
+| **L3 — Binary e2e** | `crates/stcli-cli/tests/integration/*.rs` via `CARGO_BIN_EXE_stcli` + `STCLI_HOME` tempdir | clap parsing, exit codes, JSON envelopes, JSONL event streams, multi-process behavior (`provider-test serve`, the regex worker). | One module per user-visible workflow in the shared `integration` binary: `cli_session_loop.rs`, `protocol_contracts.rs`, `protocol_samples.rs`; secret-bearing `live_smoke.rs` stays standalone |
 | **L4 — Compat corpus** | `compat/fixtures/*.json`, run by `stcli compat verify` | Behavior claimed by [`compat/profiles/sillytavern-1.18-core.json`](../compat/profiles/sillytavern-1.18-core.json): per-macro, per-preset-field, lore evaluation, hard-unsupported rejections. | One suite file per manifest area; case ids `macro.<name>.<variant>`, `preset.<field>.<variant>`, `lore.<feature>.<variant>` |
 | **L5 — Oracle parity** | `provider-request-parity` cases in `phase4-preset-parity.json` | Parity against Nanobear v2.1, a redistributable third-party complex preset, and its recorded provider-request transcript; both are digest-pinned and committed in-repo. | Pinned expectations stay exact across normal, continue, regenerate, and swipe requests. |
 
@@ -110,7 +110,7 @@ Fixture updates are explicit reviewed changes:
 3. Run `node --check` for both `index.js` files.
 4. Recalculate SHA-256 for every non-sidecar file and update the sidecar in the same change.
 5. Run
-   `cargo test -p stcli-core --test st_bridge real_extension_fixture_provenance --locked`.
+   `cargo test -p stcli-core --test integration st_bridge::real_extension_fixture_provenance --locked`.
 
 Tests never download or refresh these fixtures.
 
@@ -191,7 +191,7 @@ The most recent migration bug (`20a7fa1`, candidate ancestry lost during migrati
   3. Idempotence: opening (migrating) an already-migrated store and rebuilding again leaves the hash unchanged. All three fixtures rebuild to one canonical projection.
 - Process rule, enforced in-test: fail if `SCHEMA_VERSION > max fixture version + 1`. Every schema bump must add a dump for the previous version.
 
-The fixtures and manifest are regenerated from the current engine (a canonical session built through the public API, then dumped at each historical schema shape). There is no prior release binary to trim; regenerate with `STCLI_REGENERATE_DB_FIXTURES=1 cargo test -p stcli-core --test storage_migrations`, review the SQL and hash diffs, then commit.
+The fixtures and manifest are regenerated from the current engine (a canonical session built through the public API, then dumped at each historical schema shape). There is no prior release binary to trim; regenerate with `STCLI_REGENERATE_DB_FIXTURES=1 cargo test -p stcli-core --test integration storage_migrations --locked`, review the SQL and hash diffs, then commit.
 
 ### G. Provider failure modes
 
@@ -227,10 +227,20 @@ dependency of `quality`.
 - **Caching**: `actions/cache@v4` stores the Cargo registry, Git cache, and build output, keyed by job, platform, toolchain, and `Cargo.lock`.
 - **Dependency policy**: The separate `dependencies` job runs `cargo-deny` with `--all-features --locked` for advisories, bans, and licenses. It is required by `quality`.
 - **Coverage is informational**: collect and display, never gate. On a codebase whose strongest checks are hash comparisons, a percentage threshold produces noise and gaming, not quality. Use the report to find under-tested modules (`capsule.rs` and `lore.rs` are the current standouts).
-- **No nextest**: per-test process isolation would *mask* the env-var mutation problem that workstream B fixes properly, and `cargo test` parallelism is adequate at this scale. Revisit if suite wall time exceeds ~5 minutes post-caching.
+- **No nextest**: standard Cargo remains canonical. On 2026-09-11, three warm `cargo test --workspace --locked` runs on the 24-thread development host had a 69.350-second median after caching and consolidation, versus a 609.835-second pre-change median. Revisit nextest only if the post-caching median again exceeds five minutes.
 - **Windows is a pre-v1.0 release gate**, not a current job. When it lands: `windows-latest`, same commands, non-required until green for a week. Expected breakage points: the bundled-SQLite build, subprocess regex-worker paths, and path/permission semantics per the PRD risk table.
 - **Plugin reproducibility recipe** (`plugin.yml`, informational): pinned `rustc 1.89.0` builds `plugins/proof` and the bundled `plugins/ccv3-codec` package (`org.stcli.sillytavern-codec`) for `wasm32-unknown-unknown`, then pinned `wasm-tools 1.236.1` (`wit-component 0.227.1`) runs `component new`. The matrix reproduces each checked-in `component.wasm` byte-for-byte; `wasm32-wasip2` is wrong because it links WASI imports the closed `plugin` world (export-only) can never satisfy. Bump the checked-in component and `manifest.json` `component_sha256` together whenever source or either pinned version changes.
 - Weekly `schedule:` cron on `test-linux`, `plugin-wasm`, `coverage`, and `live-smoke` to catch toolchain, dependency, and provider drift between pushes.
+
+#### Fast test execution
+
+- The test profile uses `debug = 1`. Line tables remain available in assertion backtraces without the link and disk cost of full debug symbols.
+- Wasmtime Components are compiled once per process and reused by their verified component digest. Every invocation still creates a fresh Store, limits, epoch deadline, timeout, linker instance, guest instance, fuel budget, and guest memory.
+- Normal integration tests are grouped into one `integration` binary per crate. `stcli-cli/tests/live_smoke.rs` remains isolated because it is opt-in and secret-bearing; `stcli-testkit/tests/testkit.rs` remains standalone because it already is the crate's only integration target.
+- Frontend tests seed prerequisite Artifact Revisions through the lowest public Store seam unless Artifact import is the behavior under test. Mutable SQLite stores are never shared between concurrent tests.
+- Subprocess tests are reserved for L3 process and protocol contracts. A shared test server may be reused when its state is immutable; mutable stores may not. Readiness signals replace sleeps.
+- Process-environment access uses `stcli_testkit::EnvironmentGuard`; subprocess-only values stay on `Command`.
+- Performance reviews use repeatable warm medians and focused target measurements. CI does not assert wall-clock thresholds.
 
 ### J. Live-provider smoke test (opt-in)
 
@@ -315,5 +325,5 @@ The original strategy added `proptest`; benchmark targets also use Criterion. Cu
 - **Naming**: L1 `fn <behavior>_<condition>()`; L2 file = subsystem, test = scenario; L3 file = workflow; L4 case ids `<area>.<name>.<variant>`.
 - **New test placement**: follow the decision list at the end of §2.
 - **Re-recording oracle expectations**: set `STCLI_NANOBEAR_PRESET` and `STCLI_NANOBEAR_ORACLE` to replacement source files, update the pinned counts and SHA-256 digests in `phase4-preset-parity.json`, replace the files under `compat/external/`, and record the upstream source and revision in both the suite and transcript.
-- **Regenerating protocol goldens**: set `STCLI_REGENERATE_PROTOCOL_SAMPLES=1` and run `cargo test -p stcli-cli --test protocol_samples`; review the byte diff like any API change; bump the affected schema `$id` if the shape changed.
-- **Adding a storage schema version**: after bumping `SCHEMA_VERSION` and writing the migration, add the previous version to `FIXTURE_VERSIONS` in `storage_migrations.rs`, teach `historical_ddl`/`populated_tables` its column shape, then regenerate with `STCLI_REGENERATE_DB_FIXTURES=1 cargo test -p stcli-core --test storage_migrations`, review the SQL and hash diffs, and commit the updated `tests/fixtures/db/` — the ratchet fails the build otherwise.
+- **Regenerating protocol goldens**: set `STCLI_REGENERATE_PROTOCOL_SAMPLES=1` and run `cargo test -p stcli-cli --test integration protocol_samples --locked`; review the byte diff like any API change; bump the affected schema `$id` if the shape changed.
+- **Adding a storage schema version**: after bumping `SCHEMA_VERSION` and writing the migration, add the previous version to `FIXTURE_VERSIONS` in `storage_migrations.rs`, teach `historical_ddl`/`populated_tables` its column shape, then regenerate with `STCLI_REGENERATE_DB_FIXTURES=1 cargo test -p stcli-core --test integration storage_migrations --locked`, review the SQL and hash diffs, and commit the updated `tests/fixtures/db/` — the ratchet fails the build otherwise.
