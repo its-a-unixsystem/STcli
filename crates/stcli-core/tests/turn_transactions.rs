@@ -1158,6 +1158,46 @@ async fn logical_state_changes_drive_trace_projection_and_prompt_history() {
 }
 
 #[tokio::test]
+async fn editing_an_unanswered_turn_resubmits_without_creating_a_branch() {
+    // Regression test for issue #132: replacing an unanswered Turn stays on its Branch.
+    let directory = tempdir().unwrap();
+    let mut store = Store::open(directory.path().join("stcli.sqlite3")).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let created = store
+        .create_session(configuration(character.revision_hash), 0)
+        .unwrap();
+    let original = create_failed_turn(
+        &mut store,
+        created.session.session_id,
+        created.branch.branch_id,
+        "original",
+    )
+    .await;
+    let branch_count = store.branches(created.session.session_id).unwrap().len();
+
+    store
+        .edit_user_turn(original.turn_id, "edited".to_owned(), |_| {})
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        store.branches(created.session.session_id).unwrap().len(),
+        branch_count
+    );
+    assert_eq!(
+        store
+            .turns_for_branch(created.branch.branch_id)
+            .unwrap()
+            .into_iter()
+            .map(|turn| turn.user_content)
+            .collect::<Vec<_>>(),
+        vec!["edited"]
+    );
+}
+
+#[tokio::test]
 async fn compaction_reaps_unreferenced_tombstones_but_preserves_active_forks() {
     let directory = tempdir().unwrap();
     let mut store = Store::open(directory.path().join("stcli.sqlite3")).unwrap();
@@ -1174,6 +1214,7 @@ async fn compaction_reaps_unreferenced_tombstones_but_preserves_active_forks() {
         "fork point",
     )
     .await;
+    complete_with_fixture_candidate(&mut store, &fork, "fork response");
     store
         .edit_user_turn(fork.turn_id, "active fork".to_owned(), |_| {})
         .await
@@ -1422,6 +1463,7 @@ async fn compaction_reaps_deleted_fork_branch_and_its_turns_in_reference_order()
         "deleted fork",
     )
     .await;
+    complete_with_fixture_candidate(&mut store, &fork, "fork response");
     store
         .edit_user_turn(fork.turn_id, "deleted child".to_owned(), |_| {})
         .await

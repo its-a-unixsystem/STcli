@@ -926,6 +926,12 @@ impl Store {
         let turn = self
             .turn(turn_id)?
             .ok_or(TurnError::TurnNotFound(turn_id))?;
+        if turn.selected_candidate_id.is_none() {
+            self.delete_turn(turn_id)?;
+            return self
+                .send_message(turn.session_id, turn.branch_id, user_content, on_event)
+                .await;
+        }
         let parent = self
             .branch(turn.branch_id)?
             .ok_or(TurnError::BranchNotFound(turn.branch_id))?;

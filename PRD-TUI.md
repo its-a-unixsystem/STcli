@@ -107,6 +107,15 @@ The main interaction screen. Layout:
 
 Scrollback: smart scroll — auto-scrolls to bottom when already at the bottom, freezes when the user has scrolled up. Full session history loads.
 
+Chat keyboard shortcuts:
+
+| Key | Action |
+|---|---|
+| `e` on a user message | Load the message into the composer for editing |
+| `e` on a Candidate | Continue the focused Turn |
+| `Esc` while editing | Cancel the edit and restore the prior composer draft |
+| `Enter` while editing | Submit the edit; answered Turns fork a Branch, while unanswered Turns are replaced and resubmitted on the current Branch |
+
 #### Swipe Indicator
 
 When the current message has multiple candidates, an inline indicator appears: `← 2/5 →`. The message content swaps in place. Navigation past the last candidate triggers a new generation attempt (swipe-to-regenerate).
@@ -142,6 +151,8 @@ All popups follow the same visual pattern: modal overlay, list/form navigation, 
 - After a completed response, a keybinding sends a continue command for the same turn.
 
 **Clipboard:** A keybinding copies the currently focused message content to the system clipboard.
+
+**Message editing:** Focus a user message and press `e` to edit it in the composer. Submitting an answered Turn creates a child Branch through `EngineCommand::EditUser`; submitting an unanswered Turn replaces and resubmits it on the current Branch. Escape cancels the edit and restores the prior composer draft.
 
 **Exit:** `q` or Ctrl+C quits immediately unless generation is actively streaming, in which case a confirmation prompt appears.
 
@@ -311,7 +322,6 @@ The following are explicitly excluded from the initial TUI release and tracked f
 
 ### Interaction
 
-- **Message editing.** Edit previous messages (user or assistant) in the chat view, with branch implications.
 - **Interactive file tree browser.** Graphical directory tree browser for character cards and assets.
 
 ## 6. Resolved Design Decisions

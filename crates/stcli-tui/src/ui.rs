@@ -483,7 +483,11 @@ fn render_chat(frame: &mut Frame<'_>, app: &mut App) {
     let hints = if app.generation.is_some() {
         "Esc stop  Ctrl+C quit (confirm)  ↑/↓ scroll  ? help".to_owned()
     } else if app.chat_focus == ChatFocus::Composer {
-        "Enter send/respond  Shift+Enter newline  ↑/Esc/Tab history  Ctrl+C quit".to_owned()
+        if app.is_editing_user_message() {
+            "Enter submit edit  Shift+Enter newline  Esc cancel edit  Ctrl+C quit".to_owned()
+        } else {
+            "Enter send/respond  Shift+Enter newline  ↑/Esc/Tab history  Ctrl+C quit".to_owned()
+        }
     } else {
         let mut hints =
             "Enter compose/respond  ↑/k ↓/j scroll  ←/→ select  x delete  b branch  B branches  E extensions  s settings  p provider  P preset  c copy"
@@ -491,12 +495,8 @@ fn render_chat(frame: &mut Frame<'_>, app: &mut App) {
         if history.turns.last().is_some() {
             hints.push_str("  r regenerate");
         }
-        if history
-            .turns
-            .last()
-            .is_some_and(|turn| turn.turn.selected_candidate_id.is_some())
-        {
-            hints.push_str("  e continue");
+        if let Some(action) = app.edit_key_hint() {
+            hints.push_str(&format!("  e {action}"));
         }
         hints.push_str("  ? help  q quit");
         hints
@@ -786,7 +786,7 @@ fn render_popup(frame: &mut Frame<'_>, app: &mut App) {
         Popup::Help => {
             frame.render_widget(Clear, area);
             frame.render_widget(
-                    Paragraph::new("Sessions\n  n  new session · ↑/↓ or j/k  navigate\n  /  filter · s  sort · Enter  open\n  b  toggle branch tree · c  duplicate · x  delete · r  rename\n  p  providers · P  presets · u  personas\n\nChat composer\n  Enter  send or answer an unanswered user message · Shift+Enter  newline\n  Escape or Tab  focus history\n\nChat history\n  ↑/↓ or j/k  scroll · Tab  focus next message · c  copy\n  ←/→  select Greeting or Candidate\n  x  delete candidate (on user message: delete turn)\n  r  regenerate · e  continue · Enter  compose or answer selected user message\n  b  branch at focused Turn · B  open Branch list · E  Extension interactions\n  s  generation settings · p  providers · P  presets\n\nInteraction forms\n  Tab/Shift+Tab navigate · Space/←/→ change · Ctrl+S save · Esc back\n\nEvery action is available without a mouse. Escape closes this help.")
+                    Paragraph::new("Sessions\n  n  new session · ↑/↓ or j/k  navigate\n  /  filter · s  sort · Enter  open\n  b  toggle branch tree · c  duplicate · x  delete · r  rename\n  p  providers · P  presets · u  personas\n\nChat composer\n  Enter  send, answer, or submit an edit · Shift+Enter  newline\n  Escape  cancel edit or focus history · Tab  focus history\n\nChat history\n  ↑/↓ or j/k  scroll · Tab  focus next message · c  copy\n  ←/→  select Greeting or Candidate\n  x  delete candidate (on user message: delete turn)\n  e  edit user message or continue Candidate · r  regenerate\n  Enter  compose or answer selected user message\n  b  branch at focused Turn · B  open Branch list · E  Extension interactions\n  s  generation settings · p  providers · P  presets\n\nInteraction forms\n  Tab/Shift+Tab  move · ↑/↓  choose · Space/Enter  toggle or activate\n  Ctrl+S  save · Esc  cancel\n\nGlobal\n  Ctrl+C  quit · ?  help")
                     .wrap(Wrap { trim: false })
                     .block(Block::default().borders(Borders::ALL).title(" Help "))
                     .style(Style::default().bg(app.theme.background).fg(app.theme.foreground)),

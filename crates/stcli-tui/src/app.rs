@@ -31,6 +31,12 @@ pub enum ChatFocus {
     History,
 }
 
+#[derive(Clone, Debug)]
+struct UserMessageEdit {
+    turn_id: EntityId,
+    prior_composer: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SortKey {
     Modified,
@@ -1011,6 +1017,7 @@ pub struct App {
     pub scroll: u16,
     pub follow: bool,
     pub composer: String,
+    user_message_edit: Option<UserMessageEdit>,
     pub popup: Option<Popup>,
     pub toast: Option<Toast>,
     pub generation: Option<GenerationState>,
@@ -1054,6 +1061,7 @@ impl App {
             scroll: 0,
             follow: true,
             composer: String::new(),
+            user_message_edit: None,
             popup: None,
             toast: None,
             generation: None,
@@ -1352,6 +1360,15 @@ impl App {
             self.open_provider_popup(ModalTarget::Chat);
             return Effect::None;
         }
+        if key.code == KeyCode::Esc && self.user_message_edit.is_some() {
+            let edit = self
+                .user_message_edit
+                .take()
+                .expect("guarded user message edit");
+            self.composer = edit.prior_composer;
+            self.chat_focus = ChatFocus::History;
+            return Effect::None;
+        }
         if self.generation.is_some() {
             return match key.code {
                 KeyCode::Esc => self.running_attempt().map_or(Effect::None, |attempt_id| {
@@ -1387,6 +1404,20 @@ impl App {
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.composer.push('\n');
             }
+            KeyCode::Enter if self.user_message_edit.is_some() => {
+                if !self.composer.trim().is_empty() {
+                    let edit = self
+                        .user_message_edit
+                        .take()
+                        .expect("guarded user message edit");
+                    let content = std::mem::take(&mut self.composer);
+                    self.begin_generation(content.clone());
+                    return Effect::Start(EngineCommand::EditUser {
+                        turn_id: edit.turn_id,
+                        content,
+                    });
+                }
+            }
             KeyCode::Enter => {
                 if self.composer.trim().is_empty() {
                     if let Some(turn_id) = self.unanswered_turn_id() {
@@ -1394,17 +1425,13 @@ impl App {
                     }
                 } else {
                     let history = self.history.as_ref().expect("chat has history");
+                    let session_id = history.session.session_id;
+                    let branch_id = history.branch.branch_id;
                     let content = std::mem::take(&mut self.composer);
-                    self.generation = Some(GenerationState {
-                        partial: String::new(),
-                        reasoning: String::new(),
-                        streaming: history.configuration.configuration.provider.stream,
-                        pending_input: Some(content.clone()),
-                        continues: false,
-                    });
+                    self.begin_generation(content.clone());
                     return Effect::Start(EngineCommand::Send {
-                        session_id: history.session.session_id,
-                        branch_id: history.branch.branch_id,
+                        session_id,
+                        branch_id,
                         content,
                     });
                 }
@@ -1418,6 +1445,17 @@ impl App {
             _ => {}
         }
         Effect::None
+    }
+
+    fn begin_generation(&mut self, pending_input: String) {
+        let history = self.history.as_ref().expect("chat has history");
+        self.generation = Some(GenerationState {
+            partial: String::new(),
+            reasoning: String::new(),
+            streaming: history.configuration.configuration.provider.stream,
+            pending_input: Some(pending_input),
+            continues: false,
+        });
     }
 
     fn handle_history_key(&mut self, key: KeyEvent) -> Effect {
@@ -1473,10 +1511,36 @@ impl App {
             KeyCode::Char('p') => self.open_provider_popup(ModalTarget::Chat),
             KeyCode::Char('P') => self.open_preset_popup(ModalTarget::Chat),
             KeyCode::Char('e') => {
-                if let Some(turn_id) = self.current_turn_id()
-                    && self.current_candidate_id().is_some()
-                {
-                    return Effect::Start(EngineCommand::Continue { turn_id });
+                let Some(history) = &self.history else {
+                    return Effect::None;
+                };
+                match resolve_focus(history, self.focused_message) {
+                    Some(FocusedSlot::UserMessage(turn_index)) => {
+                        let turn = &history.turns[turn_index].turn;
+                        let turn_id = turn.turn_id;
+                        let content = turn.user_content.clone();
+                        let prior_composer = self.user_message_edit.take().map_or_else(
+                            || std::mem::take(&mut self.composer),
+                            |edit| edit.prior_composer,
+                        );
+                        self.user_message_edit = Some(UserMessageEdit {
+                            turn_id,
+                            prior_composer,
+                        });
+                        self.composer = content;
+                        self.chat_focus = ChatFocus::Composer;
+                    }
+                    Some(FocusedSlot::AssistantMessage(turn_index))
+                        if history.turns[turn_index]
+                            .turn
+                            .selected_candidate_id
+                            .is_some() =>
+                    {
+                        return Effect::Start(EngineCommand::Continue {
+                            turn_id: history.turns[turn_index].turn.turn_id,
+                        });
+                    }
+                    _ => {}
                 }
             }
             KeyCode::Char('c') => {
@@ -4550,9 +4614,23 @@ impl App {
 
     pub fn finish_generation(&mut self, result: Result<EngineResult, String>) {
         match result {
-            Ok(_) => {
+            Ok(result) => {
                 self.generation = None;
-                if let Err(error) = self.reload_history() {
+                let edited_branch = match &result {
+                    EngineResult::CompletedTurn(completed)
+                        if self.history.as_ref().is_some_and(|history| {
+                            history.branch.branch_id != completed.turn.branch_id
+                        }) =>
+                    {
+                        Some((completed.turn.session_id, completed.turn.branch_id))
+                    }
+                    _ => None,
+                };
+                let refresh = match edited_branch {
+                    Some((session_id, branch_id)) => self.open_branch(session_id, branch_id),
+                    None => self.reload_history(),
+                };
+                if let Err(error) = refresh {
                     self.show_error(error.to_string());
                 }
                 if let Some(history) = &self.history {
@@ -4997,6 +5075,23 @@ impl App {
                 self.show_error(error);
                 false
             }
+        }
+    }
+
+    pub(crate) fn is_editing_user_message(&self) -> bool {
+        self.user_message_edit.is_some()
+    }
+
+    pub(crate) fn edit_key_hint(&self) -> Option<&'static str> {
+        let history = self.history.as_ref()?;
+        match resolve_focus(history, self.focused_message)? {
+            FocusedSlot::UserMessage(_) => Some("edit"),
+            FocusedSlot::AssistantMessage(index)
+                if history.turns[index].turn.selected_candidate_id.is_some() =>
+            {
+                Some("continue")
+            }
+            _ => None,
         }
     }
 
@@ -5528,6 +5623,52 @@ mod tests {
     }
 
     #[test]
+    fn e_on_user_message_edits_and_submits_that_turn() {
+        // Regression test for issue #132: user-message editing must target the focused Turn.
+        let (mut app, _directory) = app_with_session();
+        let turn_id = append_answered_turn(&mut app);
+        app.composer = "saved draft".to_owned();
+        app.chat_focus = ChatFocus::History;
+        app.focused_message = message_count(app.history.as_ref().unwrap()).saturating_sub(2);
+
+        assert!(matches!(
+            app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)),
+            Effect::None
+        ));
+        assert_eq!(app.chat_focus, ChatFocus::Composer);
+        assert_eq!(app.composer, "Hello?");
+
+        app.composer = "Edited question?".to_owned();
+        let effect = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            effect,
+            Effect::Start(EngineCommand::EditUser {
+                turn_id: actual,
+                content,
+            }) if actual == turn_id && content == "Edited question?"
+        ));
+    }
+
+    #[test]
+    fn escape_from_user_message_edit_restores_saved_draft() {
+        // Regression test for issue #132: cancelling an edit must not discard composer input.
+        let (mut app, _directory) = app_with_session();
+        append_answered_turn(&mut app);
+        app.composer = "saved draft".to_owned();
+        app.chat_focus = ChatFocus::History;
+        app.focused_message = message_count(app.history.as_ref().unwrap()).saturating_sub(2);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        app.composer.push_str(" changed");
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.chat_focus, ChatFocus::History);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert_eq!(app.chat_focus, ChatFocus::History);
+        assert_eq!(app.composer, "saved draft");
+    }
+
+    #[test]
     fn enter_on_selected_unanswered_user_message_starts_response() {
         // Regression: Enter on the last user message must generate its missing response.
         let (mut app, _directory) = app_with_session();
@@ -5678,6 +5819,93 @@ mod tests {
 
         assert_eq!(app.generation.as_ref().unwrap().reasoning, "Thinking live");
         assert!(app.generation.as_ref().unwrap().partial.is_empty());
+    }
+
+    #[test]
+    fn edit_user_completion_switches_to_the_created_branch() {
+        // Regression test for issue #132: answered edits must display their new Branch.
+        let (mut app, _directory) = app_with_session();
+        let history = app.history.as_ref().expect("history loaded");
+        let session_id = history.session.session_id;
+        let source_branch_id = history.branch.branch_id;
+        let config_hash = history.configuration.revision_hash.clone();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime
+            .block_on(app.engine.execute(
+                EngineCommand::CreateBranch {
+                    session_id,
+                    source_branch_id: Some(source_branch_id),
+                    at_turn_id: None,
+                },
+                |_| {},
+            ))
+            .unwrap();
+        let EngineResult::Branch(branch) = result else {
+            panic!("expected branch");
+        };
+        let turn_id = EntityId::new();
+        let attempt_id = EntityId::new();
+        let completed = stcli_core::CompletedTurn {
+            turn: stcli_core::TurnProjection {
+                turn_id,
+                session_id,
+                branch_id: branch.branch_id,
+                user_content: "edited".to_owned(),
+                selected_candidate_id: Some(EntityId::new()),
+                hidden: false,
+                created_event_id: EntityId::new().to_string(),
+            },
+            attempt: stcli_core::AttemptProjection {
+                attempt_id,
+                session_id,
+                branch_id: branch.branch_id,
+                kind: stcli_core::AttemptKind::Primary,
+                turn_id: Some(turn_id),
+                parent_attempt_id: None,
+                caller: None,
+                config_hash,
+                retry_of_attempt_id: None,
+                status: AttemptStatus::Completed,
+                prompt_plan: None,
+                provider_profile: None,
+                effective_generation_settings: None,
+                provider_request_hash: None,
+                response_hash: None,
+                usage: None,
+                provider_receipt: None,
+                effect_receipt: None,
+                error_message: None,
+                created_event_id: EntityId::new().to_string(),
+                completed_event_id: Some(EntityId::new().to_string()),
+            },
+            candidate: CandidateProjection {
+                candidate_id: EntityId::new(),
+                turn_id,
+                attempt_id: Some(attempt_id),
+                parent_candidate_id: None,
+                origin: stcli_core::CandidateOrigin::Generated,
+                content: "response".to_owned(),
+                rendered_content: None,
+                hidden: false,
+                created_event_id: EntityId::new().to_string(),
+            },
+            provider_events: Vec::new(),
+            scrubbed_reasoning: None,
+        };
+
+        app.finish_generation(Ok(EngineResult::CompletedTurn(Box::new(completed))));
+
+        assert_eq!(
+            app.history
+                .as_ref()
+                .expect("history reloaded")
+                .branch
+                .branch_id,
+            branch.branch_id
+        );
     }
 
     #[test]

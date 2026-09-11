@@ -46,6 +46,15 @@ These native controls describe supported workflows. They do not convert an Exten
 or prove full upstream compatibility. See [Writing plugins](plugins.md#declared-interaction-surfaces)
 for the adapter contract and the exact Summarize, Stepped Thinking, and Roadway evidence.
 
+## Edit user messages
+
+In Chat history, focus a user message and press `e` to load it into the composer. Press `Enter`
+to submit the edited text. Editing an answered Turn creates a child Branch and generates a new
+Candidate; editing an unanswered Turn replaces and resubmits it on the current Branch. Press
+`Esc` to cancel editing, restore the prior composer draft, and return focus to Chat history.
+
+The same `e` key continues the focused Turn when a Candidate is selected.
+
 ## Branch from Chat
 
 In Chat history, focus a Turn and press `b` to create a new child Branch at that Turn. The new Branch excludes the focused Turn from its inherited history and pre-fills the composer with that Turn's user content, ready to resend or edit. With the Greeting (or no Turn) focused, `b` branches from the start with an empty composer. Branch creation switches Chat to the new Branch and confirms with a toast; while a Generation Attempt is streaming, `b` is ignored.
