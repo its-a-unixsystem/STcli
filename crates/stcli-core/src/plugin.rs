@@ -3,6 +3,7 @@
 //! `st-bridge` Plugins run SillyTavern Extensions in persistent per-Session
 //! QuickJS contexts; stateless `script` Plugins use the separate script path.
 
+use parking_lot::Mutex;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,7 +12,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{OnceLock, mpsc},
     thread,
     time::Duration,
 };
@@ -23,6 +24,59 @@ use crate::{ArtifactCodecDeclaration, ChatRole, ContentHash, StateKey, decode_un
 
 const MANIFEST_SCHEMA: &str = "stcli.plugin-manifest/v1";
 const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
+const MAX_COMPILED_COMPONENT_CACHE_ENTRIES: usize = 32;
+
+struct WasmRuntime {
+    engine: Engine,
+    components: Mutex<VecDeque<(ContentHash, Component)>>,
+}
+
+impl WasmRuntime {
+    fn new() -> Result<Self, anyhow::Error> {
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        config.consume_fuel(true);
+        config.epoch_interruption(true);
+        Ok(Self {
+            engine: Engine::new(&config)?,
+            components: Mutex::new(VecDeque::new()),
+        })
+    }
+
+    fn component(
+        &self,
+        digest: &ContentHash,
+        component_bytes: &[u8],
+    ) -> Result<Component, PluginError> {
+        let mut components = self.components.lock();
+        if let Some(position) = components
+            .iter()
+            .position(|(cached_digest, _)| cached_digest == digest)
+        {
+            let (_, component) = components
+                .remove(position)
+                .expect("cache position came from the same collection");
+            components.push_back((digest.clone(), component.clone()));
+            return Ok(component);
+        }
+
+        let component =
+            Component::new(&self.engine, component_bytes).map_err(PluginError::Wasmtime)?;
+        if components.len() == MAX_COMPILED_COMPONENT_CACHE_ENTRIES {
+            components.pop_front();
+        }
+        components.push_back((digest.clone(), component.clone()));
+        Ok(component)
+    }
+}
+
+fn wasm_runtime() -> Result<&'static WasmRuntime, PluginError> {
+    static RUNTIME: OnceLock<Result<WasmRuntime, String>> = OnceLock::new();
+    RUNTIME
+        .get_or_init(|| WasmRuntime::new().map_err(|error| error.to_string()))
+        .as_ref()
+        .map_err(|message| PluginError::Wasmtime(anyhow::Error::msg(message.clone())))
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -396,7 +450,7 @@ impl PluginHost {
         let (effects, fuel_consumed, script_logs, prng_seed) = match installed.manifest.runtime {
             PluginRuntime::Wasm => {
                 let (output_json, fuel_consumed) =
-                    self.execute_wasm(&component_bytes, &input_json)?;
+                    self.execute_wasm(&digest, &component_bytes, &input_json)?;
                 if output_json.len() > self.limits.output_bytes {
                     return Err(PluginError::OutputLimit);
                 }
@@ -545,23 +599,21 @@ impl PluginHost {
 
     fn execute_wasm(
         &self,
+        digest: &ContentHash,
         component_bytes: &[u8],
         input_json: &str,
     ) -> Result<(String, u64), PluginError> {
-        let mut config = Config::new();
-        config.wasm_component_model(true);
-        config.consume_fuel(true);
-        config.epoch_interruption(true);
-        let engine = Engine::new(&config).map_err(PluginError::Wasmtime)?;
-        let component = Component::new(&engine, component_bytes).map_err(PluginError::Wasmtime)?;
-        let linker = Linker::new(&engine);
+        let runtime = wasm_runtime()?;
+        let engine = &runtime.engine;
+        let component = runtime.component(digest, component_bytes)?;
+        let linker = Linker::new(engine);
         let limits = StoreLimitsBuilder::new()
             .memory_size(self.limits.memory_bytes)
             .instances(1)
             .memories(2)
             .tables(2)
             .build();
-        let mut store = Store::new(&engine, limits);
+        let mut store = Store::new(engine, limits);
         store.limiter(|limits: &mut StoreLimits| limits);
         store
             .set_fuel(self.limits.fuel)
