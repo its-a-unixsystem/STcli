@@ -1,0 +1,16 @@
+mod artifact_codec_hook;
+mod artifact_plugin_inspection;
+mod compat_coverage;
+mod default_plugins;
+mod engine_seam;
+mod personas;
+mod plugins;
+mod prompt_order_toggles;
+mod prop_regex_lore;
+mod provider_failures;
+mod scripts;
+mod st_bridge;
+mod storage_migrations;
+mod stscript;
+mod text_completion;
+mod turn_transactions;

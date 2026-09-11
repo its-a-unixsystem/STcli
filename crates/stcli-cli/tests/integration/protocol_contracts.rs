@@ -11,12 +11,13 @@ use serde_json::Value;
 use stcli_core::{EntityId, Store};
 use stcli_testkit::{MockProviderProcess, TestHome, configuration, fixtures, stcli_cmd};
 
-const CLI_ENVELOPE_SCHEMA: &str = include_str!("../../../schemas/cli-envelope.schema.json");
-const CLI_EVENT_SCHEMA: &str = include_str!("../../../schemas/cli-event.schema.json");
-const TURN_CAPSULE_SCHEMA: &str = include_str!("../../../schemas/turn-capsule.schema.json");
-const PLUGIN_MANIFEST_SCHEMA: &str = include_str!("../../../schemas/plugin-manifest.schema.json");
-const COMPAT_PROFILE_SCHEMA: &str = include_str!("../../../schemas/compat-profile.schema.json");
-const FIXTURE_SUITE_SCHEMA: &str = include_str!("../../../schemas/fixture-suite.schema.json");
+const CLI_ENVELOPE_SCHEMA: &str = include_str!("../../../../schemas/cli-envelope.schema.json");
+const CLI_EVENT_SCHEMA: &str = include_str!("../../../../schemas/cli-event.schema.json");
+const TURN_CAPSULE_SCHEMA: &str = include_str!("../../../../schemas/turn-capsule.schema.json");
+const PLUGIN_MANIFEST_SCHEMA: &str =
+    include_str!("../../../../schemas/plugin-manifest.schema.json");
+const COMPAT_PROFILE_SCHEMA: &str = include_str!("../../../../schemas/compat-profile.schema.json");
+const FIXTURE_SUITE_SCHEMA: &str = include_str!("../../../../schemas/fixture-suite.schema.json");
 
 fn parse_schema(source: &str) -> Value {
     serde_json::from_str(source).unwrap()

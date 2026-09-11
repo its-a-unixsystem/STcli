@@ -2,14 +2,16 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use serde_json::Value;
 use stcli_core::{Store, canonical_json};
-use stcli_testkit::{MockProviderProcess, TestHome, configuration, fixtures, stcli_cmd};
+use stcli_testkit::{
+    EnvironmentGuard, MockProviderProcess, TestHome, configuration, fixtures, stcli_cmd,
+};
 
 const REGENERATE_ENV: &str = "STCLI_REGENERATE_PROTOCOL_SAMPLES";
 const FIXED_PROVIDER_URL: &str = "https://127.0.0.1:443";
 const FIXED_CERTIFICATE: &str = "CANONICAL TEST CERTIFICATE";
-const CLI_ENVELOPE_SCHEMA: &str = include_str!("../../../schemas/cli-envelope.schema.json");
-const CLI_EVENT_SCHEMA: &str = include_str!("../../../schemas/cli-event.schema.json");
-const TURN_CAPSULE_SCHEMA: &str = include_str!("../../../schemas/turn-capsule.schema.json");
+const CLI_ENVELOPE_SCHEMA: &str = include_str!("../../../../schemas/cli-envelope.schema.json");
+const CLI_EVENT_SCHEMA: &str = include_str!("../../../../schemas/cli-event.schema.json");
+const TURN_CAPSULE_SCHEMA: &str = include_str!("../../../../schemas/turn-capsule.schema.json");
 
 #[tokio::test(flavor = "multi_thread")]
 async fn real_cli_workflows_match_canonical_protocol_samples() {
@@ -115,7 +117,11 @@ async fn real_cli_workflows_match_canonical_protocol_samples() {
     ]);
 
     let sample_directory = sample_directory();
-    if std::env::var_os(REGENERATE_ENV).as_deref() == Some("1".as_ref()) {
+    let regenerate = {
+        let _environment = EnvironmentGuard::new();
+        std::env::var_os(REGENERATE_ENV).as_deref() == Some("1".as_ref())
+    };
+    if regenerate {
         fs::create_dir_all(&sample_directory).unwrap();
         for (name, bytes) in &samples {
             fs::write(sample_directory.join(name), bytes).unwrap();

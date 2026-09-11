@@ -8,7 +8,7 @@ use std::{
     process::{Command, Output},
 };
 
-const CLI_ENVELOPE_SCHEMA: &str = include_str!("../../../schemas/cli-envelope.schema.json");
+const CLI_ENVELOPE_SCHEMA: &str = include_str!("../../../../schemas/cli-envelope.schema.json");
 
 fn example(name: &str) -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

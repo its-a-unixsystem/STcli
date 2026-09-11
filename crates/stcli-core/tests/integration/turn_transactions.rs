@@ -366,7 +366,7 @@ async fn capsules_replay_offline_import_isolated_and_recalculate_redaction_capab
             .all(|artifact| artifact.codec.is_some())
     );
     let schema =
-        serde_json::from_str(include_str!("../../../schemas/turn-capsule.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../../../../schemas/turn-capsule.schema.json")).unwrap();
     jsonschema::validator_for(&schema)
         .unwrap()
         .validate(&serde_json::to_value(&portable).unwrap())

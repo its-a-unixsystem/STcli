@@ -178,7 +178,7 @@ fn expected_flat_bundle(source: &[u8], format: &str) -> (Vec<u8>, usize, usize) 
         "json" => (source.to_vec(), 0, 0),
         "png" | "apng" => (character_card_v3(), 0, 1),
         "webp"
-            if source == include_bytes!("fixtures/artifacts/card-v2-exif.webp").as_slice() =>
+            if source == include_bytes!("../fixtures/artifacts/card-v2-exif.webp").as_slice() =>
         {
             (
                 br#"{"spec":"chara_card_v2","spec_version":"2.0","data":{"name":"iTXt V2","first_mes":"Hello iTXt"}}"#.to_vec(),
@@ -187,7 +187,7 @@ fn expected_flat_bundle(source: &[u8], format: &str) -> (Vec<u8>, usize, usize) 
             )
         }
         "webp"
-            if source == include_bytes!("fixtures/artifacts/card-v3-xmp.webp").as_slice() =>
+            if source == include_bytes!("../fixtures/artifacts/card-v3-xmp.webp").as_slice() =>
         {
             (
                 br#"{"spec":"chara_card_v3","spec_version":"3.0","data":{"name":"PNG V3","first_mes":"Hello V3"}}"#.to_vec(),
@@ -346,13 +346,13 @@ async fn bundled_codec_preserves_png_apng_and_webp_parity() {
     assert_codec_parity(png_card(false), "png", true).await;
     assert_codec_parity(png_card(true), "apng", true).await;
     assert_codec_parity(
-        include_bytes!("fixtures/artifacts/card-v2-exif.webp").to_vec(),
+        include_bytes!("../fixtures/artifacts/card-v2-exif.webp").to_vec(),
         "webp",
         true,
     )
     .await;
     assert_codec_parity(
-        include_bytes!("fixtures/artifacts/card-v3-xmp.webp").to_vec(),
+        include_bytes!("../fixtures/artifacts/card-v3-xmp.webp").to_vec(),
         "webp",
         true,
     )

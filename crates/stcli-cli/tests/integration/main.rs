@@ -1,0 +1,11 @@
+mod cli_session_loop;
+mod credentials;
+mod inspect_lifecycle;
+mod plugins;
+mod prompt_diff;
+mod protocol_contracts;
+mod protocol_samples;
+mod provider_failures;
+mod provider_profiles;
+mod regex_scripts;
+mod regex_worker;

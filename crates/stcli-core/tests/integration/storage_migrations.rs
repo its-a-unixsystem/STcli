@@ -11,8 +11,8 @@
 //! schema change:
 //!
 //! ```bash
-//! STCLI_REGENERATE_DB_FIXTURES=1 cargo test -p stcli-core --test storage_migrations
-//! cargo test -p stcli-core --test storage_migrations
+//! STCLI_REGENERATE_DB_FIXTURES=1 cargo test -p stcli-core --test integration storage_migrations --locked
+//! cargo test -p stcli-core --test integration storage_migrations --locked
 //! ```
 
 use std::{
@@ -23,7 +23,7 @@ use std::{
 use rusqlite::{Connection, types::ValueRef};
 use serde_json::{Value, json};
 use stcli_core::{EntityId, StorageError, Store, session_projection_hash};
-use stcli_testkit::{configuration, fixtures};
+use stcli_testkit::{EnvironmentGuard, configuration, fixtures};
 use tempfile::tempdir;
 
 const REGENERATE_ENV: &str = "STCLI_REGENERATE_DB_FIXTURES";
@@ -772,6 +772,7 @@ CREATE TABLE capsule_artifacts (
 // ---------------------------------------------------------------------------
 
 fn regenerating() -> bool {
+    let _environment = EnvironmentGuard::new();
     std::env::var_os(REGENERATE_ENV).as_deref() == Some("1".as_ref())
 }
 

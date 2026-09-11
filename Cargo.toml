@@ -60,3 +60,6 @@ tempfile = "3.0"
 unicode-width = "0.2"
 ulid = { version = "1.0", features = ["serde"] }
 zip = { version = "7.2", default-features = false, features = ["deflate-flate2"] }
+
+[profile.test]
+debug = 1
