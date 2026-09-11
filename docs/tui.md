@@ -69,7 +69,7 @@ After duplication, the Sessions screen remains open and highlights the new Sessi
 
 ## Recover generation settings in Chat
 
-With Chat history focused, press `s` to edit the active Session's reasoning effort, temperature, and maximum response tokens. Reasoning effort can be omitted, set to `low`, `medium`, or `high` with `Left`/`Right`, or entered as a custom value. Press `Ctrl+S` to append a new Session Configuration Revision. Press `r` to regenerate the focused Turn with the updated settings.
+With Chat history focused, press `s` to edit the active Session's reasoning effort, temperature, and maximum response tokens. Reasoning effort can be omitted, set to `low`, `medium`, or `high` with `Left`/`Right`, or entered as a custom value. Selecting `[Omit]` explicitly suppresses preset-level reasoning effort instead of inheriting it. Press `Ctrl+S` to append a new Session Configuration Revision. Press `r` to regenerate the focused Turn with the updated settings.
 
 ## Manage provider profiles
 

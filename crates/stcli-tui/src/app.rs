@@ -4154,8 +4154,11 @@ impl App {
             .as_ref()
             .and_then(|preset| preset.semantic.as_object());
         let resolve = |name: &str, preset_name: &str, default: Option<&str>| {
-            session
-                .and_then(|settings| settings.get(name))
+            let session_value = session.and_then(|settings| settings.get(name));
+            if name == "reasoning_effort" && session_value.is_some_and(serde_json::Value::is_null) {
+                return String::new();
+            }
+            session_value
                 .or_else(|| preset.and_then(|settings| settings.get(preset_name)))
                 .and_then(|value| summary_value(Some(value)))
                 .or_else(|| default.map(str::to_owned))
@@ -4219,7 +4222,7 @@ impl App {
             return Effect::None;
         };
         if state.reasoning_effort.trim().is_empty() {
-            settings.remove("reasoning_effort");
+            settings.insert("reasoning_effort".to_owned(), serde_json::Value::Null);
         } else {
             settings.insert(
                 "reasoning_effort".to_owned(),

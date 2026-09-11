@@ -661,6 +661,56 @@ fn dry_run_resolves_preset_settings_and_applies_assembly_behavior() {
 }
 
 #[test]
+fn null_session_reasoning_effort_suppresses_preset_reasoning_effort() {
+    // Regression test for issue #108: an explicit omission must not fall back to the preset.
+    let directory = tempdir().unwrap();
+    let mut store = Store::open(directory.path().join("stcli.sqlite3")).unwrap();
+    let character = store
+        .import_artifact(fixtures::minimal_card().as_bytes())
+        .unwrap();
+    let preset = store
+        .import_artifact(
+            br#"{
+                "reasoning_effort": "high",
+                "prompts": [
+                    {"identifier": "chatHistory", "role": "system", "content": ""}
+                ],
+                "prompt_order": [{"character_id": 100001, "order": [
+                    {"identifier": "chatHistory", "enabled": true}
+                ]}]
+            }"#,
+        )
+        .unwrap();
+    let mut config = configuration(character.revision_hash);
+    config.prompt_preset_revision = Some(preset.revision_hash);
+    config.generation_settings = json!({"reasoning_effort": null});
+    let created = store.create_session(config, 0).unwrap();
+
+    let dry_run = store
+        .dry_run_message(
+            created.session.session_id,
+            created.branch.branch_id,
+            "Hello",
+        )
+        .unwrap();
+
+    assert!(
+        dry_run
+            .effective_generation_settings
+            .values
+            .get("reasoning_effort")
+            .is_none()
+    );
+    assert!(
+        !dry_run
+            .effective_generation_settings
+            .provenance
+            .contains_key("reasoning_effort")
+    );
+    assert!(dry_run.provider_request.get("reasoning_effort").is_none());
+}
+
+#[test]
 fn dry_run_preserves_sequential_macro_effects_and_absolute_injections() {
     let directory = tempdir().unwrap();
     let mut store = Store::open(directory.path().join("stcli.sqlite3")).unwrap();

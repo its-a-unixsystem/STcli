@@ -26,6 +26,10 @@ _Avoid_: Chat, conversation
 An immutable set of behavior-affecting selections used by future turns in a session. Every generation attempt pins one revision.
 _Avoid_: Global settings, current configuration
 
+**Session Generation Settings Override**:
+A named generation parameter stored in a Session Configuration Revision that takes precedence over the selected prompt preset. For reasoning effort, an explicit `null` suppresses the parameter instead of inheriting the preset value.
+_Avoid_: Global generation setting, preset edit
+
 **Effective Generation Settings**:
 The immutable generation settings used by a Generation Attempt, resolved from explicit Session configuration over the selected prompt preset over Compatibility Profile defaults.
 _Avoid_: Preset settings, provider defaults, current settings

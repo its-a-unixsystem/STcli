@@ -3888,8 +3888,13 @@ fn resolve_effective_generation_settings(
         ("names_behavior", "names_behavior", None),
     ];
     for (name, preset_name, profile_default) in fields {
-        let resolved = session
-            .and_then(|settings| settings.get(name))
+        let session_value = session.and_then(|settings| settings.get(name));
+        if name == "reasoning_effort" && session_value.is_some_and(Value::is_null) {
+            values.remove(name);
+            provenance.remove(name);
+            continue;
+        }
+        let resolved = session_value
             .map(|value| (value.clone(), GenerationSettingSource::Session))
             .or_else(|| {
                 preset
