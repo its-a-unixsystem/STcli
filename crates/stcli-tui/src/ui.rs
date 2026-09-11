@@ -593,7 +593,7 @@ fn chat_text(app: &App) -> (Text<'static>, Vec<MessageRange>) {
             app.chat_focus == ChatFocus::History && app.focused_message == message_index,
             app,
         ));
-        append_markdown(&mut lines, &turn.turn.user_content, app, message_index);
+        append_markdown(&mut lines, turn.resolved_user_content(), app, message_index);
         lines.push(Line::from("────────────────────────────────"));
         ranges.push((message_index, start, lines.len() as u16, None));
         message_index += 1;

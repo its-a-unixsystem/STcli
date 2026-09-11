@@ -623,10 +623,11 @@ impl ParsedTag {
         let (name, mut arguments) = if parts.len() == 1 {
             if first.starts_with('.') || first.starts_with('$') {
                 (first, Vec::new())
-            } else if let Some((name, argument)) = first.split_once(' ') {
-                (name.to_owned(), vec![argument.trim().to_owned()])
-            } else if let Some((name, argument)) = first.split_once(':') {
-                (name.to_owned(), vec![argument.trim().to_owned()])
+            } else if let Some(separator) = first.find([' ', ':']) {
+                (
+                    first[..separator].to_owned(),
+                    vec![first[separator + 1..].trim().to_owned()],
+                )
             } else {
                 (first, Vec::new())
             }
@@ -768,19 +769,29 @@ fn choose(values: &[String], random: u64) -> Option<&str> {
 
 fn roll(expression: &str, rng: &mut DeterministicRng) -> Result<String, MacroError> {
     let expression = expression.trim();
-    let (count, rest) = expression.split_once('d').unwrap_or(("1", expression));
-    let count = count
-        .parse::<u64>()
-        .map_err(|_| MacroError::InvalidRoll(expression.to_owned()))?;
+    let (count, rest) = expression
+        .find(['d', 'D'])
+        .map(|separator| (&expression[..separator], &expression[separator + 1..]))
+        .unwrap_or(("1", expression));
+    let count = if count.trim().is_empty() {
+        1
+    } else {
+        count
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| MacroError::InvalidRoll(expression.to_owned()))?
+    };
     let (sides, modifier) = rest
         .split_once('+')
-        .map(|(sides, modifier)| (sides, modifier.parse::<i64>()))
+        .map(|(sides, modifier)| (sides, modifier.trim().parse::<i64>()))
         .or_else(|| {
-            rest.split_once('-')
-                .map(|(sides, modifier)| (sides, modifier.parse::<i64>().map(|value| -value)))
+            rest.split_once('-').map(|(sides, modifier)| {
+                (sides, modifier.trim().parse::<i64>().map(|value| -value))
+            })
         })
         .unwrap_or((rest, Ok(0)));
     let sides = sides
+        .trim()
         .parse::<u64>()
         .map_err(|_| MacroError::InvalidRoll(expression.to_owned()))?;
     let modifier = modifier.map_err(|_| MacroError::InvalidRoll(expression.to_owned()))?;
@@ -901,6 +912,28 @@ mod tests {
             .unwrap();
         assert_eq!(rendered.text, "before {{platformMacro::x}} after");
         assert_eq!(rendered.warnings.len(), 1);
+    }
+
+    #[test]
+    fn roll_accepts_standard_dice_shorthand() {
+        // Regression test for issue #133: standard dice notation must accept omitted
+        // counts, uppercase separators, modifiers, inner whitespace, and both tag separators.
+        let rendered = MacroEngine::new(1)
+            .render(
+                "{{roll:d20}},{{roll:D20}},{{roll:d6+2}},{{roll:1d20 + 4}},{{roll:d100-5}}",
+                &MacroContext::default(),
+                &mut state(),
+            )
+            .unwrap();
+        assert_eq!(rendered.text, "2,6,6,10,29");
+
+        let single = MacroEngine::new(1)
+            .render("{{roll:d20}}", &MacroContext::default(), &mut state())
+            .unwrap();
+        let double = MacroEngine::new(1)
+            .render("{{roll::d20}}", &MacroContext::default(), &mut state())
+            .unwrap();
+        assert_eq!(single.text, double.text);
     }
 
     #[test]

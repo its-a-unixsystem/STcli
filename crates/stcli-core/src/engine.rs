@@ -2309,6 +2309,35 @@ pub struct EngineTurn {
     pub attempts: Vec<AttemptProjection>,
 }
 
+impl EngineTurn {
+    pub fn resolved_user_content(&self) -> &str {
+        let selected_attempt_id = self
+            .turn
+            .selected_candidate_id
+            .and_then(|selected| {
+                self.candidates
+                    .iter()
+                    .find(|candidate| candidate.candidate_id == selected)
+            })
+            .and_then(|candidate| candidate.attempt_id);
+        self.attempts
+            .iter()
+            .rev()
+            .find(|attempt| {
+                attempt.prompt_plan.is_some()
+                    && selected_attempt_id.is_none_or(|selected| attempt.attempt_id == selected)
+            })
+            .and_then(|attempt| attempt.prompt_plan.as_ref())
+            .and_then(|plan| {
+                plan.segments
+                    .iter()
+                    .find(|segment| segment.source == "current-user-action")
+            })
+            .map(|segment| segment.content.as_str())
+            .unwrap_or(&self.turn.user_content)
+    }
+}
+
 fn ensure_attempt_session(
     store: &Store,
     session_id: EntityId,

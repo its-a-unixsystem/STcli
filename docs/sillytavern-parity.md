@@ -82,7 +82,7 @@ The percentage counts fully implemented features (✅) against all tracked Silly
 | Feature | Status | Remarks & Implementation Seam |
 | :--- | :---: | :--- |
 | **Context macros (50+ core)** | ✅ | Exact parity in [`crates/stcli-core/src/macros.rs`](../crates/stcli-core/src/macros.rs) (`{{user}}`, `{{char}}`, `{{scenario}}`, and more). |
-| **PRNG macros** | ✅ | `{{random}}`, `{{pick}}`, and `{{roll}}` resolve from the attempt seed. See Part 2 for why this is deterministic. |
+| **PRNG macros** | ✅ | `{{random}}`, `{{pick}}`, and `{{roll}}` resolve from the attempt seed. Roll expressions accept `d<sides>` as shorthand for `1d<sides>`, uppercase `D`, modifiers, and whitespace around operators. See Part 2 for why this is deterministic. |
 | **Date and time macros** | ✅ | `{{time}}`, `{{date}}`, `{{isodate}}`, and `{{datetimeformat}}` are evaluated at turn prep. |
 | **Local and global variables** | ✅ | Full support for `.var` (local) and `$var` (global) in [`state_cells`](../crates/stcli-core/src/state.rs). |
 | **Variable shorthand operators** | ✅ | `=`, `+=`, `-=`, `++`, `--`, `??=`, `\|\|=`, `==`, `!=`, `>`, `<`, `>=`, `<=`. |
